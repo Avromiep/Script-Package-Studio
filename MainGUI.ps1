@@ -292,7 +292,15 @@ foreach ($n in @('RootBorder','Root','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','C
 	$script:UI[$n] = $el
 }
 
-try { $script:Window.Icon = [System.Windows.Media.Imaging.BitmapImage]::new([Uri](Join-Path $PSScriptRoot 'Images\logo.ico')) } catch {}
+# load the largest frame from the multi-size .ico so the taskbar / Alt-Tab icon
+# is crisp (BitmapImage alone would grab the 16px frame and upscale it)
+try {
+	$icoDec = [System.Windows.Media.Imaging.BitmapDecoder]::Create(
+		[Uri](Join-Path $PSScriptRoot 'Images\logo.ico'),
+		[System.Windows.Media.Imaging.BitmapCreateOptions]::None,
+		[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+	$script:Window.Icon = ($icoDec.Frames | Sort-Object PixelWidth -Descending | Select-Object -First 1)
+} catch {}
 
 # $progressBar1 keeps the WinForms-era contract every script uses
 # ($progressBar1.Value = n) and pumps the dispatcher so updates paint during

@@ -6,7 +6,3 @@ Logs/
 tenants.json
 settings.ini
 Script-Package*Setup.exe
-
-# Icon source art + one-off build helper (the shipped app only needs Images/logo.*)
-Script-Package-Studio.png
-build-icon.ps1

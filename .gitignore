@@ -1,0 +1,8 @@
+# Runtime state - stays on this machine, never commit.
+# Logs contain usernames/machine names; tenants.json contains account UPNs
+# and tenant ids; settings.ini holds per-machine window/theme state (the app
+# recreates it with defaults on first run).
+Logs/
+tenants.json
+settings.ini
+Script-Package*Setup.exe

@@ -18,7 +18,7 @@ If the modules are missing, the app offers to install them the first time you si
 ## The GUI
 
 What it looks like:  
-![Script-Package Studio GUI](Images/gui-v3.png)
+![Script-Package Studio GUI](Images/gui-v3-1.png)
 
 A modern WPF interface with dark and light themes (toggle in the title bar; your choice is remembered).
 

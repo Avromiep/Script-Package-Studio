@@ -120,11 +120,8 @@ $mainXaml = @"
 					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,0,0,1">
 				<Grid>
 					<StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
-						<Border Width="26" Height="26" CornerRadius="7" Background="{DynamicResource AccentBrush}">
-							<TextBlock Text="&#xE756;" FontFamily="{DynamicResource IconFont}" FontSize="14"
-									   Foreground="{DynamicResource OnAccentBrush}"
-									   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-						</Border>
+						<Image x:Name="TitleIcon" Width="28" Height="28" VerticalAlignment="Center"
+							   RenderOptions.BitmapScalingMode="HighQuality"/>
 						<TextBlock Text="Script-Package Studio" Margin="10,0,0,0" VerticalAlignment="Center"
 								   FontFamily="{DynamicResource UiFont}" FontSize="13.5" FontWeight="SemiBold"
 								   Foreground="{DynamicResource TextBrush}"/>
@@ -282,7 +279,7 @@ $script:Window = Read-XamlString $mainXaml
 [void]$script:Window.Resources.MergedDictionaries.Add($script:StyleDict)
 
 $script:UI = @{}
-foreach ($n in @('RootBorder','Root','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
+foreach ($n in @('RootBorder','Root','TitleIcon','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
 		'SignDot','SignStatusText','TenantCombo','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
@@ -300,6 +297,11 @@ try {
 		[System.Windows.Media.Imaging.BitmapCreateOptions]::None,
 		[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
 	$script:Window.Icon = ($icoDec.Frames | Sort-Object PixelWidth -Descending | Select-Object -First 1)
+} catch {}
+
+# same logo in the in-app title bar (top-left)
+try {
+	$script:UI.TitleIcon.Source = [System.Windows.Media.Imaging.BitmapImage]::new([Uri](Join-Path $PSScriptRoot 'Images\logo.png'))
 } catch {}
 
 # $progressBar1 keeps the WinForms-era contract every script uses

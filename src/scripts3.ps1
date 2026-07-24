@@ -238,7 +238,7 @@ function Update-ScriptPackage {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Update-ScriptPackage.txt"
 	Write-Host "Running Update-ScriptPackage script..."
 	$progressBar1.Value = 10
-	$versionCheck = Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package/releases/latest"
+	$versionCheck = Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
 	$versionLink = $versionCheck.Links.href | Where-Object {
 		$_ -Like "*/releases/tag/v*"
 	}
@@ -255,7 +255,7 @@ function Update-ScriptPackage {
 	} else {
 		Write-Host "Downloading latest version of Script-Package Studio..."
 		Remove-Item -Path "$env:TEMP\Script-Package-Studio-Setup.exe" -Force -ErrorAction Ignore
-		Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package/releases/latest/download/Script-Package-Studio-Setup.exe" -OutFile "$env:TEMP\Script-Package-Studio-Setup.exe"
+		Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio-Setup.exe" -OutFile "$env:TEMP\Script-Package-Studio-Setup.exe"
 		$progressBar1.Value = 50
 		if (Test-Path "$env:TEMP\Script-Package-Studio-Setup.exe") {
 			Write-Host "Launching downloaded file..."
@@ -266,7 +266,7 @@ function Update-ScriptPackage {
 			[void](New-UpdateCompleteDialog "Installed latest version, enjoy!").ShowDialog()
 		} else {
 			Write-Host "Setup download failed - opening the releases page instead." -ForegroundColor Yellow
-			Start-Process "https://github.com/Avromiep/Script-Package/releases/latest"
+			Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
 			CheckForErrors
 			$progressBar1.Value = 0
 		}
@@ -676,19 +676,19 @@ function Show-Information {
 	Write-Host "Running Show-Information script..."
 	$progressBar1.Value = 10
 	function OnOpenRepoButtonClick {
-		Start-Process "https://github.com/Avromiep/Script-Package"
+		Start-Process "https://github.com/Avromiep/Script-Package-Studio"
 	}
 	function OnOpenIssueButtonClick {
-		Start-Process "https://github.com/Avromiep/Script-Package/issues"
+		Start-Process "https://github.com/Avromiep/Script-Package-Studio/issues"
 	}
 	function OnViewReleasesButtonClick {
-		Start-Process "https://github.com/Avromiep/Script-Package/releases"
+		Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases"
 	}
 	function  OnDownloadPortableButtonClick {
-		Start-Process "https://github.com/Avromiep/Script-Package/releases/latest/download/Script-Package-Studio.zip"
+		Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio.zip"
 	}
 	function OnViewReadmeButtonClick {
-		Start-Process "https://github.com/Avromiep/Script-Package/blob/main/README.md"
+		Start-Process "https://github.com/Avromiep/Script-Package-Studio/blob/main/README.md"
 	}
 
 	$infoForm = New-InformationDialog

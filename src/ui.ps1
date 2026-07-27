@@ -135,7 +135,7 @@ function New-StyledDialog {
 	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 	Title="$Title" SizeToContent="WidthAndHeight" ResizeMode="NoResize"
 	WindowStartupLocation="CenterOwner" Background="Transparent"
-	WindowStyle="SingleBorderWindow" ShowInTaskbar="False"
+	WindowStyle="None" ShowInTaskbar="False"
 	TextOptions.TextFormattingMode="Ideal" UseLayoutRounding="True">
 	<WindowChrome.WindowChrome>
 		<WindowChrome CaptionHeight="42" ResizeBorderThickness="4" CornerRadius="0"

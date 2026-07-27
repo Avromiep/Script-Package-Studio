@@ -1,4 +1,4 @@
-$version = "v3.0.6"
+$version = "v3.0.7"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -579,7 +579,7 @@ function Add-UiLog([string]$Text, [string]$Color = '') {
 		default    { 'TextDimBrush' }
 	}
 	$tb = [System.Windows.Controls.TextBlock]::new()
-	$tb.Text = "[{0:HH:mm:ss}]  {1}" -f (Get-Date), $Text
+	$tb.Text = "[{0:h:mm:ss tt}]  {1}" -f (Get-Date), $Text
 	$tb.FontFamily = $script:StyleDict['UiFont']
 	$tb.FontSize = 12
 	$tb.TextWrapping = 'Wrap'

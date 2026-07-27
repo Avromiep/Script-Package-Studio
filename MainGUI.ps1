@@ -1,4 +1,4 @@
-$version = "v3.0.2"
+$version = "v3.0.3"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -420,6 +420,17 @@ function Get-SelectedTenant {
 	return $null
 }
 
+# Connect to Exchange Online. -SkipLoadingCmdletHelp only exists in newer
+# ExchangeOnlineManagement versions, so pass it only when the installed module
+# supports it (older versions on other machines threw a parameter error).
+function Connect-Exo([string]$Upn) {
+	$p = @{ ShowBanner = $false }
+	if ($Upn) { $p.UserPrincipalName = $Upn }
+	$cmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
+	if ($cmd -and $cmd.Parameters.ContainsKey('SkipLoadingCmdletHelp')) { $p.SkipLoadingCmdletHelp = $true }
+	Connect-ExchangeOnline @p
+}
+
 # Connect Graph + Exchange Online to a saved tenant. With cached tokens this is
 # silent; otherwise Microsoft's normal auth prompt appears (usually one click
 # thanks to browser SSO).
@@ -451,7 +462,7 @@ function Connect-Tenant($Tenant) {
 	}
 
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
-	Connect-ExchangeOnline -UserPrincipalName $Tenant.account -ShowBanner:$false -SkipLoadingCmdletHelp
+	Connect-Exo $Tenant.account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
@@ -496,7 +507,7 @@ function Add-TenantSignIn {
 	if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
 	$Error.Clear()
 
-	Connect-ExchangeOnline -UserPrincipalName $currentMgContext.Account -ShowBanner:$false -SkipLoadingCmdletHelp
+	Connect-Exo $currentMgContext.Account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"

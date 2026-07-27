@@ -1,4 +1,4 @@
-$version = "v3.0.8"
+$version = "v3.0.9"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -21,6 +21,15 @@ if (-not $env:SP_SHOT -and -not $env:SP_TEST) {
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+
+# Give the process its own taskbar identity. Without this the window is grouped
+# under pwsh.exe and the taskbar shows the PowerShell icon instead of the app's.
+# Must run before the window is created.
+try {
+	$aumidSig = '[DllImport("shell32.dll")] public static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);'
+	$aumidType = Add-Type -MemberDefinition $aumidSig -Name 'AppUserModelId' -Namespace 'SPS' -PassThru -ErrorAction Stop
+	[void]$aumidType::SetCurrentProcessExplicitAppUserModelID('Avromiep.ScriptPackageStudio')
+} catch {}
 
 $script:SrcDir = Join-Path $PSScriptRoot 'src'
 $script:SettingsIniPath = Join-Path $PSScriptRoot 'settings.ini'

@@ -1,4 +1,4 @@
-$version = "v3.0.7"
+$version = "v3.0.8"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -301,7 +301,7 @@ try {
 
 # same logo in the in-app title bar (top-left)
 try {
-	$script:UI.TitleIcon.Source = [System.Windows.Media.Imaging.BitmapImage]::new([Uri](Join-Path $PSScriptRoot 'Images\logo.png'))
+	$script:UI.TitleIcon.Source = New-ImageSource (Join-Path $PSScriptRoot 'Images\logo.png')
 } catch {}
 
 # Global safety net: if any action throws an unhandled error mid-way (e.g. a

@@ -119,6 +119,20 @@ function Read-XamlFile([string]$Path) {
 	try { return [System.Windows.Markup.XamlReader]::Load($xml) } finally { $xml.Close() }
 }
 
+# Load an image WITHOUT keeping the file open. A plain BitmapImage(uri) holds a
+# lock on the file, which makes the installer's file-replace fail during an
+# in-app update ("being used by another process"). OnLoad reads it fully into
+# memory and releases the handle, so updates work while the app is running.
+function New-ImageSource([string]$Path) {
+	$bi = [System.Windows.Media.Imaging.BitmapImage]::new()
+	$bi.BeginInit()
+	$bi.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+	$bi.UriSource = [Uri]$Path
+	$bi.EndInit()
+	$bi.Freeze()
+	return $bi
+}
+
 # Builds a styled dialog window: dark custom title bar + close button, the merged
 # style dictionary in ITS OWN Resources (DynamicResource lookups fail otherwise),
 # and the caller's body XAML as content. SizeToContent, non-resizable, modal-ready.

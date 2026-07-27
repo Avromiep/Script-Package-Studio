@@ -1,4 +1,4 @@
-$version = "v3.0.5"
+$version = "v3.0.6"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -783,7 +783,7 @@ function Invoke-ScriptByName([string]$Name) {
 	try {
 		OnRunButtonClick $Name
 	} finally {
-		$script:UI.StatusText.Text = if ($known) { "$Name finished at $(Get-Date -Format 'HH:mm')" } else { 'Ready' }
+		$script:UI.StatusText.Text = if ($known) { "$Name finished at $(Get-Date -Format 'h:mm tt')" } else { 'Ready' }
 		$script:UI.StatusDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'SuccessBrush')
 	}
 }

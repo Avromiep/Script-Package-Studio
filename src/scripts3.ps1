@@ -665,7 +665,7 @@ function New-InformationDialog {
 	try {
 		$logoPath = Join-Path (Get-Location).Path 'Images\logo.png'
 		if (Test-Path -LiteralPath $logoPath) {
-			$win.FindName('LogoImage').Source = [System.Windows.Media.Imaging.BitmapImage]::new([Uri]$logoPath)
+			$win.FindName('LogoImage').Source = New-ImageSource $logoPath
 		}
 	} catch {}
 	return $win

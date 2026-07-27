@@ -1,4 +1,4 @@
-$version = "v3.0.3"
+$version = "v3.0.4"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -303,6 +303,19 @@ try {
 try {
 	$script:UI.TitleIcon.Source = [System.Windows.Media.Imaging.BitmapImage]::new([Uri](Join-Path $PSScriptRoot 'Images\logo.png'))
 } catch {}
+
+# Global safety net: if any action throws an unhandled error mid-way (e.g. a
+# cmdlet fails), show it instead of the action silently stopping with no
+# feedback. Skipped in screenshot mode so automated runs never block on a modal.
+if (-not $env:SP_SHOT) {
+	$script:Window.Dispatcher.Add_UnhandledException({ param($s, $e)
+		try {
+			Write-Host "Error: $($e.Exception.Message)" -ForegroundColor Red
+			[void](New-ErrorDialog (($e.Exception | Out-String).Trim())).ShowDialog()
+		} catch {}
+		$e.Handled = $true
+	})
+}
 
 # $progressBar1 keeps the WinForms-era contract every script uses
 # ($progressBar1.Value = n) and pumps the dispatcher so updates paint during

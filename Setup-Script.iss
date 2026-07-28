@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Script-Package Studio"
-#define MyAppVersion "3.0.9"
+#define MyAppVersion "3.1.0"
 #define MyAppPublisher "Avromiep"
 #define MyAppExeName "Script-Package-Studio.bat"
 #define DesktopIconName "Script-Package Studio"
@@ -40,6 +40,7 @@ Source: ".\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs cre
 Source: ".\Templates\*"; DestDir: "{app}\Templates"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: ".\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\Images\*"; DestDir: "{app}\Images"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: ".\Fonts\*"; DestDir: "{app}\Fonts"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: ".\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 ; settings.ini is no longer shipped - the app creates it with defaults on first run
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files

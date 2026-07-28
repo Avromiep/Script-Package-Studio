@@ -277,7 +277,7 @@ function Update-ScriptPackage {
 # ---------------------------------------------------------------------------
 function New-AclPermissionsDialog {
 	param([string]$DomainName = '', [string[]]$UserGroupList = @())
-	$win = New-StyledDialog -Title 'Set-ACLPermissions' -Icon '&#xE8D7;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Set-ACLPermissions' -Icon '&#xEAA7;' -BodyXaml @'
 <Grid Margin="16">
 	<Grid.ColumnDefinitions>
 		<ColumnDefinition Width="340"/><ColumnDefinition Width="12"/><ColumnDefinition Width="300"/>
@@ -566,7 +566,7 @@ function Set-EmailForwarding {
 
 # ---------------------------------------------------------------------------
 function New-SetNTPDialog {
-	New-StyledDialog -Title 'Set-NTP' -Icon '&#xE823;' -BodyXaml @'
+	New-StyledDialog -Title 'Set-NTP' -Icon '&#xE508;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -640,7 +640,7 @@ function Set-NTP {
 
 # ---------------------------------------------------------------------------
 function New-InformationDialog {
-	$win = New-StyledDialog -Title 'Information' -Icon '&#xE946;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Information' -Icon '&#xEA88;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>

@@ -77,7 +77,7 @@
         <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
     <Style x:Key="Icon" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
+        <Setter Property="FontFamily" Value="{DynamicResource IconFont}"/>
         <Setter Property="FontSize" Value="16"/>
         <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
@@ -223,7 +223,7 @@
     <Style x:Key="IconBtn" TargetType="Button">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
-        <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
+        <Setter Property="FontFamily" Value="{DynamicResource IconFont}"/>
         <Setter Property="FontSize" Value="15"/>
         <Setter Property="Width" Value="34"/>
         <Setter Property="Height" Value="32"/>
@@ -252,7 +252,7 @@
     <Style x:Key="TitleBtn" TargetType="Button">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
-        <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
+        <Setter Property="FontFamily" Value="{DynamicResource IconFont}"/>
         <Setter Property="FontSize" Value="10"/>
         <Setter Property="Width" Value="46"/>
         <Setter Property="Height" Value="34"/>
@@ -309,7 +309,7 @@
                                     HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                     VerticalAlignment="Center">
                             <TextBlock x:Name="NavIcon" Text="{TemplateBinding Tag}"
-                                       FontFamily="{StaticResource IconFont}" FontSize="16"
+                                       FontFamily="{DynamicResource IconFont}" FontSize="16"
                                        VerticalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
                             <TextBlock x:Name="NavLbl" Text="{TemplateBinding Content}" Margin="13,0,0,0"
                                        FontFamily="{StaticResource UiFont}" FontSize="13.5"
@@ -420,7 +420,7 @@
                                 Background="{DynamicResource InputBrush}"
                                 BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1.5"
                                 VerticalAlignment="Center">
-                            <TextBlock x:Name="Check" Text="&#xE73E;" FontFamily="{StaticResource IconFont}"
+                            <TextBlock x:Name="Check" Text="&#xE460;" FontFamily="{DynamicResource IconFont}"
                                        FontSize="11" Foreground="{DynamicResource OnAccentBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
                         </Border>
@@ -489,7 +489,7 @@
                                 <ControlTemplate TargetType="ToggleButton">
                                     <Border x:Name="Bd" CornerRadius="8" Background="{DynamicResource InputBrush}"
                                             BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1">
-                                        <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                        <TextBlock Text="&#xE488;" FontFamily="{DynamicResource IconFont}"
                                                    FontSize="9" HorizontalAlignment="Right" VerticalAlignment="Center"
                                                    Margin="0,0,11,0" Foreground="{DynamicResource TextDimBrush}"/>
                                     </Border>

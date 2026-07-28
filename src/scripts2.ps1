@@ -1,7 +1,7 @@
 # Script-Package - script dialogs (Block-User .. New-*)
 
 function New-BlockUserDialog {
-	New-StyledDialog -Title 'Block-User' -Icon '&#xE72E;' -BodyXaml @'
+	New-StyledDialog -Title 'Block-User' -Icon '&#xEEE3;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -37,7 +37,7 @@ function New-BlockUserDialog {
 }
 
 function New-BlockAddMemberDialog {
-	New-StyledDialog -Title 'Add members to the blocked mailbox' -Icon '&#xE8FA;' -BodyXaml @'
+	New-StyledDialog -Title 'Add members to the blocked mailbox' -Icon '&#xEDBB;' -BodyXaml @'
 <StackPanel Margin="16" Width="320">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -56,7 +56,7 @@ function New-BlockAddMemberDialog {
 }
 
 function New-BlockAutoReplyDialog {
-	$win = New-StyledDialog -Title 'Add Auto-Reply' -Icon '&#xE715;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Add Auto-Reply' -Icon '&#xEBBC;' -BodyXaml @'
 <StackPanel Margin="16" Width="480">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -273,12 +273,12 @@ function Block-User {
 
 # ---------------------------------------------------------------------------
 function New-ClearRecycleBinDialog {
-	New-StyledDialog -Title 'Clear-RecycleBin' -Icon '&#xE74D;' -BodyXaml @'
+	New-StyledDialog -Title 'Clear-RecycleBin' -Icon '&#xE66D;' -BodyXaml @'
 <StackPanel Margin="16" Width="320">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="&#xE7BA;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<TextBlock Text="&#xF561;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
 				<TextBlock Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="240"
 						   Text="Clears all contents of all recycle bins on this computer."
 						   ToolTip="On a terminal server this will empty everyone's recycle bins."/>
@@ -330,7 +330,7 @@ function Clear-RecycleBin {
 
 # ---------------------------------------------------------------------------
 function New-ConvertGroupDialog {
-	New-StyledDialog -Title 'Convert-UnifiedGroupToDistributionList' -Icon '&#xE8F1;' -BodyXaml @'
+	New-StyledDialog -Title 'Convert-UnifiedGroupToDistributionList' -Icon '&#xE16F;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -439,7 +439,7 @@ function Convert-UnifiedGroupToDistributionGroup {
 
 # ---------------------------------------------------------------------------
 function New-EnableArchiveDialog {
-	New-StyledDialog -Title 'Enable-Archive' -Icon '&#xE7B8;' -BodyXaml @'
+	New-StyledDialog -Title 'Enable-Archive' -Icon '&#xE085;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -535,7 +535,7 @@ function Install-RequiredModules {
 # ---------------------------------------------------------------------------
 function New-ADAccountsDialog {
 	param([string]$ForestName = '')
-	$win = New-StyledDialog -Title 'New-ADAccounts' -Icon '&#xE7EE;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'New-ADAccounts' -Icon '&#xEDBB;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -715,7 +715,7 @@ $script:EmailLicenseList = @(
 
 function New-ADAndEmailAccountsDialog {
 	param([string]$ForestName = '')
-	$win = New-StyledDialog -Title 'New-ADAndEmailAccounts' -Icon '&#xE7EE;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'New-ADAndEmailAccounts' -Icon '&#xEDBB;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -942,7 +942,7 @@ function New-ADAndEmailAccounts {
 
 # ---------------------------------------------------------------------------
 function New-EmailAccountsDialog {
-	$win = New-StyledDialog -Title 'New-EmailAccounts' -Icon '&#xE715;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'New-EmailAccounts' -Icon '&#xEBBC;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>

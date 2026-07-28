@@ -1,4 +1,4 @@
-$version = "v3.0.9"
+$version = "v3.1.0"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -95,6 +95,20 @@ Read-AppSettings
 $script:StyleDict = Read-XamlFile (Join-Path $script:SrcDir 'xaml\Styles.xaml')
 [void]$script:StyleDict.MergedDictionaries.Add((Read-XamlString $script:ExtraStylesXaml))
 
+# Use the icon font bundled with the app so glyphs render on EVERY Windows
+# version. The Segoe Fluent Icons / Segoe MDL2 Assets fonts only ship with
+# Windows 10/11 - on Windows Server 2012/2016 and older, they are missing and
+# every icon shows as an empty box. Fluent System Icons (MIT) travels with us.
+try {
+	# Build the FontFamily via its TypeConverter, not New-Object: only a
+	# converter-created FontFamily survives being applied through DynamicResource
+	# (a New-Object one re-parses its source string and throws). The source is an
+	# absolute, %20-encoded file URI so it holds even with spaces in the path.
+	$iconFontRef = ([Uri]((Join-Path $PSScriptRoot 'Fonts') + '\')).AbsoluteUri + '#FluentSystemIcons-Resizable'
+	$iconFontConv = [System.ComponentModel.TypeDescriptor]::GetConverter([System.Windows.Media.FontFamily])
+	$script:StyleDict['IconFont'] = $iconFontConv.ConvertFromString($iconFontRef)
+} catch {}
+
 . (Join-Path $script:SrcDir 'theme.ps1')
 . (Join-Path $script:SrcDir 'scripts1.ps1')
 . (Join-Path $script:SrcDir 'scripts2.ps1')
@@ -140,13 +154,13 @@ $mainXaml = @"
 					<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
 						<Button x:Name="ThemeBtn" Style="{DynamicResource IconBtn}" Margin="0,7,6,0"
 								ToolTip="Toggle dark / light theme" WindowChrome.IsHitTestVisibleInChrome="True">
-							<TextBlock x:Name="ThemeIcon" Text="&#xE706;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
+							<TextBlock x:Name="ThemeIcon" Text="&#xF597;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
 						</Button>
-						<Button x:Name="MinBtn" Style="{DynamicResource TitleBtn}" Content="&#xE921;" Height="36"
+						<Button x:Name="MinBtn" Style="{DynamicResource TitleBtn}" Content="&#xF1A3;" Height="36"
 								WindowChrome.IsHitTestVisibleInChrome="True"/>
-						<Button x:Name="MaxBtn" Style="{DynamicResource TitleBtn}" Content="&#xE922;" Height="36"
+						<Button x:Name="MaxBtn" Style="{DynamicResource TitleBtn}" Content="&#xEC2A;" Height="36"
 								WindowChrome.IsHitTestVisibleInChrome="True"/>
-						<Button x:Name="CloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE8BB;" Height="36"
+						<Button x:Name="CloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE6D3;" Height="36"
 								WindowChrome.IsHitTestVisibleInChrome="True"/>
 					</StackPanel>
 				</Grid>
@@ -177,7 +191,7 @@ $mainXaml = @"
 						<ComboBox x:Name="TenantCombo" Grid.Column="1" VerticalAlignment="Center" MinHeight="32"
 								  ToolTip="Choose which Microsoft tenant to use. Selecting a tenant connects to it."/>
 						<Button x:Name="ForgetTenantBtn" Grid.Column="2" Style="{DynamicResource IconBtn}"
-								Content="&#xE74D;" Margin="6,0,0,0"
+								Content="&#xE66D;" Margin="6,0,0,0"
 								ToolTip="Forget the selected tenant (removes it from this list)"/>
 						<Button x:Name="ConnectBtn" Grid.Column="3" Style="{DynamicResource BtnPrimary}"
 								Content="Sign In" MinWidth="96" Margin="8,0,0,0"/>
@@ -206,7 +220,7 @@ $mainXaml = @"
 						<Grid Grid.Row="1" Margin="0,10,0,0">
 							<TextBox x:Name="SearchBox" MinHeight="30" Padding="30,5,8,5"
 									 ToolTip="Search scripts  (Ctrl+F)"/>
-							<TextBlock Text="&#xE721;" FontFamily="{DynamicResource IconFont}" FontSize="13"
+							<TextBlock Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="13"
 									   Foreground="{DynamicResource TextFaintBrush}" IsHitTestVisible="False"
 									   Margin="10,0,0,0" VerticalAlignment="Center"/>
 							<TextBlock x:Name="SearchHint" Text="Search scripts...   (Ctrl+F)" Style="{DynamicResource Small}"
@@ -218,7 +232,7 @@ $mainXaml = @"
 									 BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
 							<StackPanel x:Name="EmptyState" VerticalAlignment="Center" HorizontalAlignment="Center"
 										Visibility="Collapsed">
-								<TextBlock Text="&#xE721;" FontFamily="{DynamicResource IconFont}" FontSize="22"
+								<TextBlock Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="22"
 										   Foreground="{DynamicResource TextFaintBrush}" HorizontalAlignment="Center"/>
 								<TextBlock Text="No scripts match your search." Style="{DynamicResource Dim}"
 										   Margin="0,8,0,0" HorizontalAlignment="Center"/>
@@ -247,7 +261,7 @@ $mainXaml = @"
 						<StackPanel Orientation="Horizontal" VerticalAlignment="Center">
 							<Button x:Name="LogToggleBtn" Style="{DynamicResource IconBtn}" Width="26" Height="22"
 									ToolTip="Show / hide the activity log  (Ctrl+L)">
-								<TextBlock x:Name="LogToggleIcon" Text="&#xE76C;" FontFamily="{DynamicResource IconFont}" FontSize="10"/>
+								<TextBlock x:Name="LogToggleIcon" Text="&#xE490;" FontFamily="{DynamicResource IconFont}" FontSize="10"/>
 							</Button>
 							<TextBlock Text="Activity" Style="{DynamicResource H3}" Margin="6,0,0,0" VerticalAlignment="Center"/>
 							<TextBlock x:Name="LogCountText" Style="{DynamicResource Small}" Margin="10,1,0,0" VerticalAlignment="Center"/>
@@ -622,7 +636,7 @@ function Write-Host {
 function Set-LogExpanded([bool]$Expanded) {
 	$script:Settings.logExpanded = $Expanded
 	$script:UI.LogList.Visibility = if ($Expanded) { 'Visible' } else { 'Collapsed' }
-	$script:UI.LogToggleIcon.Text = if ($Expanded) { [string][char]0xE70D } else { [string][char]0xE76C }
+	$script:UI.LogToggleIcon.Text = if ($Expanded) { [string][char]0xE488 } else { [string][char]0xE490 }
 	if ($Expanded -and $script:UI.LogList.Items.Count -gt 0) {
 		$script:UI.LogList.ScrollIntoView($script:UI.LogList.Items[$script:UI.LogList.Items.Count - 1])
 	}
@@ -630,30 +644,30 @@ function Set-LogExpanded([bool]$Expanded) {
 
 # ---- script catalog ----------------------------------------------------------
 $script:ScriptCatalog = @(
-	@{ Name = 'Add-AuthenticationPhoneMethod'; Desc = 'Add a 2FA phone number to an account, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE717 }
-	@{ Name = 'Add-AutoReply'; Desc = 'Set an automatic reply on a mailbox, optionally scheduled.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE715 }
-	@{ Name = 'Add-Contacts'; Desc = 'Add mail contacts to Microsoft 365, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE77B }
-	@{ Name = 'Add-DistributionListMember'; Desc = 'Add members to a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE716 }
-	@{ Name = 'Add-EmailAlias'; Desc = 'Add aliases to a mailbox and view existing ones.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE715 }
-	@{ Name = 'Add-MailboxMember'; Desc = 'Grant FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE779 }
-	@{ Name = 'Add-TrustedSender'; Desc = 'Add a trusted sender or domain to every mailbox in the tenant.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE8F8 }
-	@{ Name = 'Add-UnifiedGroupMember'; Desc = 'Add members to a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE716 }
-	@{ Name = 'Block-User'; Desc = 'Disable a user in AD and Microsoft 365, convert their mailbox to shared.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xE72E }
-	@{ Name = 'Clear-RecycleBin'; Desc = 'Empty all recycle bins on this computer.'; SignIn = $false; Cat = 'System'; Icon = 0xE74D }
-	@{ Name = 'Convert-UnifiedGroupToDistributionGroup'; Desc = 'Rebuild a Microsoft 365 group as a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE8F1 }
-	@{ Name = 'Enable-Archive'; Desc = 'Enable, jumpstart or auto-expand mailbox archiving.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE7B8 }
-	@{ Name = 'Install-RequiredModules'; Desc = 'Install the Microsoft.Graph and ExchangeOnlineManagement modules.'; SignIn = $false; Cat = 'App'; Icon = 0xE896 }
-	@{ Name = 'New-ADAccounts'; Desc = 'Create Active Directory accounts in bulk from a CSV.'; SignIn = $false; Cat = 'Active Directory'; Icon = 0xE7EE }
-	@{ Name = 'New-ADAndEmailAccounts'; Desc = 'Create AD accounts plus licensed mailboxes in bulk.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xE7EE }
-	@{ Name = 'New-EmailAccounts'; Desc = 'Create licensed Microsoft 365 accounts in bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE715 }
-	@{ Name = 'Remove-DistributionListMember'; Desc = 'Remove members from a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE716 }
-	@{ Name = 'Remove-EmailAlias'; Desc = 'Remove aliases from a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE715 }
-	@{ Name = 'Remove-MailboxMember'; Desc = 'Revoke FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE779 }
-	@{ Name = 'Remove-UnifiedGroupMember'; Desc = 'Remove members from a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE716 }
-	@{ Name = 'Update-ScriptPackage'; Desc = 'Download and install the latest release.'; SignIn = $false; Cat = 'App'; Icon = 0xE72C }
-	@{ Name = 'Set-ACLPermissions'; Desc = 'Add NTFS ACL permission rules to files and folders.'; SignIn = $false; Cat = 'System'; Icon = 0xE8D7 }
-	@{ Name = 'Set-NTP'; Desc = 'Check or set the Windows time source.'; SignIn = $false; Cat = 'System'; Icon = 0xE823 }
-	@{ Name = 'Show-Information'; Desc = 'Script-Package Studio info and links.'; SignIn = $false; Cat = 'App'; Icon = 0xE946 }
+	@{ Name = 'Add-AuthenticationPhoneMethod'; Desc = 'Add a 2FA phone number to an account, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEE2F }
+	@{ Name = 'Add-AutoReply'; Desc = 'Set an automatic reply on a mailbox, optionally scheduled.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
+	@{ Name = 'Add-Contacts'; Desc = 'Add mail contacts to Microsoft 365, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE249 }
+	@{ Name = 'Add-DistributionListMember'; Desc = 'Add members to a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Add-EmailAlias'; Desc = 'Add aliases to a mailbox and view existing ones.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
+	@{ Name = 'Add-MailboxMember'; Desc = 'Grant FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED93 }
+	@{ Name = 'Add-TrustedSender'; Desc = 'Add a trusted sender or domain to every mailbox in the tenant.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xF039 }
+	@{ Name = 'Add-UnifiedGroupMember'; Desc = 'Add members to a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Block-User'; Desc = 'Disable a user in AD and Microsoft 365, convert their mailbox to shared.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
+	@{ Name = 'Clear-RecycleBin'; Desc = 'Empty all recycle bins on this computer.'; SignIn = $false; Cat = 'System'; Icon = 0xE66D }
+	@{ Name = 'Convert-UnifiedGroupToDistributionGroup'; Desc = 'Rebuild a Microsoft 365 group as a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE16F }
+	@{ Name = 'Enable-Archive'; Desc = 'Enable, jumpstart or auto-expand mailbox archiving.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE085 }
+	@{ Name = 'Install-RequiredModules'; Desc = 'Install the Microsoft.Graph and ExchangeOnlineManagement modules.'; SignIn = $false; Cat = 'App'; Icon = 0xE0DD }
+	@{ Name = 'New-ADAccounts'; Desc = 'Create Active Directory accounts in bulk from a CSV.'; SignIn = $false; Cat = 'Active Directory'; Icon = 0xEDBB }
+	@{ Name = 'New-ADAndEmailAccounts'; Desc = 'Create AD accounts plus licensed mailboxes in bulk.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEDBB }
+	@{ Name = 'New-EmailAccounts'; Desc = 'Create licensed Microsoft 365 accounts in bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
+	@{ Name = 'Remove-DistributionListMember'; Desc = 'Remove members from a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Remove-EmailAlias'; Desc = 'Remove aliases from a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
+	@{ Name = 'Remove-MailboxMember'; Desc = 'Revoke FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED93 }
+	@{ Name = 'Remove-UnifiedGroupMember'; Desc = 'Remove members from a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Update-ScriptPackage'; Desc = 'Download and install the latest release.'; SignIn = $false; Cat = 'App'; Icon = 0xE0BF }
+	@{ Name = 'Set-ACLPermissions'; Desc = 'Add NTFS ACL permission rules to files and folders.'; SignIn = $false; Cat = 'System'; Icon = 0xEAA7 }
+	@{ Name = 'Set-NTP'; Desc = 'Check or set the Windows time source.'; SignIn = $false; Cat = 'System'; Icon = 0xE508 }
+	@{ Name = 'Show-Information'; Desc = 'Script-Package Studio info and links.'; SignIn = $false; Cat = 'App'; Icon = 0xEA88 }
 )
 
 $script:Categories = @('All', 'Microsoft 365', 'Active Directory', 'System', 'App')
@@ -882,10 +896,10 @@ $script:UI.CloseBtn.Add_Click({ $script:Window.Close() })
 $script:Window.Add_StateChanged({
 	if ($script:Window.WindowState -eq 'Maximized') {
 		$script:UI.Root.Margin = '7'
-		$script:UI.MaxBtn.Content = [char]0xE923
+		$script:UI.MaxBtn.Content = [char]0xF149
 	} else {
 		$script:UI.Root.Margin = '0'
-		$script:UI.MaxBtn.Content = [char]0xE922
+		$script:UI.MaxBtn.Content = [char]0xEC2A
 	}
 })
 

@@ -159,3 +159,7 @@ Script-Package Studio info and links.
 
 Most of the scripts will create a transcript in the `Logs` folder.  
 The transcripts are set to overwrite older ones, so if you run a script twice you will only see the log for the latest run.
+
+## Credits
+
+Icons: [Fluent System Icons](https://github.com/microsoft/fluentui-system-icons) by Microsoft (MIT). The font is bundled in `Fonts/` so icons render on every Windows version - see `Fonts/FluentSystemIcons-LICENSE.txt`.

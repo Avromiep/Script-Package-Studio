@@ -49,6 +49,6 @@ function Apply-Theme {
     $script:Settings.theme = $Name
     if ($script:UI.ThemeIcon) {
         # moon glyph in dark mode (click => light), sun in light mode
-        $script:UI.ThemeIcon.Text = if ($Name -eq 'Dark') { [char]0xE706 } else { [char]0xE708 }
+        $script:UI.ThemeIcon.Text = if ($Name -eq 'Dark') { [char]0xF597 } else { [char]0xF57D }
     }
 }

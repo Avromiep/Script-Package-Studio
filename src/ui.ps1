@@ -86,7 +86,7 @@ $script:ExtraStylesXaml = @'
 								<Button.Template>
 									<ControlTemplate TargetType="Button">
 										<Border Background="Transparent" Padding="9,0,10,0">
-											<TextBlock Text="&#xE787;" FontFamily="{DynamicResource IconFont}" FontSize="13"
+											<TextBlock Text="&#xE35E;" FontFamily="{DynamicResource IconFont}" FontSize="13"
 													   Foreground="{DynamicResource TextDimBrush}" VerticalAlignment="Center"/>
 										</Border>
 									</ControlTemplate>
@@ -140,7 +140,7 @@ function New-StyledDialog {
 	param(
 		[string]$Title,
 		[string]$BodyXaml,
-		[string]$Icon = '&#xE756;',
+		[string]$Icon = '&#xE54E;',
 		[object]$Owner
 	)
 	$xaml = @"
@@ -174,7 +174,7 @@ function New-StyledDialog {
 								   FontFamily="{DynamicResource UiFont}" FontSize="13" FontWeight="SemiBold"
 								   Foreground="{DynamicResource TextBrush}"/>
 					</StackPanel>
-					<Button x:Name="DlgCloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE8BB;"
+					<Button x:Name="DlgCloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE6D3;"
 							Height="34" HorizontalAlignment="Right" VerticalAlignment="Top"
 							WindowChrome.IsHitTestVisibleInChrome="True"/>
 				</Grid>
@@ -224,12 +224,12 @@ function New-NumericProxy($TextBox, [int]$Max = 100) {
 # ---------------------------------------------------------------------------
 
 function New-ErrorDialog([string]$Text) {
-	$win = New-StyledDialog -Title 'Errors' -Icon '&#xEA39;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Errors' -Icon '&#xE877;' -BodyXaml @'
 <StackPanel Margin="16" Width="440">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="&#xEA39;" Style="{DynamicResource Icon}" Foreground="{DynamicResource ErrorBrush}"/>
+				<TextBlock Text="&#xE877;" Style="{DynamicResource Icon}" Foreground="{DynamicResource ErrorBrush}"/>
 				<TextBlock Text="One or more errors were reported" Style="{DynamicResource H3}" Margin="8,0,0,0" VerticalAlignment="Center"/>
 			</StackPanel>
 			<TextBox x:Name="ErrorBox" Style="{DynamicResource TextArea}" Margin="0,12,0,0" Height="240"
@@ -255,13 +255,13 @@ function CheckForErrors {
 }
 
 function New-OperationCompleteDialog {
-	$win = New-StyledDialog -Title 'Operation Complete' -Icon '&#xE73E;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Operation Complete' -Icon '&#xE460;' -BodyXaml @'
 <StackPanel Margin="16" Width="300">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
 				<Border Width="34" Height="34" CornerRadius="17" Background="{DynamicResource SuccessSoftBrush}">
-					<TextBlock Text="&#xE73E;" FontFamily="{DynamicResource IconFont}" FontSize="15"
+					<TextBlock Text="&#xE460;" FontFamily="{DynamicResource IconFont}" FontSize="15"
 							   Foreground="{DynamicResource SuccessBrush}"
 							   HorizontalAlignment="Center" VerticalAlignment="Center"/>
 				</Border>
@@ -288,12 +288,12 @@ function OperationComplete {
 }
 
 function New-WarningDialog([string]$WarningText) {
-	$win = New-StyledDialog -Title 'Warning!' -Icon '&#xE7BA;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Warning!' -Icon '&#xF561;' -BodyXaml @'
 <StackPanel Margin="16" Width="380">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="&#xE7BA;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<TextBlock Text="&#xF561;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
 				<TextBlock x:Name="WarningTextLabel" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="310"/>
 			</StackPanel>
 			<Border Style="{DynamicResource Divider}"/>
@@ -343,7 +343,7 @@ function ShowWarningForm {
 }
 
 function New-UpdateCompleteDialog([string]$Message) {
-	$win = New-StyledDialog -Title 'Update-ScriptPackage' -Icon '&#xE777;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Update-ScriptPackage' -Icon '&#xE171;' -BodyXaml @'
 <StackPanel Margin="16" Width="300">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -363,12 +363,12 @@ function New-UpdateCompleteDialog([string]$Message) {
 }
 
 function New-ModulesMissingDialog([string]$MissingText) {
-	$win = New-StyledDialog -Title 'PowerShell modules required' -Icon '&#xE896;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'PowerShell modules required' -Icon '&#xE0DD;' -BodyXaml @'
 <StackPanel Margin="16" Width="400">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="&#xE7BA;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<TextBlock Text="&#xF561;" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
 				<TextBlock x:Name="ModulesText" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="330"/>
 			</StackPanel>
 			<TextBlock Style="{DynamicResource Small}" Margin="26,8,0,0"

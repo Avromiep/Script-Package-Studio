@@ -4,7 +4,7 @@
 
 # Shared shape used by Add/Remove DistributionListMember and UnifiedGroupMember
 function New-MemberGroupDialog {
-	param([string]$Title, [string]$ActionText, [string]$BulkText, [string]$Icon = '&#xE716;')
+	param([string]$Title, [string]$ActionText, [string]$BulkText, [string]$Icon = '&#xED75;')
 	New-StyledDialog -Title $Title -Icon $Icon -BodyXaml @"
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
@@ -38,7 +38,7 @@ function New-MemberGroupDialog {
 
 # ---------------------------------------------------------------------------
 function New-AuthenticationPhoneDialog {
-	New-StyledDialog -Title 'Add-AuthenticationPhoneMethod' -Icon '&#xE717;' -BodyXaml @'
+	New-StyledDialog -Title 'Add-AuthenticationPhoneMethod' -Icon '&#xEE2F;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -126,7 +126,7 @@ function Add-AuthenticationPhoneMethod {
 
 # ---------------------------------------------------------------------------
 function New-AutoReplyDialog {
-	$win = New-StyledDialog -Title 'Add-AutoReply' -Icon '&#xE715;' -BodyXaml @'
+	$win = New-StyledDialog -Title 'Add-AutoReply' -Icon '&#xEBBC;' -BodyXaml @'
 <StackPanel Margin="16" Width="520">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -240,7 +240,7 @@ function Add-AutoReply {
 
 # ---------------------------------------------------------------------------
 function New-AddContactsDialog {
-	New-StyledDialog -Title 'Add-Contacts' -Icon '&#xE77B;' -BodyXaml @'
+	New-StyledDialog -Title 'Add-Contacts' -Icon '&#xE249;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -431,7 +431,7 @@ function Add-DistributionListMember {
 # ---------------------------------------------------------------------------
 function New-EmailAliasDialog {
 	param([string]$Title = 'Add-EmailAlias', [string]$ActionText = 'Add Alias', [string]$BulkText = 'Add Aliases', [string]$CheckText = 'Create Incremental Aliases')
-	New-StyledDialog -Title $Title -Icon '&#xE715;' -BodyXaml @"
+	New-StyledDialog -Title $Title -Icon '&#xEBBC;' -BodyXaml @"
 <StackPanel Margin="16" Orientation="Horizontal">
 	<StackPanel Width="330">
 		<Border Style="{DynamicResource Card}">
@@ -598,7 +598,7 @@ function Add-EmailAlias {
 
 # ---------------------------------------------------------------------------
 function New-MailboxMemberDialog {
-	New-StyledDialog -Title 'Add-MailboxMember' -Icon '&#xE779;' -BodyXaml @'
+	New-StyledDialog -Title 'Add-MailboxMember' -Icon '&#xED93;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -833,7 +833,7 @@ function Add-MailboxMember {
 
 # ---------------------------------------------------------------------------
 function New-TrustedSenderDialog {
-	New-StyledDialog -Title 'Add-TrustedSender' -Icon '&#xE8F8;' -BodyXaml @'
+	New-StyledDialog -Title 'Add-TrustedSender' -Icon '&#xF039;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>

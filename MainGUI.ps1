@@ -1,4 +1,4 @@
-$version = "v3.1.4"
+$version = "v3.1.5"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -496,18 +496,39 @@ function Connect-Exo([string]$Upn) {
 	Connect-ExchangeOnline @p
 }
 
+# The Graph / Exchange sign-in runs on the UI thread, so the window is frozen
+# (and would sit on top of Microsoft's auth browser) while it happens. Minimize
+# it during sign-in so the browser is usable, and restore it afterwards.
+function Hide-AppForAuth {
+	try {
+		$script:AuthPrevState = $script:Window.WindowState
+		$script:Window.WindowState = 'Minimized'
+		$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Background)
+	} catch {}
+}
+function Show-AppAfterAuth {
+	try {
+		$script:Window.WindowState = if ($script:AuthPrevState -eq 'Maximized') { 'Maximized' } else { 'Normal' }
+		$script:Window.Activate()
+	} catch {}
+}
+
 # Connect Graph + Exchange Online to a saved tenant. With cached tokens this is
 # silent; otherwise Microsoft's normal auth prompt appears (usually one click
 # thanks to browser SSO).
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
 	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; return }
+	Hide-AppForAuth
 	$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 	Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
 	$progressBar1.Value = 10
 
+	# drop the stale context first so switching between accounts reconnects
+	# cleanly - a leftover context can make Connect-MgGraph hang on a switch
+	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
 	Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes
 	$progressBar1.Value = 40
 	CheckForErrors
@@ -519,6 +540,7 @@ function Connect-Tenant($Tenant) {
 		Update-TenantCombo
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
+		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
@@ -539,11 +561,13 @@ function Connect-Tenant($Tenant) {
 	Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
 	$script:UI.StatusText.Text = 'Ready'
 	$progressBar1.Value = 0
+	Show-AppAfterAuth
 }
 
 # Interactive sign-in to a new account/tenant; saves it as a profile
 function Add-TenantSignIn {
 	if (-not (Confirm-RequiredModules)) { return }
+	Hide-AppForAuth
 	Write-Host "Signing in to a new tenant..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Set-SignState $false 'Waiting for Microsoft sign-in...'
@@ -563,6 +587,7 @@ function Add-TenantSignIn {
 		Set-SignState $false 'Currently not signed in.'
 		Update-TenantCombo
 		$progressBar1.Value = 0
+		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
@@ -602,6 +627,7 @@ function Add-TenantSignIn {
 	Set-SignState $true "Connected to $orgName as $($currentMgContext.Account)"
 	Write-Host "Saved tenant '$orgName' ($($currentMgContext.Account))." -ForegroundColor Green
 	$progressBar1.Value = 0
+	Show-AppAfterAuth
 }
 
 function Disconnect-Tenant {

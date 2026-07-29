@@ -1,4 +1,4 @@
-$version = "v3.1.1"
+$version = "v3.1.2"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -43,6 +43,7 @@ $script:Settings = @{
 	winHeight    = 760
 	winMaximized = $false
 	logExpanded  = $false
+	blurTenant   = $false
 }
 
 function Read-AppSettings {
@@ -53,6 +54,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*WinHeight\s*=\s*(\d+)\s*$') { $script:Settings.winHeight = [Math]::Max(560, [int]$Matches[1]) }
 		elseif ($line -match '^\s*WinMaximized\s*=\s*(0|1)\s*$') { $script:Settings.winMaximized = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*LogExpanded\s*=\s*(0|1)\s*$') { $script:Settings.logExpanded = $Matches[1] -eq '1' }
+		elseif ($line -match '^\s*BlurTenant\s*=\s*(0|1)\s*$') { $script:Settings.blurTenant = $Matches[1] -eq '1' }
 	}
 }
 
@@ -64,6 +66,7 @@ function Save-AppSettings {
 			WinHeight    = [string][int]$script:Settings.winHeight
 			WinMaximized = if ($script:Settings.winMaximized) { '1' } else { '0' }
 			LogExpanded  = if ($script:Settings.logExpanded) { '1' } else { '0' }
+			BlurTenant   = if ($script:Settings.blurTenant) { '1' } else { '0' }
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -882,16 +885,13 @@ $script:UI.ForgetTenantBtn.Add_Click({
 	Update-TenantCombo
 })
 
-# blur/unblur the tenant + account (for screenshots)
-$script:TenantBlurred = $false
-$script:UI.BlurTenantBtn.Add_Click({
-	$script:TenantBlurred = -not $script:TenantBlurred
-	if ($script:TenantBlurred) {
-		$fx = New-Object System.Windows.Media.Effects.BlurEffect
-		$fx.Radius = 9
+# blur/unblur the tenant + account (for screenshots); remembered across launches
+function Set-TenantBlur([bool]$On) {
+	$script:Settings.blurTenant = $On
+	if ($On) {
+		$fx = New-Object System.Windows.Media.Effects.BlurEffect; $fx.Radius = 9
 		$script:UI.TenantCombo.Effect = $fx
-		$fx2 = New-Object System.Windows.Media.Effects.BlurEffect
-		$fx2.Radius = 6
+		$fx2 = New-Object System.Windows.Media.Effects.BlurEffect; $fx2.Radius = 6
 		$script:UI.SignStatusText.Effect = $fx2
 		$script:UI.BlurIcon.Text = [string][char]0xE889
 		$script:UI.BlurTenantBtn.ToolTip = 'Show the tenant / account'
@@ -901,6 +901,10 @@ $script:UI.BlurTenantBtn.Add_Click({
 		$script:UI.BlurIcon.Text = [string][char]0xE883
 		$script:UI.BlurTenantBtn.ToolTip = 'Hide the tenant / account for screenshots'
 	}
+}
+$script:UI.BlurTenantBtn.Add_Click({
+	Set-TenantBlur (-not $script:Settings.blurTenant)
+	Save-AppSettings
 })
 $script:UI.SearchBox.Add_TextChanged({
 	$script:UI.SearchHint.Visibility = if ($script:UI.SearchBox.Text) { 'Collapsed' } else { 'Visible' }
@@ -981,6 +985,7 @@ $script:Window.Width = [double]$script:Settings.winWidth
 $script:Window.Height = [double]$script:Settings.winHeight
 if ($script:Settings.winMaximized) { $script:Window.WindowState = 'Maximized' }
 Set-LogExpanded ([bool]$script:Settings.logExpanded)
+Set-TenantBlur ([bool]$script:Settings.blurTenant)
 Apply-Theme $script:Settings.theme
 Load-Tenants
 Update-TenantCombo

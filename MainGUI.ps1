@@ -1,4 +1,4 @@
-$version = "v3.1.3"
+$version = "v3.1.4"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -572,6 +572,10 @@ function Add-TenantSignIn {
 	if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
 	$Error.Clear()
 
+	# Drop any existing Exchange session first. Without this, adding a second
+	# tenant while one is already connected hangs Connect-ExchangeOnline (the old
+	# session is still active) and freezes the app before the tenant is saved.
+	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
 	Connect-Exo $currentMgContext.Account
 	$progressBar1.Value = 80
 	CheckForErrors

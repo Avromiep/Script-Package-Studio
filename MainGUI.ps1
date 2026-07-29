@@ -1,4 +1,4 @@
-$version = "v3.1.0"
+$version = "v3.1.1"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -109,6 +109,27 @@ try {
 	$script:StyleDict['IconFont'] = $iconFontConv.ConvertFromString($iconFontRef)
 } catch {}
 
+# ---- global TextBox behaviors (every TextBox in the app, dialogs included) --------
+# Ctrl+Shift+V pastes (like Ctrl+V); double-clicking a text box selects all its text.
+[System.Windows.EventManager]::RegisterClassHandler(
+	[System.Windows.Controls.TextBox],
+	[System.Windows.UIElement]::PreviewKeyDownEvent,
+	[System.Windows.Input.KeyEventHandler] {
+		param($s, $e)
+		$mods = [System.Windows.Input.Keyboard]::Modifiers
+		if ($e.Key -eq 'V' -and $mods -eq ([System.Windows.Input.ModifierKeys]::Control -bor [System.Windows.Input.ModifierKeys]::Shift)) {
+			if ([System.Windows.Clipboard]::ContainsText()) { $s.Paste() }
+			$e.Handled = $true
+		}
+	})
+[System.Windows.EventManager]::RegisterClassHandler(
+	[System.Windows.Controls.TextBox],
+	[System.Windows.Controls.Control]::MouseDoubleClickEvent,
+	[System.Windows.Input.MouseButtonEventHandler] {
+		param($s, $e)
+		$s.SelectAll()
+	})
+
 . (Join-Path $script:SrcDir 'theme.ps1')
 . (Join-Path $script:SrcDir 'scripts1.ps1')
 . (Join-Path $script:SrcDir 'scripts2.ps1')
@@ -185,17 +206,22 @@ $mainXaml = @"
 							<ColumnDefinition Width="*"/>
 							<ColumnDefinition Width="Auto"/>
 							<ColumnDefinition Width="Auto"/>
+							<ColumnDefinition Width="Auto"/>
 						</Grid.ColumnDefinitions>
 						<Ellipse x:Name="SignDot" Width="9" Height="9" Fill="{DynamicResource WarnBrush}"
 								 VerticalAlignment="Center" Margin="0,0,11,0"/>
 						<ComboBox x:Name="TenantCombo" Grid.Column="1" VerticalAlignment="Center" MinHeight="32"
 								  ToolTip="Choose which Microsoft tenant to use. Selecting a tenant connects to it."/>
-						<Button x:Name="ForgetTenantBtn" Grid.Column="2" Style="{DynamicResource IconBtn}"
-								Content="&#xE66D;" Margin="6,0,0,0"
+						<Button x:Name="BlurTenantBtn" Grid.Column="2" Style="{DynamicResource IconBtn}"
+								Margin="6,0,0,0" ToolTip="Hide the tenant / account for screenshots">
+							<TextBlock x:Name="BlurIcon" Text="&#xE883;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
+						</Button>
+						<Button x:Name="ForgetTenantBtn" Grid.Column="3" Style="{DynamicResource IconBtn}"
+								Content="&#xE66D;" Margin="2,0,0,0"
 								ToolTip="Forget the selected tenant (removes it from this list)"/>
-						<Button x:Name="ConnectBtn" Grid.Column="3" Style="{DynamicResource BtnPrimary}"
+						<Button x:Name="ConnectBtn" Grid.Column="4" Style="{DynamicResource BtnPrimary}"
 								Content="Sign In" MinWidth="96" Margin="8,0,0,0"/>
-						<TextBlock x:Name="SignStatusText" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
+						<TextBlock x:Name="SignStatusText" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4"
 								   Text="Currently not signed in." Style="{DynamicResource Small}" Margin="1,7,0,0"/>
 					</Grid>
 				</Border>
@@ -303,7 +329,7 @@ $script:Window = Read-XamlString $mainXaml
 
 $script:UI = @{}
 foreach ($n in @('RootBorder','Root','TitleIcon','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
-		'SignDot','SignStatusText','TenantCombo','ForgetTenantBtn','ConnectBtn',
+		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
 		'StatusDot','StatusText','MainProgress')) {
@@ -848,11 +874,33 @@ $script:UI.ConnectBtn.Add_Click({
 $script:UI.ForgetTenantBtn.Add_Click({
 	$sel = Get-SelectedTenant
 	if (-not $sel) { return }
+	if (-not (Confirm-YesNo 'Forget tenant' "Forget `"$($sel.name)`" ($($sel.account))? This removes it from the saved list.")) { return }
 	if ($script:ActiveTenant -eq $sel) { Disconnect-Tenant }
 	[void]$script:Tenants.Remove($sel)
 	Save-Tenants
 	Write-Host "Removed tenant '$($sel.name)' ($($sel.account)) from the list."
 	Update-TenantCombo
+})
+
+# blur/unblur the tenant + account (for screenshots)
+$script:TenantBlurred = $false
+$script:UI.BlurTenantBtn.Add_Click({
+	$script:TenantBlurred = -not $script:TenantBlurred
+	if ($script:TenantBlurred) {
+		$fx = New-Object System.Windows.Media.Effects.BlurEffect
+		$fx.Radius = 9
+		$script:UI.TenantCombo.Effect = $fx
+		$fx2 = New-Object System.Windows.Media.Effects.BlurEffect
+		$fx2.Radius = 6
+		$script:UI.SignStatusText.Effect = $fx2
+		$script:UI.BlurIcon.Text = [string][char]0xE889
+		$script:UI.BlurTenantBtn.ToolTip = 'Show the tenant / account'
+	} else {
+		$script:UI.TenantCombo.Effect = $null
+		$script:UI.SignStatusText.Effect = $null
+		$script:UI.BlurIcon.Text = [string][char]0xE883
+		$script:UI.BlurTenantBtn.ToolTip = 'Hide the tenant / account for screenshots'
+	}
 })
 $script:UI.SearchBox.Add_TextChanged({
 	$script:UI.SearchHint.Visibility = if ($script:UI.SearchBox.Text) { 'Collapsed' } else { 'Visible' }
@@ -990,6 +1038,7 @@ if ($env:SP_SHOT) {
 		'dlg-warning'            = { New-WarningDialog "Turning on AutoExpandingArchive is irreversible - are you sure you'd like to continue?" }
 		'dlg-updatecomplete'     = { New-UpdateCompleteDialog "Latest version already installed." }
 		'dlg-modules'            = { New-ModulesMissingDialog "Microsoft.Graph`nExchangeOnlineManagement" }
+		'dlg-confirm'            = { New-ConfirmDialog 'Forget tenant' 'Forget "Contoso Ltd" (admin@contoso.com)? This removes it from the saved list.' }
 	}
 
 	$script:Window.Add_ContentRendered({

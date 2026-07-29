@@ -388,6 +388,39 @@ function New-ModulesMissingDialog([string]$MissingText) {
 	return $win
 }
 
+# Builds (but does not show) a Yes/No confirmation dialog.
+function New-ConfirmDialog([string]$Title, [string]$Message, [string]$Icon = '&#xF561;') {
+	$win = New-StyledDialog -Title $Title -Icon $Icon -BodyXaml @"
+<StackPanel Margin="16" Width="330">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<StackPanel Orientation="Horizontal">
+				<TextBlock Text="$Icon" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<TextBlock x:Name="MsgText" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="260"/>
+			</StackPanel>
+			<Border Style="{DynamicResource Divider}"/>
+			<Grid>
+				<Button x:Name="NoBtn" Style="{DynamicResource BtnGhost}" Content="No" HorizontalAlignment="Left" MinWidth="82"/>
+				<Button x:Name="YesBtn" Style="{DynamicResource BtnPrimary}" Content="Yes" HorizontalAlignment="Right" MinWidth="82" IsDefault="True"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+	$win.FindName('MsgText').Text = $Message
+	return $win
+}
+
+# Shows a Yes/No confirmation dialog. Returns $true if the user chose Yes.
+function Confirm-YesNo([string]$Title, [string]$Message, [string]$Icon = '&#xF561;') {
+	$result = New-Object PSObject -Property @{ Yes = $false }
+	$win = New-ConfirmDialog $Title $Message $Icon
+	$win.FindName('YesBtn').Add_Click({ $result.Yes = $true; [System.Windows.Window]::GetWindow($this).Close() }.GetNewClosure())
+	$win.FindName('NoBtn').Add_Click({ [System.Windows.Window]::GetWindow($this).Close() })
+	[void]$win.ShowDialog()
+	return $result.Yes
+}
+
 function UpdateProgressBar {
 	param (
 		$progressBarValue

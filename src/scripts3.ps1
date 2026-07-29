@@ -234,9 +234,27 @@ function Revoke-AllSignInSessions {
 }
 
 # ---------------------------------------------------------------------------
+# Launch a detached helper that waits for THIS instance to fully exit (so the
+# updated files are unlocked and settings are saved), then starts the new app.
+function Restart-App {
+	$appRoot = Split-Path $script:SrcDir -Parent
+	$mainPs1 = Join-Path $appRoot 'MainGUI.ps1'
+	$pwshExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+	# The helper waits for THIS instance to exit, then starts the updated app.
+	# Passed as a base64 -EncodedCommand so paths with spaces / quotes can't break
+	# the command line.
+	$helperBody = @"
+try { Wait-Process -Id $PID -Timeout 30 -ErrorAction SilentlyContinue } catch {}
+Start-Process -FilePath '$pwshExe' -WorkingDirectory '$appRoot' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File','$mainPs1')
+"@
+	$encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($helperBody))
+	Start-Process -FilePath $pwshExe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) | Out-Null
+}
+
 function Update-ScriptPackage {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Update-ScriptPackage.txt"
 	Write-Host "Running Update-ScriptPackage script..."
+	$restarting = $false
 	$progressBar1.Value = 10
 	$versionCheck = Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
 	$versionLink = $versionCheck.Links.href | Where-Object {
@@ -263,7 +281,10 @@ function Update-ScriptPackage {
 			$progressBar1.Value = 70
 			CheckForErrors
 			$progressBar1.Value = 100
-			[void](New-UpdateCompleteDialog "Installed latest version, enjoy!").ShowDialog()
+			[void](New-UpdateCompleteDialog "Update installed. Script-Package Studio will now restart.").ShowDialog()
+			Write-Host "Relaunching the updated app..."
+			Restart-App
+			$restarting = $true
 		} else {
 			Write-Host "Setup download failed - opening the releases page instead." -ForegroundColor Yellow
 			Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
@@ -272,6 +293,7 @@ function Update-ScriptPackage {
 		}
 	}
 	Stop-Transcript
+	if ($restarting) { $script:Window.Close() }
 }
 
 # ---------------------------------------------------------------------------

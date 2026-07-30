@@ -238,17 +238,40 @@ function Revoke-AllSignInSessions {
 # updated files are unlocked and settings are saved), then starts the new app.
 function Restart-App {
 	$appRoot = Split-Path $script:SrcDir -Parent
+	$bat     = Join-Path $appRoot 'Script-Package-Studio.bat'
 	$mainPs1 = Join-Path $appRoot 'MainGUI.ps1'
 	$pwshExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-	# The helper waits for THIS instance to exit, then starts the updated app.
-	# Passed as a base64 -EncodedCommand so paths with spaces / quotes can't break
-	# the command line.
+	$logPath = Join-Path $appRoot 'Logs\Restart-App.txt'
+	try { New-Item -ItemType Directory -Path (Split-Path $logPath) -Force | Out-Null } catch {}
+
+	# The command the helper runs AFTER this instance exits. Prefer the .bat (the normal
+	# launcher - same working dir + hidden window the user starts with) so the relaunched
+	# app behaves exactly like a normal start; fall back to launching MainGUI.ps1 directly.
+	if (Test-Path -LiteralPath $bat) {
+		$relaunchCmd = "Start-Process -FilePath '$bat' -WorkingDirectory '$appRoot' -WindowStyle Hidden"
+		$via = 'bat'
+	} else {
+		$relaunchCmd = "Start-Process -FilePath '$pwshExe' -WorkingDirectory '$appRoot' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File','$mainPs1')"
+		$via = 'ps1'
+	}
+
+	# The helper waits for THIS instance to exit (up to 30s; relaunches anyway after),
+	# then starts the updated app. Passed as base64 -EncodedCommand so paths with spaces
+	# / quotes can't break the command line. It logs the outcome so a failed relaunch is
+	# visible in Logs\Restart-App.txt instead of silently doing nothing.
 	$helperBody = @"
 try { Wait-Process -Id $PID -Timeout 30 -ErrorAction SilentlyContinue } catch {}
-Start-Process -FilePath '$pwshExe' -WorkingDirectory '$appRoot' -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-File','$mainPs1')
+Start-Sleep -Milliseconds 400
+try { $relaunchCmd; 'relaunch: started ok' | Out-File -LiteralPath '$logPath' -Append }
+catch { "relaunch: FAILED - `$_" | Out-File -LiteralPath '$logPath' -Append }
 "@
 	$encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($helperBody))
-	Start-Process -FilePath $pwshExe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) | Out-Null
+	try {
+		Start-Process -FilePath $pwshExe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) | Out-Null
+		"[$(Get-Date -Format o)] helper spawned (pid=$PID exe=$pwshExe via=$via appRoot=$appRoot)" | Out-File -LiteralPath $logPath -Append
+	} catch {
+		"[$(Get-Date -Format o)] helper spawn FAILED - $($_ | Out-String)" | Out-File -LiteralPath $logPath -Append
+	}
 }
 
 function Update-ScriptPackage {
@@ -277,7 +300,12 @@ function Update-ScriptPackage {
 		$progressBar1.Value = 50
 		if (Test-Path "$env:TEMP\Script-Package-Studio-Setup.exe") {
 			Write-Host "Launching downloaded file..."
-			Start-Process "$env:TEMP\Script-Package-Studio-Setup.exe" -ArgumentList "/SP-", "/SILENT" -Wait
+			# Force the install into the folder the app is ACTUALLY running from. A silent
+			# install inherits this (elevated) process's token, so without /DIR Inno's
+			# {autopf} could resolve to a DIFFERENT location (e.g. Program Files vs. the
+			# per-user Programs folder), updating a copy the relaunch never starts.
+			$appRoot = Split-Path $script:SrcDir -Parent
+			Start-Process "$env:TEMP\Script-Package-Studio-Setup.exe" -ArgumentList "/SP-", "/SILENT", "/DIR=`"$appRoot`"" -Wait
 			$progressBar1.Value = 70
 			CheckForErrors
 			$progressBar1.Value = 100

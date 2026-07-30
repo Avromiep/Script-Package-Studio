@@ -413,6 +413,13 @@ function New-ConfirmDialog([string]$Title, [string]$Message, [string]$Icon = '&#
 
 # Shows a Yes/No confirmation dialog. Returns $true if the user chose Yes.
 function Confirm-YesNo([string]$Title, [string]$Message, [string]$Icon = '&#xF561;') {
+	# During automated runs (self-test / screenshots) a modal ShowDialog would BLOCK
+	# the run and pop a window onto the screen that a human has to click to continue.
+	# Auto-answer instead. $script:AutoConfirmAnswer lets a test force Yes/No; default Yes.
+	if ($env:SP_TEST -or $env:SP_SHOT) {
+		if ($null -ne $script:AutoConfirmAnswer) { return [bool]$script:AutoConfirmAnswer }
+		return $true
+	}
 	$result = New-Object PSObject -Property @{ Yes = $false }
 	$win = New-ConfirmDialog $Title $Message $Icon
 	$win.FindName('YesBtn').Add_Click({ $result.Yes = $true; [System.Windows.Window]::GetWindow($this).Close() }.GetNewClosure())

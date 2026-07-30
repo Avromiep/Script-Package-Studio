@@ -1,4 +1,4 @@
-$version = "v3.1.6"
+$version = "v3.1.7"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -30,6 +30,13 @@ try {
 	$aumidType = Add-Type -MemberDefinition $aumidSig -Name 'AppUserModelId' -Namespace 'SPS' -PassThru -ErrorAction Stop
 	[void]$aumidType::SetCurrentProcessExplicitAppUserModelID('Avromiep.ScriptPackageStudio')
 } catch {}
+
+# SetWindowPos lets us drop the (frozen, during sign-in) window behind Microsoft's
+# auth browser without the jarring minimize/restore animation.
+try {
+	$swpSig = '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);'
+	$script:WinPos = Add-Type -MemberDefinition $swpSig -Name 'WinPos' -Namespace 'SPS' -PassThru -ErrorAction Stop
+} catch { $script:WinPos = $null }
 
 $script:SrcDir = Join-Path $PSScriptRoot 'src'
 $script:SettingsIniPath = Join-Path $PSScriptRoot 'settings.ini'
@@ -497,18 +504,26 @@ function Connect-Exo([string]$Upn) {
 }
 
 # The Graph / Exchange sign-in runs on the UI thread, so the window is frozen
-# (and would sit on top of Microsoft's auth browser) while it happens. Minimize
-# it during sign-in so the browser is usable, and restore it afterwards.
+# (and would otherwise sit on top of Microsoft's auth browser) while it happens.
+# Drop it to the BOTTOM of the z-order during sign-in so the browser is on top and
+# usable, then bring it back. Send-to-back (vs. minimize) avoids the slow
+# minimize/restore animation the user disliked - the window just slips behind.
 function Hide-AppForAuth {
 	try {
-		$script:AuthPrevState = $script:Window.WindowState
-		$script:Window.WindowState = 'Minimized'
+		if (-not $script:WinPos) { return }
+		$hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
+		# HWND_BOTTOM = 1; SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE = 0x13
+		[void]$script:WinPos::SetWindowPos($hwnd, [IntPtr]1, 0, 0, 0, 0, 0x13)
 		$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Background)
 	} catch {}
 }
 function Show-AppAfterAuth {
 	try {
-		$script:Window.WindowState = if ($script:AuthPrevState -eq 'Maximized') { 'Maximized' } else { 'Normal' }
+		if ($script:WinPos) {
+			$hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
+			# HWND_TOP = 0; SWP_NOSIZE|SWP_NOMOVE = 0x3
+			[void]$script:WinPos::SetWindowPos($hwnd, [IntPtr]0, 0, 0, 0, 0, 0x3)
+		}
 		$script:Window.Activate()
 	} catch {}
 }
@@ -526,14 +541,18 @@ function Connect-Tenant($Tenant) {
 	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
 	$progressBar1.Value = 10
 
-	# drop the stale context first so switching between accounts reconnects
-	# cleanly - a leftover context can make Connect-MgGraph hang on a switch
+	# Use the SAME interactive sign-in the (working) add-tenant flow uses.
+	# Connect-MgGraph -TenantId <id> forces a targeted-tenant auth path that hangs
+	# on a switch once the context is dropped; the plain interactive -Scopes call
+	# shows the account picker (usually one SSO click for a cached account) and
+	# does not freeze. Drop the stale context first so the picker actually appears.
 	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
-	Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes
+	$Error.Clear()
+	Connect-MgGraph -Scopes $script:GraphScopes
 	$progressBar1.Value = 40
 	CheckForErrors
 	$currentMgContext = Get-MgContext
-	if (-not $currentMgContext -or [string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
+	if (-not $currentMgContext) {
 		Write-Host "Could not connect to $($Tenant.name)." -ForegroundColor Red
 		$script:ActiveTenant = $null
 		Set-SignState $false 'Currently not signed in.'
@@ -544,27 +563,42 @@ function Connect-Tenant($Tenant) {
 		return
 	}
 	Write-Host "Connected to Graph"
-	if ([string]$currentMgContext.Account -and [string]$currentMgContext.Account -ne [string]$Tenant.account) {
-		Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
+
+	# Reconcile to whatever tenant/account the user actually signed into. Normally
+	# they pick the account for the tenant they clicked and this is $Tenant; if they
+	# pick a different one, follow reality instead of mislabeling the session.
+	$effTenant = $Tenant
+	if ([string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
+		Write-Host "Signed in to a different tenant ($($currentMgContext.Account)) than the one selected ($($Tenant.name))." -ForegroundColor Yellow
+		$match = $script:Tenants | Where-Object { [string]$_.tenantId -eq [string]$currentMgContext.TenantId } | Select-Object -First 1
+		if ($match) {
+			$effTenant = $match
+		} else {
+			$orgName = $null
+			try { $orgName = [string](Get-MgOrganization -ErrorAction Ignore | Select-Object -First 1).DisplayName } catch {}
+			if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
+			$effTenant = [pscustomobject]@{ name = $orgName; account = [string]$currentMgContext.Account; tenantId = [string]$currentMgContext.TenantId; lastUsed = '' }
+			$script:Tenants.Add($effTenant)
+		}
 	}
 
 	# the browser sign-in is finished - bring the window back NOW, before the
-	# (usually silent) Exchange step, so it doesn't stay minimized during that wait
+	# (usually silent) Exchange step, so it isn't stuck behind the browser
 	Show-AppAfterAuth
 	$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
 	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
 
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
-	Connect-Exo $Tenant.account
+	Connect-Exo $currentMgContext.Account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
 
-	$script:ActiveTenant = $Tenant
-	$Tenant.lastUsed = (Get-Date).ToString('o')
+	$script:ActiveTenant = $effTenant
+	$effTenant.lastUsed = (Get-Date).ToString('o')
 	Save-Tenants
 	Update-TenantCombo
-	Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
+	Set-SignState $true "Connected to $($effTenant.name) as $($currentMgContext.Account)"
 	$script:UI.StatusText.Text = 'Ready'
 	$progressBar1.Value = 0
 }

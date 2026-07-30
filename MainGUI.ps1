@@ -1,4 +1,4 @@
-$version = "v3.1.13"
+$version = "v3.1.14"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -703,6 +703,35 @@ function Disconnect-Tenant {
 # still writes to the console for anyone running from a terminal).
 $script:UI.LogList.ItemContainerStyle = $script:StyleDict['LogItemStyle']
 
+# Matches email addresses so the tenant/account email in a log line can be blurred
+# on its own (keeping "Connected to <tenant>..." readable) when the blur toggle is on.
+$script:LogEmailRegex = [regex]'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+function New-LogEmailBlur { $fx = New-Object System.Windows.Media.Effects.BlurEffect; $fx.Radius = 5; $fx }
+
+# Render a log line as inlines: plain Runs for the text, and each email in its own
+# TextBlock (via InlineUIContainer) so the email alone can carry a BlurEffect. The full
+# raw text is stashed in .Tag because InlineUIContainer content is NOT part of .Text
+# (Copy reads .Tag so the copied log keeps the real addresses).
+function Set-LogItemInlines([System.Windows.Controls.TextBlock]$Tb, [string]$FullText, [string]$BrushKey) {
+	$Tb.Inlines.Clear()
+	$Tb.Tag = $FullText
+	$idx = 0
+	foreach ($m in $script:LogEmailRegex.Matches($FullText)) {
+		if ($m.Index -gt $idx) { $Tb.Inlines.Add((New-Object System.Windows.Documents.Run ($FullText.Substring($idx, $m.Index - $idx)))) }
+		$eb = [System.Windows.Controls.TextBlock]::new()
+		$eb.Text = $m.Value
+		$eb.FontFamily = $Tb.FontFamily
+		$eb.FontSize = $Tb.FontSize
+		$eb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $BrushKey)
+		if ($script:Settings.blurTenant) { $eb.Effect = New-LogEmailBlur }
+		$uic = New-Object System.Windows.Documents.InlineUIContainer $eb
+		$uic.BaselineAlignment = [System.Windows.BaselineAlignment]::TextBottom
+		$Tb.Inlines.Add($uic)
+		$idx = $m.Index + $m.Length
+	}
+	if ($idx -lt $FullText.Length) { $Tb.Inlines.Add((New-Object System.Windows.Documents.Run ($FullText.Substring($idx)))) }
+}
+
 function Add-UiLog([string]$Text, [string]$Color = '') {
 	if (-not $script:UI -or -not $script:UI.LogList) { return }
 	if (-not $Text.Trim()) { return }
@@ -714,11 +743,11 @@ function Add-UiLog([string]$Text, [string]$Color = '') {
 		default    { 'TextDimBrush' }
 	}
 	$tb = [System.Windows.Controls.TextBlock]::new()
-	$tb.Text = "[{0:h:mm:ss tt}]  {1}" -f (Get-Date), $Text
 	$tb.FontFamily = $script:StyleDict['UiFont']
 	$tb.FontSize = 12
 	$tb.TextWrapping = 'Wrap'
 	$tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $brushKey)
+	Set-LogItemInlines $tb ("[{0:h:mm:ss tt}]  {1}" -f (Get-Date), $Text) $brushKey
 	$list = $script:UI.LogList
 	[void]$list.Items.Add($tb)
 	while ($list.Items.Count -gt 500) { $list.Items.RemoveAt(0) }
@@ -984,6 +1013,19 @@ function Set-TenantBlur([bool]$On) {
 		$script:UI.BlurIcon.Text = [string][char]0xE883
 		$script:UI.BlurTenantBtn.ToolTip = 'Hide the tenant / account for screenshots'
 	}
+	# Blur/unblur the email address inside each activity-log line (the rest of the line
+	# - "Connected to <tenant> as ..." - stays readable so the log is still useful).
+	if ($script:UI.LogList) {
+		foreach ($item in $script:UI.LogList.Items) {
+			if ($item -is [System.Windows.Controls.TextBlock]) {
+				foreach ($inline in $item.Inlines) {
+					if ($inline -is [System.Windows.Documents.InlineUIContainer] -and $inline.Child) {
+						$inline.Child.Effect = if ($On) { New-LogEmailBlur } else { $null }
+					}
+				}
+			}
+		}
+	}
 }
 $script:UI.BlurTenantBtn.Add_Click({
 	Set-TenantBlur (-not $script:Settings.blurTenant)
@@ -1004,7 +1046,7 @@ $script:UI.LogClearBtn.Add_Click({
 	$script:UI.LogCountText.Text = ''
 })
 $script:UI.LogCopyBtn.Add_Click({
-	$text = ($script:UI.LogList.Items | ForEach-Object { $_.Text }) -join "`r`n"
+	$text = ($script:UI.LogList.Items | ForEach-Object { if ($_.Tag) { [string]$_.Tag } else { [string]$_.Text } }) -join "`r`n"
 	if ($text) { [System.Windows.Clipboard]::SetText($text) }
 })
 

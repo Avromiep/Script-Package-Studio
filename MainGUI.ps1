@@ -1,4 +1,4 @@
-$version = "v3.1.7"
+$version = "v3.1.8"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -534,71 +534,46 @@ function Show-AppAfterAuth {
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
 	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; return }
-	Hide-AppForAuth
 	$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 	Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
 	$progressBar1.Value = 10
 
-	# Use the SAME interactive sign-in the (working) add-tenant flow uses.
-	# Connect-MgGraph -TenantId <id> forces a targeted-tenant auth path that hangs
-	# on a switch once the context is dropped; the plain interactive -Scopes call
-	# shows the account picker (usually one SSO click for a cached account) and
-	# does not freeze. Drop the stale context first so the picker actually appears.
-	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
-	$Error.Clear()
-	Connect-MgGraph -Scopes $script:GraphScopes
+	# v3.0.0 switch, restored verbatim: keep the previous session's cached tokens
+	# (do NOT Disconnect-MgGraph first) and reconnect with -TenantId. With a cached
+	# token this is a silent, instant reconnect - no browser, no account picker.
+	# No window handling here so we can observe whether the window covers the auth
+	# browser when a prompt IS needed.
+	Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes
 	$progressBar1.Value = 40
 	CheckForErrors
 	$currentMgContext = Get-MgContext
-	if (-not $currentMgContext) {
+	if (-not $currentMgContext -or [string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
 		Write-Host "Could not connect to $($Tenant.name)." -ForegroundColor Red
 		$script:ActiveTenant = $null
 		Set-SignState $false 'Currently not signed in.'
 		Update-TenantCombo
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
-		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
-
-	# Reconcile to whatever tenant/account the user actually signed into. Normally
-	# they pick the account for the tenant they clicked and this is $Tenant; if they
-	# pick a different one, follow reality instead of mislabeling the session.
-	$effTenant = $Tenant
-	if ([string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
-		Write-Host "Signed in to a different tenant ($($currentMgContext.Account)) than the one selected ($($Tenant.name))." -ForegroundColor Yellow
-		$match = $script:Tenants | Where-Object { [string]$_.tenantId -eq [string]$currentMgContext.TenantId } | Select-Object -First 1
-		if ($match) {
-			$effTenant = $match
-		} else {
-			$orgName = $null
-			try { $orgName = [string](Get-MgOrganization -ErrorAction Ignore | Select-Object -First 1).DisplayName } catch {}
-			if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
-			$effTenant = [pscustomobject]@{ name = $orgName; account = [string]$currentMgContext.Account; tenantId = [string]$currentMgContext.TenantId; lastUsed = '' }
-			$script:Tenants.Add($effTenant)
-		}
+	if ([string]$currentMgContext.Account -and [string]$currentMgContext.Account -ne [string]$Tenant.account) {
+		Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
 	}
 
-	# the browser sign-in is finished - bring the window back NOW, before the
-	# (usually silent) Exchange step, so it isn't stuck behind the browser
-	Show-AppAfterAuth
-	$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
-	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
-
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
-	Connect-Exo $currentMgContext.Account
+	Connect-Exo $Tenant.account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
 
-	$script:ActiveTenant = $effTenant
-	$effTenant.lastUsed = (Get-Date).ToString('o')
+	$script:ActiveTenant = $Tenant
+	$Tenant.lastUsed = (Get-Date).ToString('o')
 	Save-Tenants
 	Update-TenantCombo
-	Set-SignState $true "Connected to $($effTenant.name) as $($currentMgContext.Account)"
+	Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
 	$script:UI.StatusText.Text = 'Ready'
 	$progressBar1.Value = 0
 }

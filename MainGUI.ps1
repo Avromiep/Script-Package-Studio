@@ -1,4 +1,4 @@
-$version = "v3.1.5"
+$version = "v3.1.6"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -548,6 +548,12 @@ function Connect-Tenant($Tenant) {
 		Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
 	}
 
+	# the browser sign-in is finished - bring the window back NOW, before the
+	# (usually silent) Exchange step, so it doesn't stay minimized during that wait
+	Show-AppAfterAuth
+	$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
+	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
+
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
 	Connect-Exo $Tenant.account
 	$progressBar1.Value = 80
@@ -561,7 +567,6 @@ function Connect-Tenant($Tenant) {
 	Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
 	$script:UI.StatusText.Text = 'Ready'
 	$progressBar1.Value = 0
-	Show-AppAfterAuth
 }
 
 # Interactive sign-in to a new account/tenant; saves it as a profile
@@ -597,6 +602,11 @@ function Add-TenantSignIn {
 	if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
 	$Error.Clear()
 
+	# the browser sign-in is finished - bring the window back before the Exchange step
+	Show-AppAfterAuth
+	Set-SignState $false 'Finishing sign-in (Exchange Online)...'
+	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
+
 	# Drop any existing Exchange session first. Without this, adding a second
 	# tenant while one is already connected hangs Connect-ExchangeOnline (the old
 	# session is still active) and freezes the app before the tenant is saved.
@@ -627,7 +637,6 @@ function Add-TenantSignIn {
 	Set-SignState $true "Connected to $orgName as $($currentMgContext.Account)"
 	Write-Host "Saved tenant '$orgName' ($($currentMgContext.Account))." -ForegroundColor Green
 	$progressBar1.Value = 0
-	Show-AppAfterAuth
 }
 
 function Disconnect-Tenant {

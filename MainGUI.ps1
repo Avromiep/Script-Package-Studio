@@ -1,4 +1,4 @@
-$version = "v3.1.8"
+$version = "v3.1.9"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -500,6 +500,15 @@ function Connect-Exo([string]$Upn) {
 	if ($Upn) { $p.UserPrincipalName = $Upn }
 	$cmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
 	if ($cmd -and $cmd.Parameters.ContainsKey('SkipLoadingCmdletHelp')) { $p.SkipLoadingCmdletHelp = $true }
+	# THE tenant-switch freeze fix. Since ExchangeOnlineManagement v3.7.0, Web Account
+	# Manager (WAM) is the default auth broker. WAM shows an IN-PROCESS dialog that
+	# needs this thread's message pump - but Connect-ExchangeOnline runs synchronously
+	# on the (now-blocked) WPF UI thread, so on a switch that needs interactive auth
+	# the dialog can never pump and the app deadlocks forever (progress stuck ~50%).
+	# -DisableWAM forces the out-of-process browser flow (same as Connect-MgGraph),
+	# which completes without the pump. Pass it on EVERY connect (WAM can't be
+	# disabled once initialized in the process). Only exists in v3.7.0+.
+	if ($cmd -and $cmd.Parameters.ContainsKey('DisableWAM')) { $p.DisableWAM = $true }
 	Connect-ExchangeOnline @p
 }
 
@@ -534,17 +543,20 @@ function Show-AppAfterAuth {
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
 	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; return }
+	# Slip the window behind the auth browser during sign-in. The window is frozen
+	# while the (synchronous) connect runs; without this it sits on top of the
+	# browser prompt and looks stuck. Both the Graph and Exchange steps can prompt,
+	# so stay behind until BOTH finish, then come back to front.
+	Hide-AppForAuth
 	$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 	Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
 	$progressBar1.Value = 10
 
-	# v3.0.0 switch, restored verbatim: keep the previous session's cached tokens
-	# (do NOT Disconnect-MgGraph first) and reconnect with -TenantId. With a cached
-	# token this is a silent, instant reconnect - no browser, no account picker.
-	# No window handling here so we can observe whether the window covers the auth
-	# browser when a prompt IS needed.
+	# v3.0.0 switch: keep the previous session's cached tokens (do NOT Disconnect-MgGraph
+	# first) and reconnect with -TenantId. With a cached token this is a silent, instant
+	# reconnect - no browser, no account picker.
 	Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes
 	$progressBar1.Value = 40
 	CheckForErrors
@@ -556,6 +568,7 @@ function Connect-Tenant($Tenant) {
 		Update-TenantCombo
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
+		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
@@ -563,12 +576,16 @@ function Connect-Tenant($Tenant) {
 		Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
 	}
 
+	# Connect-Exo passes -DisableWAM so this uses the out-of-process browser instead
+	# of the in-process WAM dialog that used to deadlock the UI thread on a switch.
+	$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
 	Connect-Exo $Tenant.account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
 
+	Show-AppAfterAuth
 	$script:ActiveTenant = $Tenant
 	$Tenant.lastUsed = (Get-Date).ToString('o')
 	Save-Tenants
@@ -611,19 +628,22 @@ function Add-TenantSignIn {
 	if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
 	$Error.Clear()
 
-	# the browser sign-in is finished - bring the window back before the Exchange step
-	Show-AppAfterAuth
 	Set-SignState $false 'Finishing sign-in (Exchange Online)...'
 	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
 
 	# Drop any existing Exchange session first. Without this, adding a second
 	# tenant while one is already connected hangs Connect-ExchangeOnline (the old
 	# session is still active) and freezes the app before the tenant is saved.
+	# Connect-Exo passes -DisableWAM so the Exchange interactive auth uses the
+	# out-of-process browser (which can prompt), so stay behind until it finishes.
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
 	Connect-Exo $currentMgContext.Account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
+
+	# both sign-in steps are done - bring the window back to front
+	Show-AppAfterAuth
 
 	$tenantProfile = $script:Tenants | Where-Object {
 		[string]$_.tenantId -eq [string]$currentMgContext.TenantId -and [string]$_.account -eq [string]$currentMgContext.Account

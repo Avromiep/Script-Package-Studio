@@ -1,4 +1,4 @@
-$version = "v3.1.10"
+$version = "v3.1.11"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -492,6 +492,19 @@ function Get-SelectedTenant {
 	return $null
 }
 
+# fix A for the "second interactive sign-in freezes" deadlock. Connect-MgGraph and
+# Connect-ExchangeOnline block the UI thread while doing async MSAL token work. WPF
+# installs a DispatcherSynchronizationContext on the UI thread, so those awaited
+# continuations try to resume ON the (blocked) UI thread -> deadlock, which froze
+# the 2nd sign-in in a session. Running the cmdlet with the context temporarily
+# cleared lets the continuations resume on the thread pool instead, so the cmdlet
+# can return. Restored in finally so the rest of the app keeps its dispatcher context.
+function Invoke-WithoutDispatcherContext([scriptblock]$Script) {
+	$old = [System.Threading.SynchronizationContext]::Current
+	[System.Threading.SynchronizationContext]::SetSynchronizationContext($null)
+	try { & $Script } finally { [System.Threading.SynchronizationContext]::SetSynchronizationContext($old) }
+}
+
 # Connect to Exchange Online. -SkipLoadingCmdletHelp only exists in newer
 # ExchangeOnlineManagement versions, so pass it only when the installed module
 # supports it (older versions on other machines threw a parameter error).
@@ -509,7 +522,7 @@ function Connect-Exo([string]$Upn) {
 	# which completes without the pump. Pass it on EVERY connect (WAM can't be
 	# disabled once initialized in the process). Only exists in v3.7.0+.
 	if ($cmd -and $cmd.Parameters.ContainsKey('DisableWAM')) { $p.DisableWAM = $true }
-	Connect-ExchangeOnline @p
+	Invoke-WithoutDispatcherContext ({ Connect-ExchangeOnline @p }.GetNewClosure())
 }
 
 # The Graph / Exchange sign-in runs on the UI thread, so the window is frozen
@@ -562,7 +575,7 @@ function Connect-Tenant($Tenant) {
 	# tenants in the browser, this is just a quick account pick (no password).
 	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
 	$Error.Clear()
-	Connect-MgGraph -Scopes $script:GraphScopes
+	Invoke-WithoutDispatcherContext { Connect-MgGraph -Scopes $script:GraphScopes }
 	$progressBar1.Value = 40
 	CheckForErrors
 	$currentMgContext = Get-MgContext
@@ -627,7 +640,7 @@ function Add-TenantSignIn {
 	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
 	$Error.Clear()
 
-	Connect-MgGraph -Scopes $script:GraphScopes
+	Invoke-WithoutDispatcherContext { Connect-MgGraph -Scopes $script:GraphScopes }
 	$progressBar1.Value = 40
 	CheckForErrors
 	$currentMgContext = Get-MgContext

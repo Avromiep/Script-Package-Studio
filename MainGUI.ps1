@@ -1,4 +1,4 @@
-$version = "v3.1.16"
+$version = "v3.1.17"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -916,26 +916,37 @@ function Invoke-RunSelected {
 $script:UI.RunBtn.Add_Click({ Invoke-RunSelected })
 
 # ---- tenant card wiring -----------------------------------------------------------
+# Run a (UI-thread-blocking) sign-in only AFTER the just-closed tenant dropdown popup
+# is fully gone. The popup is a separate always-on-top window; if the blocking sign-in
+# starts before it's destroyed, it freezes open on top of the auth browser. A short
+# timer lets the (now un-animated) popup close render first. Under SP_TEST there's no
+# real browser, so run synchronously to keep the self-test deterministic.
+function Start-DeferredSignIn([scriptblock]$Action) {
+	if ($env:SP_TEST) { & $Action; return }
+	$timer = New-Object System.Windows.Threading.DispatcherTimer
+	$timer.Interval = [TimeSpan]::FromMilliseconds(250)
+	$timer.Add_Tick({ $timer.Stop(); & $Action }.GetNewClosure())
+	$timer.Start()
+}
+
 $script:UI.TenantCombo.Add_SelectionChanged({ param($s, $e)
 	if ($script:SuppressTenantEvents) { return }
 	$item = $s.SelectedItem
 	if (-not $item) { return }
-	# Close the dropdown NOW, and defer the (UI-thread-blocking) sign-in to the next
-	# dispatcher cycle so the dropdown popup fully renders closed first. Otherwise the
-	# popup - which WPF draws in its own always-on-top window - freezes open on top of
-	# the auth browser while the synchronous sign-in blocks the thread.
+	# Close the dropdown, then defer the sign-in until the popup window is actually gone
+	# (see Start-DeferredSignIn + the PopupAnimation=None set on DropDownOpened).
 	$s.IsDropDownOpen = $false
 	if ($item.Tag -eq 'add') {
 		# put the selection back before starting the interactive sign-in
 		$script:SuppressTenantEvents = $true
 		$s.SelectedIndex = if ($script:ActiveTenant) { $script:Tenants.IndexOf($script:ActiveTenant) } else { -1 }
 		$script:SuppressTenantEvents = $false
-		$script:Window.Dispatcher.BeginInvoke([action] { Add-TenantSignIn }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
+		Start-DeferredSignIn { Add-TenantSignIn }
 		return
 	}
 	if ($script:ActiveTenant -ne $item.Tag) {
 		$tenant = $item.Tag
-		$script:Window.Dispatcher.BeginInvoke([action] { Connect-Tenant $tenant }.GetNewClosure(), [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
+		Start-DeferredSignIn ({ Connect-Tenant $tenant }.GetNewClosure())
 	}
 })
 
@@ -971,9 +982,17 @@ function Set-TenantPopupBlur([bool]$On) {
 		$content.Effect = if ($On) { $fx = New-Object System.Windows.Media.Effects.BlurEffect; $fx.Radius = 8; $fx } else { $null }
 	} catch {}
 }
-# Apply the current blur state each time the dropdown opens (the popup content is
-# realized on open, so this can't be set once up front).
-$script:UI.TenantCombo.Add_DropDownOpened({ Set-TenantPopupBlur ([bool]$script:Settings.blurTenant) })
+# On open: apply the current blur state to the popup content, AND force the popup's
+# close animation OFF. WPF's dropdown fade-out gets frozen mid-fade by the blocking
+# sign-in, which is what leaves the popup stuck (semi-transparent) on top of the auth
+# browser. With no fade the popup closes instantly, so it's gone before sign-in starts.
+$script:UI.TenantCombo.Add_DropDownOpened({
+	Set-TenantPopupBlur ([bool]$script:Settings.blurTenant)
+	try {
+		$popup = $script:UI.TenantCombo.Template.FindName('PART_Popup', $script:UI.TenantCombo)
+		if ($popup) { $popup.PopupAnimation = [System.Windows.Controls.Primitives.PopupAnimation]::None }
+	} catch {}
+})
 
 # blur/unblur the tenant + account (for screenshots); remembered across launches
 function Set-TenantBlur([bool]$On) {

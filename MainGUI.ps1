@@ -1,4 +1,4 @@
-$version = "v3.1.14"
+$version = "v3.1.15"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -30,13 +30,6 @@ try {
 	$aumidType = Add-Type -MemberDefinition $aumidSig -Name 'AppUserModelId' -Namespace 'SPS' -PassThru -ErrorAction Stop
 	[void]$aumidType::SetCurrentProcessExplicitAppUserModelID('Avromiep.ScriptPackageStudio')
 } catch {}
-
-# SetWindowPos lets us drop the (frozen, during sign-in) window behind Microsoft's
-# auth browser without the jarring minimize/restore animation.
-try {
-	$swpSig = '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);'
-	$script:WinPos = Add-Type -MemberDefinition $swpSig -Name 'WinPos' -Namespace 'SPS' -PassThru -ErrorAction Stop
-} catch { $script:WinPos = $null }
 
 $script:SrcDir = Join-Path $PSScriptRoot 'src'
 $script:SettingsIniPath = Join-Path $PSScriptRoot 'settings.ini'
@@ -525,42 +518,12 @@ function Connect-Exo([string]$Upn) {
 	Invoke-WithoutDispatcherContext ({ Connect-ExchangeOnline @p }.GetNewClosure())
 }
 
-# The Graph / Exchange sign-in runs on the UI thread, so the window is frozen
-# (and would otherwise sit on top of Microsoft's auth browser) while it happens.
-# Drop it to the BOTTOM of the z-order during sign-in so the browser is on top and
-# usable, then bring it back. Send-to-back (vs. minimize) avoids the slow
-# minimize/restore animation the user disliked - the window just slips behind.
-function Hide-AppForAuth {
-	try {
-		if (-not $script:WinPos) { return }
-		$hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
-		# HWND_BOTTOM = 1; SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE = 0x13
-		[void]$script:WinPos::SetWindowPos($hwnd, [IntPtr]1, 0, 0, 0, 0, 0x13)
-		$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Background)
-	} catch {}
-}
-function Show-AppAfterAuth {
-	try {
-		if ($script:WinPos) {
-			$hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
-			# HWND_TOP = 0; SWP_NOSIZE|SWP_NOMOVE = 0x3
-			[void]$script:WinPos::SetWindowPos($hwnd, [IntPtr]0, 0, 0, 0, 0, 0x3)
-		}
-		$script:Window.Activate()
-	} catch {}
-}
-
 # Connect Graph + Exchange Online to a saved tenant. With cached tokens this is
 # silent; otherwise Microsoft's normal auth prompt appears (usually one click
 # thanks to browser SSO).
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
 	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; return }
-	# Slip the window behind the auth browser during sign-in. The window is frozen
-	# while the (synchronous) connect runs; without this it sits on top of the
-	# browser prompt and looks stuck. Both the Graph and Exchange steps can prompt,
-	# so stay behind until BOTH finish, then come back to front.
-	Hide-AppForAuth
 	$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 	Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
@@ -583,7 +546,6 @@ function Connect-Tenant($Tenant) {
 		Update-TenantCombo
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
-		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
@@ -600,7 +562,6 @@ function Connect-Tenant($Tenant) {
 	CheckForErrors
 	Write-Host "Connected to Exchange"
 
-	Show-AppAfterAuth
 	$script:ActiveTenant = $Tenant
 	$Tenant.lastUsed = (Get-Date).ToString('o')
 	Save-Tenants
@@ -613,7 +574,6 @@ function Connect-Tenant($Tenant) {
 # Interactive sign-in to a new account/tenant; saves it as a profile
 function Add-TenantSignIn {
 	if (-not (Confirm-RequiredModules)) { return }
-	Hide-AppForAuth
 	Write-Host "Signing in to a new tenant..."
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Set-SignState $false 'Waiting for Microsoft sign-in...'
@@ -633,7 +593,6 @@ function Add-TenantSignIn {
 		Set-SignState $false 'Currently not signed in.'
 		Update-TenantCombo
 		$progressBar1.Value = 0
-		Show-AppAfterAuth
 		return
 	}
 	Write-Host "Connected to Graph"
@@ -649,16 +608,11 @@ function Add-TenantSignIn {
 	# Drop any existing Exchange session first. Without this, adding a second
 	# tenant while one is already connected hangs Connect-ExchangeOnline (the old
 	# session is still active) and freezes the app before the tenant is saved.
-	# Connect-Exo passes -DisableWAM so the Exchange interactive auth uses the
-	# out-of-process browser (which can prompt), so stay behind until it finishes.
 	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
 	Connect-Exo $currentMgContext.Account
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
-
-	# both sign-in steps are done - bring the window back to front
-	Show-AppAfterAuth
 
 	$tenantProfile = $script:Tenants | Where-Object {
 		[string]$_.tenantId -eq [string]$currentMgContext.TenantId -and [string]$_.account -eq [string]$currentMgContext.Account

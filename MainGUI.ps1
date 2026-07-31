@@ -1,4 +1,4 @@
-$version = "v3.1.15"
+$version = "v3.1.16"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -920,15 +920,23 @@ $script:UI.TenantCombo.Add_SelectionChanged({ param($s, $e)
 	if ($script:SuppressTenantEvents) { return }
 	$item = $s.SelectedItem
 	if (-not $item) { return }
+	# Close the dropdown NOW, and defer the (UI-thread-blocking) sign-in to the next
+	# dispatcher cycle so the dropdown popup fully renders closed first. Otherwise the
+	# popup - which WPF draws in its own always-on-top window - freezes open on top of
+	# the auth browser while the synchronous sign-in blocks the thread.
+	$s.IsDropDownOpen = $false
 	if ($item.Tag -eq 'add') {
 		# put the selection back before starting the interactive sign-in
 		$script:SuppressTenantEvents = $true
 		$s.SelectedIndex = if ($script:ActiveTenant) { $script:Tenants.IndexOf($script:ActiveTenant) } else { -1 }
 		$script:SuppressTenantEvents = $false
-		Add-TenantSignIn
+		$script:Window.Dispatcher.BeginInvoke([action] { Add-TenantSignIn }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
 		return
 	}
-	if ($script:ActiveTenant -ne $item.Tag) { Connect-Tenant $item.Tag }
+	if ($script:ActiveTenant -ne $item.Tag) {
+		$tenant = $item.Tag
+		$script:Window.Dispatcher.BeginInvoke([action] { Connect-Tenant $tenant }.GetNewClosure(), [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
+	}
 })
 
 $script:UI.ConnectBtn.Add_Click({
@@ -951,6 +959,22 @@ $script:UI.ForgetTenantBtn.Add_Click({
 	Update-TenantCombo
 })
 
+# Blur/unblur the OPEN dropdown list. The Effect on the ComboBox element doesn't reach
+# its popup (WPF renders the popup in a separate visual tree), so blur the popup's
+# scroll content directly - which leaves the popup border + drop shadow crisp.
+function Set-TenantPopupBlur([bool]$On) {
+	try {
+		$popup = $script:UI.TenantCombo.Template.FindName('PART_Popup', $script:UI.TenantCombo)
+		if (-not $popup -or -not $popup.Child) { return }
+		$content = $popup.Child.Child   # PART_Popup -> Border -> ScrollViewer (the items)
+		if (-not $content) { return }
+		$content.Effect = if ($On) { $fx = New-Object System.Windows.Media.Effects.BlurEffect; $fx.Radius = 8; $fx } else { $null }
+	} catch {}
+}
+# Apply the current blur state each time the dropdown opens (the popup content is
+# realized on open, so this can't be set once up front).
+$script:UI.TenantCombo.Add_DropDownOpened({ Set-TenantPopupBlur ([bool]$script:Settings.blurTenant) })
+
 # blur/unblur the tenant + account (for screenshots); remembered across launches
 function Set-TenantBlur([bool]$On) {
 	$script:Settings.blurTenant = $On
@@ -967,6 +991,7 @@ function Set-TenantBlur([bool]$On) {
 		$script:UI.BlurIcon.Text = [string][char]0xE883
 		$script:UI.BlurTenantBtn.ToolTip = 'Hide the tenant / account for screenshots'
 	}
+	Set-TenantPopupBlur $On
 	# Blur/unblur the email address inside each activity-log line (the rest of the line
 	# - "Connected to <tenant> as ..." - stays readable so the log is still useful).
 	if ($script:UI.LogList) {

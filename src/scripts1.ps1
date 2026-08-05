@@ -125,6 +125,15 @@ function Add-AuthenticationPhoneMethod {
 }
 
 # ---------------------------------------------------------------------------
+# Exchange stores auto-reply messages as HTML; convert to readable plain text so an
+# existing reply can be shown in the plain-text boxes.
+function ConvertFrom-AutoReplyHtml([string]$Html) {
+	if (-not $Html) { return '' }
+	$t = $Html -replace '(?is)<br\s*/?>', "`n" -replace '(?is)</p\s*>', "`n" -replace '(?is)<[^>]+>', ''
+	$t = [System.Net.WebUtility]::HtmlDecode($t)
+	return $t.Trim()
+}
+
 function New-AutoReplyDialog {
 	$win = New-StyledDialog -Title 'Add-AutoReply' -Icon '&#xEBBC;' -BodyXaml @'
 <StackPanel Margin="16" Width="520">
@@ -132,10 +141,12 @@ function New-AutoReplyDialog {
 		<StackPanel>
 			<Grid>
 				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
 				</Grid.ColumnDefinitions>
 				<TextBlock Text="Mailbox" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="EmailInputBox" Grid.Column="1"/>
+				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0"
+						ToolTip="Load the mailbox's current auto-reply so you can review it"/>
 			</Grid>
 			<Grid Margin="0,14,0,0">
 				<Grid.ColumnDefinitions>
@@ -231,6 +242,45 @@ function Add-AutoReply {
 	}
 	$useScheduleCheckBox.Add_Checked($onSchedule)
 	$useScheduleCheckBox.Add_Unchecked($onSchedule)
+
+	# "Show current": load the mailbox's existing auto-reply so the user can see if
+	# there's already one they like before writing a new one.
+	$addAutoReplyForm.FindName('ShowCurrentBtn').Add_Click({
+		$mailbox = $emailInputBox.Text.Trim()
+		if (-not $mailbox) { Write-Host "Enter a mailbox email address first." -ForegroundColor Yellow; return }
+		Write-Host "Fetching current auto-reply for $mailbox..."
+		$progressBar1.Value = 20
+		try {
+			$cfg = Get-MailboxAutoReplyConfiguration -Identity $mailbox -ErrorAction Stop
+		} catch {
+			Write-Host "Could not read auto-reply for $mailbox : $($_.Exception.Message)" -ForegroundColor Red
+			$progressBar1.Value = 0
+			return
+		}
+		$progressBar1.Value = 60
+		$state = [string]$cfg.AutoReplyState
+		if (-not $state -or $state -eq 'Disabled') {
+			$internalReplyTextBox.Text = ''
+			$externalReplyTextBox.Text = ''
+			Write-Host "No auto-reply is currently set on $mailbox (state: $state). You can create a new one." -ForegroundColor Cyan
+		} else {
+			$intText = ConvertFrom-AutoReplyHtml ([string]$cfg.InternalMessage)
+			$extText = ConvertFrom-AutoReplyHtml ([string]$cfg.ExternalMessage)
+			# if internal/external differ, turn off Match Replies so loading one doesn't overwrite the other
+			if ($intText -ne $extText) { $matchRepliesCheckBox.IsChecked = $false }
+			$internalReplyTextBox.Text = $intText
+			$externalReplyTextBox.Text = $extText
+			if ($state -eq 'Scheduled') {
+				$useScheduleCheckBox.IsChecked = $true
+				if ($cfg.StartTime) { try { $startDatePicker.SelectedDate = [datetime]$cfg.StartTime } catch {} }
+				if ($cfg.EndTime)   { try { $endDatePicker.SelectedDate   = [datetime]$cfg.EndTime }   catch {} }
+			}
+			Write-Host "Current auto-reply on $mailbox is '$state' - loaded its message(s) below for review." -ForegroundColor Green
+		}
+		CheckForErrors
+		$progressBar1.Value = 0
+	})
+
 	$addAutoReplyForm.FindName('ConfirmBtn').Add_Click({ OnConfirmAutoReplyButtonClick })
 
 	[void]$addAutoReplyForm.ShowDialog()

@@ -1,4 +1,4 @@
-$version = "v3.1.17"
+$version = "v3.1.18"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -446,6 +446,17 @@ function Set-SignState([bool]$Connected, [string]$Text) {
 	$script:UI.SignStatusText.Text = $Text
 }
 
+# Show an in-progress state on the Connect/Disconnect button while a sign-in runs, so
+# it's clear the tenant isn't connected yet. Rendered before the (UI-thread-blocking)
+# connect so the user actually sees it; Update-TenantCombo resets it (to 'Connected' /
+# 'Connect') and re-enables the button when the sign-in finishes.
+function Set-ConnectingButton {
+	$script:UI.ConnectBtn.Content = 'Connecting...'
+	$script:UI.ConnectBtn.IsEnabled = $false
+	$script:UI.ConnectBtn.ToolTip = $null
+	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
+}
+
 function Update-TenantCombo {
 	$script:SuppressTenantEvents = $true
 	try {
@@ -471,9 +482,17 @@ function Update-TenantCombo {
 		$combo.SelectedIndex = if ($target) { $script:Tenants.IndexOf($target) } else { -1 }
 
 		$script:UI.ForgetTenantBtn.IsEnabled = $script:Tenants.Count -gt 0
-		$script:UI.ConnectBtn.Content = if ($script:ActiveTenant) { 'Disconnect' }
-			elseif ($script:Tenants.Count -gt 0) { 'Connect' }
-			else { 'Sign In' }
+		$script:UI.ConnectBtn.IsEnabled = $true
+		if ($script:ActiveTenant) {
+			$script:UI.ConnectBtn.Content = 'Connected'
+			$script:UI.ConnectBtn.ToolTip = 'Connected - click to disconnect'
+		} elseif ($script:Tenants.Count -gt 0) {
+			$script:UI.ConnectBtn.Content = 'Connect'
+			$script:UI.ConnectBtn.ToolTip = $null
+		} else {
+			$script:UI.ConnectBtn.Content = 'Sign In'
+			$script:UI.ConnectBtn.ToolTip = $null
+		}
 	} finally {
 		$script:SuppressTenantEvents = $false
 	}
@@ -529,6 +548,7 @@ function Connect-Tenant($Tenant) {
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
 	$progressBar1.Value = 10
+	Set-ConnectingButton
 
 	# Silent switch: keep the previous session's cached tokens (do NOT Disconnect-MgGraph
 	# first) and reconnect with -TenantId. With a cached token this is silent and instant
@@ -578,6 +598,7 @@ function Add-TenantSignIn {
 	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
 	Set-SignState $false 'Waiting for Microsoft sign-in...'
 	$progressBar1.Value = 10
+	Set-ConnectingButton
 
 	# drop the current Graph context so the account picker appears instead of a
 	# silent reconnect to the previous account

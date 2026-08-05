@@ -1,4 +1,4 @@
-$version = "v3.1.18"
+$version = "v3.1.19"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -534,7 +534,17 @@ function Connect-Exo([string]$Upn) {
 	# which completes without the pump. Pass it on EVERY connect (WAM can't be
 	# disabled once initialized in the process). Only exists in v3.7.0+.
 	if ($cmd -and $cmd.Parameters.ContainsKey('DisableWAM')) { $p.DisableWAM = $true }
-	Invoke-WithoutDispatcherContext ({ Connect-ExchangeOnline @p }.GetNewClosure())
+	# Clear the WPF dispatcher sync context INLINE (fix A for the sign-in deadlock) - do
+	# NOT route this through Invoke-WithoutDispatcherContext {...}.GetNewClosure(). A
+	# closure runs in a throwaway dynamic MODULE scope, and Connect-ExchangeOnline IMPORTS
+	# its cmdlets (Get-Mailbox, Get-MailboxAutoReplyConfiguration, Set-Mailbox, ...) into
+	# the CALLING scope - so wrapped, every Exchange cmdlet vanished after connect
+	# ("not recognized as a cmdlet"). Calling it directly here keeps the import in the
+	# app's runspace scope so the scripts can use those cmdlets.
+	$oldCtx = [System.Threading.SynchronizationContext]::Current
+	[System.Threading.SynchronizationContext]::SetSynchronizationContext($null)
+	try { Connect-ExchangeOnline @p }
+	finally { [System.Threading.SynchronizationContext]::SetSynchronizationContext($oldCtx) }
 }
 
 # Connect Graph + Exchange Online to a saved tenant. With cached tokens this is

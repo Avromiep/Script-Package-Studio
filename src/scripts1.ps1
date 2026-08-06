@@ -2,6 +2,31 @@
 # Every function keeps its original logic and cmdlet calls; only the UI layer
 # changed from WinForms to WPF windows styled by the merged design dictionary.
 
+# Classify a recipient so the member scripts can catch "wrong script for this target"
+# mistakes (e.g. running Add-MailboxMember against a distribution list).
+function Get-RecipientCategory([string]$Identity) {
+	if (-not $Identity) { return $null }
+	$r = $null
+	try { $r = Get-Recipient -Identity $Identity -ErrorAction Stop } catch { return $null }
+	$d = [string]$r.RecipientTypeDetails
+	if ($d -match 'GroupMailbox') { return 'UnifiedGroup' }                                   # Microsoft 365 / Teams group
+	if ($d -match 'DistributionGroup|MailUniversal|MailNonUniversal|DynamicDistribution') { return 'DistributionList' }
+	if ($d -match 'Mailbox') { return 'Mailbox' }                                             # User/Shared/Room/etc.
+	return 'Other'
+}
+
+# If $Identity's real type doesn't match what this script handles, tell the user which
+# script to use and return $false (so the caller skips the doomed cmdlet). Unknown or
+# unreachable target -> $true (let the real cmdlet run and surface its own error).
+function Test-MemberTargetType([string]$Identity, [string]$Expected) {
+	$actual = Get-RecipientCategory $Identity
+	if (-not $actual -or $actual -eq 'Other' -or $actual -eq $Expected) { return $true }
+	$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
+	$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
+	Write-Host "'$Identity' is $($typeName[$actual]), not $($typeName[$Expected]) - this script can't work on it. Use the '$($scriptFor[$actual])' script instead." -ForegroundColor Red
+	return $false
+}
+
 # Shared shape used by Add/Remove DistributionListMember and UnifiedGroupMember
 function New-MemberGroupDialog {
 	param([string]$Title, [string]$ActionText, [string]$BulkText, [string]$Icon = '&#xED75;')
@@ -434,6 +459,7 @@ function Add-DistributionListMember {
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 40
+		if (-not (Test-MemberTargetType $group 'DistributionList')) { $progressBar1.Value = 0; return }
 		Add-DistributionGroupMember -Identity $group -Member $member
 		Write-Host "Adding $member..."
 		$progressBar1.Value = 80
@@ -727,6 +753,7 @@ function Add-MailboxMember {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
 			Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true
 			$progressBar1.Value = 50
 			Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
@@ -944,6 +971,7 @@ function Add-UnifiedGroupMember {
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 30
+		if (-not (Test-MemberTargetType $group 'UnifiedGroup')) { $progressBar1.Value = 0; return }
 		Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member
 		Write-Host "Adding $member..."
 		$progressBar1.Value = 80

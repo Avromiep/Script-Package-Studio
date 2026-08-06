@@ -1,4 +1,4 @@
-$version = "v3.1.19"
+$version = "v3.1.20"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -247,13 +247,18 @@ $mainXaml = @"
 							</StackPanel>
 						</Grid>
 						<Grid Grid.Row="1" Margin="0,10,0,0">
-							<TextBox x:Name="SearchBox" MinHeight="30" Padding="30,5,8,5"
+							<TextBox x:Name="SearchBox" MinHeight="30" Padding="30,5,32,5"
 									 ToolTip="Search scripts  (Ctrl+F)"/>
 							<TextBlock Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="13"
 									   Foreground="{DynamicResource TextFaintBrush}" IsHitTestVisible="False"
 									   Margin="10,0,0,0" VerticalAlignment="Center"/>
 							<TextBlock x:Name="SearchHint" Text="Search scripts...   (Ctrl+F)" Style="{DynamicResource Small}"
 									   Margin="32,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+							<Button x:Name="SearchClearBtn" Style="{DynamicResource IconBtn}" Width="24" Height="24"
+									HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,3,0"
+									Visibility="Collapsed" ToolTip="Clear search">
+								<TextBlock Text="&#xE6D3;" FontFamily="{DynamicResource IconFont}" FontSize="12"/>
+							</Button>
 						</Grid>
 						<StackPanel x:Name="CatChipRow" Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0"/>
 						<Grid Grid.Row="3">
@@ -333,7 +338,7 @@ $script:Window = Read-XamlString $mainXaml
 $script:UI = @{}
 foreach ($n in @('RootBorder','Root','TitleIcon','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
-		'ScriptCountText','SearchBox','SearchHint','CatChipRow','ScriptList','EmptyState','RunBtn',
+		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
 		'StatusDot','StatusText','MainProgress')) {
 	$el = $script:Window.FindName($n)
@@ -777,7 +782,7 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Add-EmailAlias'; Desc = 'Add aliases to a mailbox and view existing ones.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
 	@{ Name = 'Add-MailboxMember'; Desc = 'Grant FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED93 }
 	@{ Name = 'Add-TrustedSender'; Desc = 'Add a trusted sender or domain to every mailbox in the tenant.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xF039 }
-	@{ Name = 'Add-UnifiedGroupMember'; Desc = 'Add members to a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Add-UnifiedGroupMember'; Display = 'Add-TeamsGroupMember (UnifiedGroupMember)'; Desc = 'Add members to a Teams / Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
 	@{ Name = 'Block-User'; Desc = 'Disable a user in AD and Microsoft 365, convert their mailbox to shared.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
 	@{ Name = 'Clear-RecycleBin'; Desc = 'Empty all recycle bins on this computer.'; SignIn = $false; Cat = 'System'; Icon = 0xE66D }
 	@{ Name = 'Convert-UnifiedGroupToDistributionGroup'; Desc = 'Rebuild a Microsoft 365 group as a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE16F }
@@ -830,7 +835,7 @@ function New-ScriptListItem($Meta) {
 	$sp = [System.Windows.Controls.StackPanel]::new()
 	$sp.VerticalAlignment = 'Center'
 	$name = [System.Windows.Controls.TextBlock]::new()
-	$name.Text = $Meta.Name
+	$name.Text = if ($Meta.Display) { $Meta.Display } else { $Meta.Name }
 	$name.FontFamily = $script:StyleDict['UiFont']
 	$name.FontSize = 13
 	$name.FontWeight = 'SemiBold'
@@ -861,9 +866,10 @@ function Update-ScriptList {
 	$list.Items.Clear()
 	foreach ($s in $script:ScriptCatalog) {
 		if ($script:CurrentCategory -ne 'All' -and $s.Cat -ne $script:CurrentCategory) { continue }
-		if ($filter -and
-			$s.Name.IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-			$s.Desc.IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+		if ($filter) {
+			$hay = "$($s.Name) $($s.Desc) $($s.Display)"
+			if ($hay.IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+		}
 		[void]$list.Items.Add((New-ScriptListItem $s))
 	}
 	$script:UI.ScriptCountText.Text = "$($list.Items.Count) of $($script:ScriptCatalog.Count)"
@@ -1061,9 +1067,12 @@ $script:UI.BlurTenantBtn.Add_Click({
 	Save-AppSettings
 })
 $script:UI.SearchBox.Add_TextChanged({
-	$script:UI.SearchHint.Visibility = if ($script:UI.SearchBox.Text) { 'Collapsed' } else { 'Visible' }
+	$hasText = [bool]$script:UI.SearchBox.Text
+	$script:UI.SearchHint.Visibility = if ($hasText) { 'Collapsed' } else { 'Visible' }
+	$script:UI.SearchClearBtn.Visibility = if ($hasText) { 'Visible' } else { 'Collapsed' }
 	Update-ScriptList
 })
+$script:UI.SearchClearBtn.Add_Click({ $script:UI.SearchBox.Clear(); $script:UI.SearchBox.Focus() })
 $script:UI.ScriptList.Add_KeyDown({ param($s, $e)
 	if ($e.Key -eq 'Return') { Invoke-RunSelected; $e.Handled = $true }
 })

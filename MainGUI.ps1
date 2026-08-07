@@ -1227,6 +1227,12 @@ if ($env:SP_SHOT) {
 				$script:Window.UpdateLayout()
 				$script:Window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
 				Save-VisualShot $script:UI.RootBorder (Join-Path $outDir "main-$themeName.png")
+				# blurred variant (eye/privacy toggle on) for the README screenshot
+				Set-TenantBlur $true
+				$script:Window.UpdateLayout()
+				$script:Window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+				Save-VisualShot $script:UI.RootBorder (Join-Path $outDir "main-blur-$themeName.png")
+				Set-TenantBlur $false
 				Set-LogExpanded $true
 				$script:Window.UpdateLayout()
 				$script:Window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)

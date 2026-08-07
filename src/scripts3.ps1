@@ -9,11 +9,16 @@ function Remove-DistributionListMember {
 		$progressBar1.Value = 10
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
-		Remove-DistributionGroupMember -Identity $group -Member $member -Confirm:$false
-		Write-Host "Removing $member..."
-		$progressBar1.Value = 80
-		CheckForErrors
-		OperationComplete
+		if (-not (Test-MemberTargetType $group 'DistributionList')) { $progressBar1.Value = 0; return }
+		try {
+			Remove-DistributionGroupMember -Identity $group -Member $member -Confirm:$false -ErrorAction Stop
+			Write-Host "Removed $member from $group." -ForegroundColor Cyan
+			$progressBar1.Value = 80
+			OperationComplete
+		} catch {
+			Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+			$progressBar1.Value = 0
+		}
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplate button clicked."
@@ -181,11 +186,16 @@ function Remove-UnifiedGroupMember {
 		$progressBar1.Value = 10
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
-		Remove-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -Confirm:$false
-		Write-Host "Removing $member..."
-		$progressBar1.Value = 80
-		CheckForErrors
-		OperationComplete
+		if (-not (Test-MemberTargetType $group 'UnifiedGroup')) { $progressBar1.Value = 0; return }
+		try {
+			Remove-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -Confirm:$false -ErrorAction Stop
+			Write-Host "Removed $member from $group." -ForegroundColor Cyan
+			$progressBar1.Value = 80
+			OperationComplete
+		} catch {
+			Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+			$progressBar1.Value = 0
+		}
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplate button clicked."

@@ -783,11 +783,17 @@ function Add-MailboxMember {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false
-			$progressBar1.Value = 50
-			Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-			$progressBar1.Value = 90
-			Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 50
+				Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 90
+				Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't remove $member from '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		}
 		CheckForErrors
 		OperationComplete
@@ -797,16 +803,28 @@ function Add-MailboxMember {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true
-			$progressBar1.Value = 50
-			Write-Host "Added Read and Manage permission for $member to $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Added Read and Manage permission for $member to $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't grant Full Access on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false
-			$progressBar1.Value = 50
-			Write-Host "Removed FullAccess permission for $member from $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Removed FullAccess permission for $member from $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't remove Full Access on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		}
 		CheckForErrors
 		OperationComplete
@@ -816,16 +834,28 @@ function Add-MailboxMember {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Add=$member}
-			$progressBar1.Value = 50
-			Write-Host "Added SendOnBehalf permission for $member to $mailbox" -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Add=$member} -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Added SendOnBehalf permission for $member to $mailbox" -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't grant Send on Behalf on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Remove=$member}
-			$progressBar1.Value = 50
-			Write-Host "Removed SendOnBehalf permission for $member from $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Remove=$member} -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Removed SendOnBehalf permission for $member from $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't remove Send on Behalf on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		}
 		CheckForErrors
 		OperationComplete
@@ -835,16 +865,28 @@ function Add-MailboxMember {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-			$progressBar1.Value = 50
-			Write-Host "Added SendAs permission for $member to $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Added SendAs permission for $member to $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't grant Send As on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
-			Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-			$progressBar1.Value = 50
-			Write-Host "Removed SendAs permission for $member from $mailbox." -ForegroundColor Cyan
+			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
+			try {
+				Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 50
+				Write-Host "Removed SendAs permission for $member from $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't remove Send As on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0; return
+			}
 		}
 		CheckForErrors
 		OperationComplete

@@ -223,15 +223,36 @@ function New-NumericProxy($TextBox, [int]$Max = 100) {
 # Shared dialogs (Errors / Operation Complete / Warning / Update Complete)
 # ---------------------------------------------------------------------------
 
+# Redact email addresses in error text so an error screenshot can be shared without
+# exposing them. Domain-only keeps the local part (admin@********); full hides all of it.
+$script:EmailRx = [regex]'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+function Hide-EmailDomains([string]$Text) {
+	$b = [string][char]0x2022
+	([regex]'([A-Za-z0-9._%+\-]+)@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})').Replace($Text, { param($m) $m.Groups[1].Value + '@' + ($b * $m.Groups[2].Value.Length) }.GetNewClosure())
+}
+function Hide-EmailsFull([string]$Text) {
+	$b = [string][char]0x2022
+	$script:EmailRx.Replace($Text, { param($m) $b * $m.Value.Length }.GetNewClosure())
+}
+
 function New-ErrorDialog([string]$Text) {
 	$win = New-StyledDialog -Title 'Errors' -Icon '&#xE877;' -BodyXaml @'
 <StackPanel Margin="16" Width="440">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
-			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="&#xE877;" Style="{DynamicResource Icon}" Foreground="{DynamicResource ErrorBrush}"/>
-				<TextBlock Text="One or more errors were reported" Style="{DynamicResource H3}" Margin="8,0,0,0" VerticalAlignment="Center"/>
-			</StackPanel>
+			<Grid>
+				<StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+					<TextBlock Text="&#xE877;" Style="{DynamicResource Icon}" Foreground="{DynamicResource ErrorBrush}"/>
+					<TextBlock Text="One or more errors were reported" Style="{DynamicResource H3}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+				</StackPanel>
+				<StackPanel x:Name="EmailBlurPanel" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed">
+					<TextBlock x:Name="EmailBlurLabel" Text="Emails shown" Style="{DynamicResource Small}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+					<Button x:Name="EmailBlurBtn" Style="{DynamicResource IconBtn}" Width="26" Height="26"
+							ToolTip="Hide email addresses for a screenshot (cycles: off / domain only / whole address)">
+						<TextBlock x:Name="EmailBlurIcon" Text="&#xE883;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
+					</Button>
+				</StackPanel>
+			</Grid>
 			<TextBox x:Name="ErrorBox" Style="{DynamicResource TextArea}" Margin="0,12,0,0" Height="240"
 					 IsReadOnly="True" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
 			<Button x:Name="ErrorOkBtn" Style="{DynamicResource BtnSecondary}" Content="Close"
@@ -240,8 +261,26 @@ function New-ErrorDialog([string]$Text) {
 	</Border>
 </StackPanel>
 '@
-	$win.FindName('ErrorBox').Text = $Text
+	$box = $win.FindName('ErrorBox')
+	$box.Text = $Text
 	$win.FindName('ErrorOkBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+
+	# Only offer the blur control if there's actually an email address in the error.
+	if ($script:EmailRx.IsMatch($Text)) {
+		$win.FindName('EmailBlurPanel').Visibility = 'Visible'
+		$label = $win.FindName('EmailBlurLabel')
+		$icon  = $win.FindName('EmailBlurIcon')
+		$raw   = $Text
+		$state = [pscustomobject]@{ Mode = 0 }   # 0 = shown, 1 = domain hidden, 2 = whole email hidden
+		$win.FindName('EmailBlurBtn').Add_Click({
+			$state.Mode = ($state.Mode + 1) % 3
+			switch ($state.Mode) {
+				0 { $box.Text = $raw;                  $label.Text = 'Emails shown';  $icon.Text = [string][char]0xE883 }
+				1 { $box.Text = Hide-EmailDomains $raw; $label.Text = 'Domain hidden'; $icon.Text = [string][char]0xE889 }
+				2 { $box.Text = Hide-EmailsFull $raw;   $label.Text = 'Email hidden';  $icon.Text = [string][char]0xE889 }
+			}
+		}.GetNewClosure())
+	}
 	return $win
 }
 

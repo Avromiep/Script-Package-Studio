@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Script-Package Studio"
-#define MyAppVersion "3.1.22"
+#define MyAppVersion "3.1.23"
 #define MyAppPublisher "Avromiep"
 #define MyAppExeName "Script-Package-Studio.bat"
 #define DesktopIconName "Script-Package Studio"

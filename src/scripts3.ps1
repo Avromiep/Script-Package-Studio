@@ -31,13 +31,19 @@ function Remove-DistributionListMember {
 	function OnRemoveBulkMembersButtonClick {
 		Write-Host "RemoveBulkMembers button clicked."
 		$progressBar1.Value = 10
+		$typeCache = @{}
 		Import-Csv ".\Templates\Remove-DistributionListMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			Remove-DistributionGroupMember -Identity $group -Member $member -Confirm:$false
-			Write-Host "Removing $member ..."
-			$progressBar1.Value = 80
+			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { return }
+			try {
+				Remove-DistributionGroupMember -Identity $group -Member $member -Confirm:$false -ErrorAction Stop
+				Write-Host "Removed $member from $group."
+				$progressBar1.Value = 80
+			} catch {
+				Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+			}
 		}
 		CheckForErrors
 		OperationComplete
@@ -208,13 +214,19 @@ function Remove-UnifiedGroupMember {
 	function OnRemoveBulkMembersButtonClick {
 		Write-Host "RemoveBulkMembers button clicked."
 		$progressBar1.Value = 10
+		$typeCache = @{}
 		Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			Remove-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -Confirm:$false
-			Write-Host "Remove $member ..."
-			$progressBar1.Value = 80
+			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { return }
+			try {
+				Remove-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -Confirm:$false -ErrorAction Stop
+				Write-Host "Removed $member from $group."
+				$progressBar1.Value = 80
+			} catch {
+				Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+			}
 		}
 		CheckForErrors
 		OperationComplete

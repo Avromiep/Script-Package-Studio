@@ -37,6 +37,22 @@ function Test-MemberTargetType([string]$Identity, [string]$Expected) {
 	return $false
 }
 
+# Bulk/CSV variant: caches the lookup per run (pass the same [hashtable]$Cache across rows
+# so a repeated target isn't re-queried) and warns only ONCE per unique wrong-type target.
+# Returns $false for rows whose target is the wrong type (caller should skip that row).
+function Test-MemberTargetTypeCached([string]$Identity, [string]$Expected, [hashtable]$Cache) {
+	$firstSeen = -not $Cache.ContainsKey($Identity)
+	if ($firstSeen) { $Cache[$Identity] = Get-RecipientCategory $Identity }
+	$actual = $Cache[$Identity]
+	if (-not $actual -or $actual -eq 'Other' -or $actual -eq $Expected) { return $true }
+	if ($firstSeen) {
+		$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
+		$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
+		Write-Host "Skipping rows for '$Identity' - it's $($typeName[$actual]) ($script:LastRecipientRaw), not $($typeName[$Expected]). Use '$($scriptFor[$actual])' for it." -ForegroundColor Red
+	}
+	return $false
+}
+
 # Shared shape used by Add/Remove DistributionListMember and UnifiedGroupMember
 function New-MemberGroupDialog {
 	param([string]$Title, [string]$ActionText, [string]$BulkText, [string]$Icon = '&#xED75;')
@@ -491,13 +507,19 @@ function Add-DistributionListMember {
 	function OnAddBulkMembersButtonClick {
 		Write-Host "AddBulkMembersButton clicked."
 		$progressBar1.Value = 10
+		$typeCache = @{}
 		Import-Csv ".\Templates\Add-DistributionListMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			Add-DistributionGroupMember -Identity $group -Member $member
-			Write-Host "Adding $member ..."
-			$progressBar1.Value = 80
+			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { return }
+			try {
+				Add-DistributionGroupMember -Identity $group -Member $member -ErrorAction Stop
+				Write-Host "Added $member to $group."
+				$progressBar1.Value = 80
+			} catch {
+				Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+			}
 		}
 		CheckForErrors
 		OperationComplete
@@ -907,27 +929,38 @@ function Add-MailboxMember {
 	}
 	function OnBulkMembersButtonClick {
 		$progressBar1.Value = 10
+		$typeCache = @{}
 		if ($mailboxMemberMode -eq 0) {
 			Import-Csv ".\Templates\Add-MailboxMember.csv" | ForEach-Object {
 				$member = $_.Member
 				$mailbox = $_.Mailbox
 				$progressBar1.Value = 20
-				Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true
-				$progressBar1.Value = 50
-				Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-				$progressBar1.Value = 80
-				Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
+				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { return }
+				try {
+					Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+					$progressBar1.Value = 50
+					Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+					$progressBar1.Value = 80
+					Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
+				} catch {
+					Write-Host "Couldn't add $member to '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				}
 			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			Import-Csv ".\Templates\Remove-MailboxMember.csv" | ForEach-Object {
 				$member = $_.Member
 				$mailbox = $_.Mailbox
 				$progressBar1.Value = 20
-				Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false
-				$progressBar1.Value = 50
-				Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-				$progressBar1.Value = 80
-				Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
+				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { return }
+				try {
+					Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
+					$progressBar1.Value = 50
+					Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+					$progressBar1.Value = 80
+					Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
+				} catch {
+					Write-Host "Couldn't remove $member from '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				}
 			}
 		}
 		CheckForErrors
@@ -1055,13 +1088,19 @@ function Add-UnifiedGroupMember {
 	function OnAddBulkMembersButtonClick {
 		Write-Host "AddBulkMembers button clicked."
 		$progressBar1.Value = 10
+		$typeCache = @{}
 		Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | ForEach-Object {
 			$progressBar1.Value = 30
 			$member = $_.Member
 			$group = $_.Group
-			Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member
-			Write-Host "Adding $member ..."
-			$progressBar1.Value = 80
+			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { return }
+			try {
+				Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -ErrorAction Stop
+				Write-Host "Added $member to $group."
+				$progressBar1.Value = 80
+			} catch {
+				Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+			}
 		}
 		CheckForErrors
 		OperationComplete

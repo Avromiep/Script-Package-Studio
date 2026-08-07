@@ -4,26 +4,36 @@
 
 # Classify a recipient so the member scripts can catch "wrong script for this target"
 # mistakes (e.g. running Add-MailboxMember against a distribution list).
+# Returns 'Mailbox' | 'DistributionList' | 'UnifiedGroup' | 'Other', or $null if the
+# recipient can't be looked up. $script:LastRecipientRaw holds the raw type string for
+# diagnostics/logging.
 function Get-RecipientCategory([string]$Identity) {
+	$script:LastRecipientRaw = ''
 	if (-not $Identity) { return $null }
 	$r = $null
-	try { $r = Get-Recipient -Identity $Identity -ErrorAction Stop } catch { return $null }
-	$d = [string]$r.RecipientTypeDetails
-	if ($d -match 'GroupMailbox') { return 'UnifiedGroup' }                                   # Microsoft 365 / Teams group
-	if ($d -match 'DistributionGroup|MailUniversal|MailNonUniversal|DynamicDistribution') { return 'DistributionList' }
-	if ($d -match 'Mailbox') { return 'Mailbox' }                                             # User/Shared/Room/etc.
+	try { $r = Get-Recipient -Identity $Identity -ErrorAction Stop | Select-Object -First 1 } catch { return $null }
+	if (-not $r) { return $null }
+	$d = "$($r.RecipientTypeDetails) $($r.RecipientType)"
+	$script:LastRecipientRaw = $d.Trim()
+	if ($d -match 'GroupMailbox') { return 'UnifiedGroup' }                                       # Microsoft 365 / Teams group
+	if ($d -match 'Distribution|MailUniversal|MailNonUniversal|RoomList') { return 'DistributionList' }
+	if ($d -match 'Mailbox') { return 'Mailbox' }                                                 # User/Shared/Room/etc.
 	return 'Other'
 }
 
 # If $Identity's real type doesn't match what this script handles, tell the user which
-# script to use and return $false (so the caller skips the doomed cmdlet). Unknown or
-# unreachable target -> $true (let the real cmdlet run and surface its own error).
+# script to use and return $false (so the caller skips the doomed cmdlet). If the target
+# can't be looked up, say so and return $true (let the real cmdlet run + surface its error).
 function Test-MemberTargetType([string]$Identity, [string]$Expected) {
 	$actual = Get-RecipientCategory $Identity
-	if (-not $actual -or $actual -eq 'Other' -or $actual -eq $Expected) { return $true }
+	if (-not $actual) {
+		Write-Host "(Couldn't look up '$Identity' to check its type - continuing; watch for an error below.)" -ForegroundColor Yellow
+		return $true
+	}
+	if ($actual -eq 'Other' -or $actual -eq $Expected) { return $true }
 	$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
 	$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
-	Write-Host "'$Identity' is $($typeName[$actual]), not $($typeName[$Expected]) - this script can't work on it. Use the '$($scriptFor[$actual])' script instead." -ForegroundColor Red
+	Write-Host "'$Identity' is $($typeName[$actual]) ($script:LastRecipientRaw), not $($typeName[$Expected]) - this script can't add to it. Use the '$($scriptFor[$actual])' script instead." -ForegroundColor Red
 	return $false
 }
 
@@ -460,11 +470,15 @@ function Add-DistributionListMember {
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 40
 		if (-not (Test-MemberTargetType $group 'DistributionList')) { $progressBar1.Value = 0; return }
-		Add-DistributionGroupMember -Identity $group -Member $member
-		Write-Host "Adding $member..."
-		$progressBar1.Value = 80
-		CheckForErrors
-		OperationComplete
+		try {
+			Add-DistributionGroupMember -Identity $group -Member $member -ErrorAction Stop
+			Write-Host "Added $member to $group." -ForegroundColor Cyan
+			$progressBar1.Value = 80
+			OperationComplete
+		} catch {
+			Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+			$progressBar1.Value = 0
+		}
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplateButton clicked."
@@ -754,11 +768,17 @@ function Add-MailboxMember {
 			$member = $memberInputBox.Text
 			$progressBar1.Value = 10
 			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true
-			$progressBar1.Value = 50
-			Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false
-			$progressBar1.Value = 80
-			Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
+			try {
+				Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+				$progressBar1.Value = 50
+				Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+				$progressBar1.Value = 80
+				Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
+			} catch {
+				Write-Host "Couldn't add $member to '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+				$progressBar1.Value = 0
+				return
+			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
 			$member = $memberInputBox.Text
@@ -972,11 +992,15 @@ function Add-UnifiedGroupMember {
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 30
 		if (-not (Test-MemberTargetType $group 'UnifiedGroup')) { $progressBar1.Value = 0; return }
-		Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member
-		Write-Host "Adding $member..."
-		$progressBar1.Value = 80
-		CheckForErrors
-		OperationComplete
+		try {
+			Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -ErrorAction Stop
+			Write-Host "Added $member to $group." -ForegroundColor Cyan
+			$progressBar1.Value = 80
+			OperationComplete
+		} catch {
+			Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+			$progressBar1.Value = 0
+		}
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplate button clicked."

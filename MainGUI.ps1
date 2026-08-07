@@ -1,4 +1,4 @@
-$version = "v3.1.23"
+$version = "v3.1.24"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1201,7 +1201,7 @@ if ($env:SP_SHOT) {
 		'dlg-remove-emailalias'  = { New-EmailAliasDialog -Title 'Remove-EmailAlias' -ActionText 'Remove Alias' -BulkText 'Remove Aliases' -CheckText 'Remove Incremental Aliases' }
 		'dlg-set-ntp'            = { New-SetNTPDialog }
 		'dlg-show-information'   = { New-InformationDialog }
-		'dlg-error'              = { New-ErrorDialog "Example error output`nAnother line of error detail" }
+		'dlg-error'              = { New-ErrorDialog "Add-MailboxPermission: mailbox admin@contoso.com`nwas not found on the server." }
 		'dlg-opcomplete'         = { New-OperationCompleteDialog }
 		'dlg-warning'            = { New-WarningDialog "Turning on AutoExpandingArchive is irreversible - are you sure you'd like to continue?" }
 		'dlg-updatecomplete'     = { New-UpdateCompleteDialog "Latest version already installed." }

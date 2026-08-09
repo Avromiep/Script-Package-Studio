@@ -1,4 +1,4 @@
-$version = "v3.1.24"
+$version = "v3.1.25"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -443,6 +443,27 @@ function Confirm-RequiredModules {
 	}
 	Write-Host "Modules installed." -ForegroundColor Green
 	return $true
+}
+
+# On launch, if the required modules aren't installed yet, offer to install them.
+# (PowerShell 7 itself is handled earlier by the launcher, so the user is prompted
+# for PowerShell 7 first, then the modules here.)
+function Confirm-ModulesAtStartup {
+	$missing = @(Get-MissingModules)
+	if ($missing.Count -eq 0) { return }
+	Write-Host "Required modules not installed: $($missing -join ', ')" -ForegroundColor Yellow
+	$choice = @{ Install = $false }
+	$dlg = New-ModulesMissingDialog ($missing -join "`n") 'Script-Package Studio needs these PowerShell modules, which are not installed yet:'
+	try { $dlg.Owner = $script:Window } catch {}
+	$dlg.FindName('InstallBtn').Add_Click({ $choice.Install = $true; $dlg.Close() })
+	$dlg.FindName('NotNowBtn').Add_Click({ $dlg.Close() })
+	[void]$dlg.ShowDialog()
+	if ($choice.Install) {
+		$script:UI.StatusText.Text = 'Installing modules... this can take several minutes.'
+		$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
+		Install-RequiredModules
+		$script:UI.StatusText.Text = 'Ready'
+	}
 }
 
 function Set-SignState([bool]$Connected, [string]$Text) {
@@ -1255,6 +1276,17 @@ if ($env:SP_SHOT) {
 # ---- automation hook (dot-sources a script into app scope; used by self-tests) ------
 if ($env:SP_TEST -and (Test-Path -LiteralPath $env:SP_TEST)) {
 	. $env:SP_TEST
+}
+
+# On first launch, prompt to install the required modules if they're missing (after
+# the window is visible). Guarded off during screenshot/self-test runs.
+if (-not $env:SP_SHOT -and -not $env:SP_TEST) {
+	$script:ModulesCheckedAtStartup = $false
+	$script:Window.Add_ContentRendered({
+		if ($script:ModulesCheckedAtStartup) { return }
+		$script:ModulesCheckedAtStartup = $true
+		try { Confirm-ModulesAtStartup } catch {}
+	})
 }
 
 # Show MainWindow

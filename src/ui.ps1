@@ -401,7 +401,7 @@ function New-UpdateCompleteDialog([string]$Message) {
 	return $win
 }
 
-function New-ModulesMissingDialog([string]$MissingText) {
+function New-ModulesMissingDialog([string]$MissingText, [string]$Intro = 'Signing in needs PowerShell modules that are not installed yet:') {
 	$win = New-StyledDialog -Title 'PowerShell modules required' -Icon '&#xE0DD;' -BodyXaml @'
 <StackPanel Margin="16" Width="400">
 	<Border Style="{DynamicResource Card}">
@@ -423,7 +423,7 @@ function New-ModulesMissingDialog([string]$MissingText) {
 	</Border>
 </StackPanel>
 '@
-	$win.FindName('ModulesText').Text = "Signing in needs PowerShell modules that are not installed yet:`n$MissingText"
+	$win.FindName('ModulesText').Text = "$Intro`n$MissingText"
 	return $win
 }
 

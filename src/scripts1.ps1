@@ -38,6 +38,30 @@ function Test-MemberTargetType([string]$Identity, [string]$Expected) {
 	return $false
 }
 
+# True if an add/remove error just means "nothing to do" (already a member on add, or
+# not a member on remove) rather than a real failure - used to summarize bulk runs.
+function Test-HarmlessMemberError([string]$Message) {
+	return ($Message -match "already a member|already exists|already has|is already|AlreadyExists|already present|isn't a member|is not a member|not a member|no matching|couldn't be found|not found")
+}
+
+# Show ONE summary popup after a bulk add/remove (instead of a popup per row). $Counts has
+# done/noop/failed/skipped; $Action is 'add' or 'remove' for the wording.
+function Show-BulkSummary([hashtable]$Counts, [string]$Action) {
+	$doneWord = if ($Action -eq 'remove') { 'removed' } else { 'added' }
+	$noopWord = if ($Action -eq 'remove') { "weren't members" } else { 'already there' }
+	$parts = @()
+	if ($Counts.done -gt 0)    { $parts += "$($Counts.done) $doneWord" }
+	if ($Counts.noop -gt 0)    { $parts += "$($Counts.noop) $noopWord" }
+	if ($Counts.skipped -gt 0) { $parts += "$($Counts.skipped) skipped (wrong type)" }
+	if ($Counts.failed -gt 0)  { $parts += "$($Counts.failed) failed" }
+	$summary = if ($parts.Count) { $parts -join ', ' } else { 'nothing to do' }
+	Write-Host "Bulk result: $summary." -ForegroundColor Cyan
+	$kind  = if ($Counts.failed -gt 0) { 'Warn' } else { 'Info' }
+	$title = if ($Action -eq 'remove') { 'Bulk remove complete' } else { 'Bulk add complete' }
+	Show-Notice $title "Finished processing the list:`n`n$summary." $kind
+	$progressBar1.Value = 0
+}
+
 # Called from an add-member catch block: pops up a friendly notice if the person is
 # already a member, otherwise a notice with the real error (and logs either way).
 function Show-MemberAddError($Err, [string]$Member, [string]$Target) {
@@ -522,21 +546,23 @@ function Add-DistributionListMember {
 		Write-Host "AddBulkMembersButton clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-DistributionListMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { return }
+			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { $counts.skipped++; return }
 			try {
 				Add-DistributionGroupMember -Identity $group -Member $member -ErrorAction Stop
 				Write-Host "Added $member to $group."
-				$progressBar1.Value = 80
+				$counts.done++
 			} catch {
-				Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+				$m = "$($_.Exception.Message)".Trim()
+				if (Test-HarmlessMemberError $m) { Write-Host "$member already in '$group'." -ForegroundColor Yellow; $counts.noop++ }
+				else { Write-Host "Couldn't add $member to '$group': $m" -ForegroundColor Red; $counts.failed++ }
 			}
 		}
-		CheckForErrors
-		OperationComplete
+		Show-BulkSummary $counts 'add'
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members'
@@ -943,41 +969,48 @@ function Add-MailboxMember {
 	function OnBulkMembersButtonClick {
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		if ($mailboxMemberMode -eq 0) {
 			Import-Csv ".\Templates\Add-MailboxMember.csv" | ForEach-Object {
 				$member = $_.Member
 				$mailbox = $_.Mailbox
 				$progressBar1.Value = 20
-				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { return }
+				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { $counts.skipped++; return }
 				try {
 					Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
 					$progressBar1.Value = 50
 					Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
 					$progressBar1.Value = 80
 					Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
+					$counts.done++
 				} catch {
-					Write-Host "Couldn't add $member to '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+					$m = "$($_.Exception.Message)".Trim()
+					if (Test-HarmlessMemberError $m) { Write-Host "$member already set up on '$mailbox'." -ForegroundColor Yellow; $counts.noop++ }
+					else { Write-Host "Couldn't add $member to '$mailbox': $m" -ForegroundColor Red; $counts.failed++ }
 				}
 			}
+			Show-BulkSummary $counts 'add'
 		} elseif ($mailboxMemberMode -eq 1) {
 			Import-Csv ".\Templates\Remove-MailboxMember.csv" | ForEach-Object {
 				$member = $_.Member
 				$mailbox = $_.Mailbox
 				$progressBar1.Value = 20
-				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { return }
+				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { $counts.skipped++; return }
 				try {
 					Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
 					$progressBar1.Value = 50
 					Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
 					$progressBar1.Value = 80
 					Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
+					$counts.done++
 				} catch {
-					Write-Host "Couldn't remove $member from '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
+					$m = "$($_.Exception.Message)".Trim()
+					if (Test-HarmlessMemberError $m) { Write-Host "$member wasn't on '$mailbox'." -ForegroundColor Yellow; $counts.noop++ }
+					else { Write-Host "Couldn't remove $member from '$mailbox': $m" -ForegroundColor Red; $counts.failed++ }
 				}
 			}
+			Show-BulkSummary $counts 'remove'
 		}
-		CheckForErrors
-		OperationComplete
 	}
 
 	$scriptForm1 = New-MailboxMemberDialog
@@ -1101,21 +1134,23 @@ function Add-UnifiedGroupMember {
 		Write-Host "AddBulkMembers button clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | ForEach-Object {
 			$progressBar1.Value = 30
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { return }
+			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { $counts.skipped++; return }
 			try {
 				Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -ErrorAction Stop
 				Write-Host "Added $member to $group."
-				$progressBar1.Value = 80
+				$counts.done++
 			} catch {
-				Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
+				$m = "$($_.Exception.Message)".Trim()
+				if (Test-HarmlessMemberError $m) { Write-Host "$member already in '$group'." -ForegroundColor Yellow; $counts.noop++ }
+				else { Write-Host "Couldn't add $member to '$group': $m" -ForegroundColor Red; $counts.failed++ }
 			}
 		}
-		CheckForErrors
-		OperationComplete
+		Show-BulkSummary $counts 'add'
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-UnifiedGroupMember' -ActionText 'Add Member' -BulkText 'Add Members'

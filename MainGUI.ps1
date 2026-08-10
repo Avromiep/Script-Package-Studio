@@ -1,4 +1,4 @@
-$version = "v3.1.26"
+$version = "v3.1.27"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1229,6 +1229,7 @@ if ($env:SP_SHOT) {
 		'dlg-modules'            = { New-ModulesMissingDialog "Microsoft.Graph`nExchangeOnlineManagement" }
 		'dlg-notice-info'        = { New-NoticeDialog 'Already added' 'admin@contoso.com is already added to "Contoso Ltd".' 'Info' }
 		'dlg-notice-warn'        = { New-NoticeDialog 'Wrong script for this target' "'sales@contoso.com' is a distribution list, not a mailbox.`n`nUse the 'Add-DistributionListMember' script for it instead." 'Warn' }
+		'dlg-notice-summary'     = { New-NoticeDialog 'Bulk add complete' "Finished processing the list:`n`n8 added, 3 already there, 1 failed." 'Warn' }
 		'dlg-confirm'            = { New-ConfirmDialog 'Forget tenant' 'Forget "Contoso Ltd" (admin@contoso.com)? This removes it from the saved list.' }
 	}
 

@@ -32,21 +32,23 @@ function Remove-DistributionListMember {
 		Write-Host "RemoveBulkMembers button clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Remove-DistributionListMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { return }
+			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { $counts.skipped++; return }
 			try {
 				Remove-DistributionGroupMember -Identity $group -Member $member -Confirm:$false -ErrorAction Stop
 				Write-Host "Removed $member from $group."
-				$progressBar1.Value = 80
+				$counts.done++
 			} catch {
-				Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+				$m = "$($_.Exception.Message)".Trim()
+				if (Test-HarmlessMemberError $m) { Write-Host "$member wasn't in '$group'." -ForegroundColor Yellow; $counts.noop++ }
+				else { Write-Host "Couldn't remove $member from '$group': $m" -ForegroundColor Red; $counts.failed++ }
 			}
 		}
-		CheckForErrors
-		OperationComplete
+		Show-BulkSummary $counts 'remove'
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members'
@@ -215,21 +217,23 @@ function Remove-UnifiedGroupMember {
 		Write-Host "RemoveBulkMembers button clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { return }
+			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { $counts.skipped++; return }
 			try {
 				Remove-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -Confirm:$false -ErrorAction Stop
 				Write-Host "Removed $member from $group."
-				$progressBar1.Value = 80
+				$counts.done++
 			} catch {
-				Write-Host "Couldn't remove $member from '$group': $($_.Exception.Message)" -ForegroundColor Red
+				$m = "$($_.Exception.Message)".Trim()
+				if (Test-HarmlessMemberError $m) { Write-Host "$member wasn't in '$group'." -ForegroundColor Yellow; $counts.noop++ }
+				else { Write-Host "Couldn't remove $member from '$group': $m" -ForegroundColor Red; $counts.failed++ }
 			}
 		}
-		CheckForErrors
-		OperationComplete
+		Show-BulkSummary $counts 'remove'
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members'

@@ -34,7 +34,22 @@ function Test-MemberTargetType([string]$Identity, [string]$Expected) {
 	$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
 	$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
 	Write-Host "'$Identity' is $($typeName[$actual]) ($script:LastRecipientRaw), not $($typeName[$Expected]) - this script can't add to it. Use the '$($scriptFor[$actual])' script instead." -ForegroundColor Red
+	Show-Notice 'Wrong script for this target' "'$Identity' is $($typeName[$actual]), not $($typeName[$Expected]).`n`nUse the '$($scriptFor[$actual])' script for it instead." 'Warn'
 	return $false
+}
+
+# Called from an add-member catch block: pops up a friendly notice if the person is
+# already a member, otherwise a notice with the real error (and logs either way).
+function Show-MemberAddError($Err, [string]$Member, [string]$Target) {
+	$msg = "$($Err.Exception.Message)".Trim()
+	if ($msg -match 'already a member|already exists|already has|is already|AlreadyExists|already present') {
+		Write-Host "$Member is already added to '$Target'." -ForegroundColor Yellow
+		Show-Notice 'Already added' "$Member is already added to `"$Target`"." 'Info'
+	} else {
+		Write-Host "Couldn't add $Member to '$Target': $msg" -ForegroundColor Red
+		Show-Notice 'Add failed' "Couldn't add $Member to `"$Target`":`n`n$msg" 'Error'
+	}
+	$progressBar1.Value = 0
 }
 
 # Bulk/CSV variant: caches the lookup per run (pass the same [hashtable]$Cache across rows
@@ -492,8 +507,7 @@ function Add-DistributionListMember {
 			$progressBar1.Value = 80
 			OperationComplete
 		} catch {
-			Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
-			$progressBar1.Value = 0
+			Show-MemberAddError $_ $member $group
 		}
 	}
 	function OnOpenTemplateButtonClick {
@@ -797,8 +811,7 @@ function Add-MailboxMember {
 				$progressBar1.Value = 80
 				Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
 			} catch {
-				Write-Host "Couldn't add $member to '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0
+				Show-MemberAddError $_ $member $mailbox
 				return
 			}
 		} elseif ($mailboxMemberMode -eq 1) {
@@ -831,8 +844,8 @@ function Add-MailboxMember {
 				$progressBar1.Value = 50
 				Write-Host "Added Read and Manage permission for $member to $mailbox." -ForegroundColor Cyan
 			} catch {
-				Write-Host "Couldn't grant Full Access on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
+				Show-MemberAddError $_ $member $mailbox
+				return
 			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
@@ -862,8 +875,8 @@ function Add-MailboxMember {
 				$progressBar1.Value = 50
 				Write-Host "Added SendOnBehalf permission for $member to $mailbox" -ForegroundColor Cyan
 			} catch {
-				Write-Host "Couldn't grant Send on Behalf on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
+				Show-MemberAddError $_ $member $mailbox
+				return
 			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
@@ -893,8 +906,8 @@ function Add-MailboxMember {
 				$progressBar1.Value = 50
 				Write-Host "Added SendAs permission for $member to $mailbox." -ForegroundColor Cyan
 			} catch {
-				Write-Host "Couldn't grant Send As on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
+				Show-MemberAddError $_ $member $mailbox
+				return
 			}
 		} elseif ($mailboxMemberMode -eq 1) {
 			$mailbox = $mailboxInputBox.Text
@@ -1073,8 +1086,7 @@ function Add-UnifiedGroupMember {
 			$progressBar1.Value = 80
 			OperationComplete
 		} catch {
-			Write-Host "Couldn't add $member to '$group': $($_.Exception.Message)" -ForegroundColor Red
-			$progressBar1.Value = 0
+			Show-MemberAddError $_ $member $group
 		}
 	}
 	function OnOpenTemplateButtonClick {

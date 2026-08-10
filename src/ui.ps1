@@ -326,6 +326,35 @@ function OperationComplete {
 	[void](New-OperationCompleteDialog).ShowDialog()
 }
 
+# Simple modal message popup with one OK button. $Kind = 'Info' | 'Warn' | 'Error'.
+function New-NoticeDialog([string]$Title, [string]$Message, [string]$Kind = 'Info') {
+	switch ($Kind) {
+		'Warn'  { $glyph = '&#xF561;'; $brush = 'WarnBrush' }
+		'Error' { $glyph = '&#xE877;'; $brush = 'ErrorBrush' }
+		default { $glyph = '&#xEA88;'; $brush = 'AccentBrush' }
+	}
+	$win = New-StyledDialog -Title $Title -Icon $glyph -BodyXaml @"
+<StackPanel Margin="16" Width="360">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<StackPanel Orientation="Horizontal">
+				<TextBlock Text="$glyph" Style="{DynamicResource Icon}" Foreground="{DynamicResource $brush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<TextBlock x:Name="NoticeText" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="290" TextWrapping="Wrap"/>
+			</StackPanel>
+			<Button x:Name="NoticeOkBtn" Style="{DynamicResource BtnPrimary}" Content="OK" HorizontalAlignment="Right" MinWidth="90" Margin="0,16,0,0" IsDefault="True"/>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+	$win.FindName('NoticeText').Text = $Message
+	$win.FindName('NoticeOkBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+	return $win
+}
+function Show-Notice([string]$Title, [string]$Message, [string]$Kind = 'Info') {
+	if ($env:SP_SHOT -or $env:SP_TEST) { return }   # don't block automated runs
+	[void](New-NoticeDialog $Title $Message $Kind).ShowDialog()
+}
+
 function New-WarningDialog([string]$WarningText) {
 	$win = New-StyledDialog -Title 'Warning!' -Icon '&#xF561;' -BodyXaml @'
 <StackPanel Margin="16" Width="380">

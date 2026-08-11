@@ -88,85 +88,117 @@ function Get-EmailsFromText([string]$Text) {
 	return $out.ToArray()
 }
 
-# Option C: paste-a-blob -> extract emails -> add them all to one target. A generic
-# sub-dialog reused by the member add scripts (the CSV/template path is kept as-is).
-# $DoOne is a scriptblock: param($target,$member) that runs the actual cmdlet(s) with
-# -ErrorAction Stop. Reuses Test-MemberTargetType (once) + Show-BulkSummary.
-# New-PasteMembersDialog builds+wires the window (returns it, with the result holder on
-# .Tag); Show-PasteMembersDialog shows it and then pops the bulk summary.
+# Universal paste-to-add: paste people (top, live-extracted) + paste one or more targets
+# (bottom) that can be ANY mix of distribution lists, shared mailboxes, or Teams / M365
+# groups. On Add All, each target's real type is detected (Get-RecipientCategory) and the
+# right cmdlet is used per target - list -> Add-DistributionGroupMember, group ->
+# Add-UnifiedGroupLinks, mailbox -> FullAccess + SendAs. The CSV/template path is kept.
+# New-PasteMembersDialog builds+wires the window (result on .Tag); Show-* shows + summarizes.
 function New-PasteMembersDialog {
-	param([string]$Title, [string]$TargetLabel, [string]$TargetValue, [string]$ExpectedType, [string]$Action = 'add', [scriptblock]$DoOne)
-	$addLabel = if ($Action -eq 'remove') { 'Remove All' } else { 'Add All' }
-	$win = New-StyledDialog -Title $Title -Icon '&#xED75;' -BodyXaml @"
-<StackPanel Margin="16" Width="460">
+	param([string]$TargetPrefill = '')
+	$win = New-StyledDialog -Title 'Add members (paste)' -Icon '&#xED75;' -BodyXaml @'
+<StackPanel Margin="16" Width="480">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
-			<Grid>
-				<Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-				<TextBlock Text="$TargetLabel" Style="{DynamicResource Dim}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-				<TextBox x:Name="PasteTarget" Grid.Column="1"/>
-			</Grid>
-			<TextBlock Text="Paste text containing email addresses:" Style="{DynamicResource Dim}" Margin="0,12,0,4"/>
-			<TextBox x:Name="PasteInput" Style="{DynamicResource TextArea}" Height="110" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
-			<Grid Margin="0,8,0,0">
-				<Button x:Name="ExtractBtn" Style="{DynamicResource BtnSecondary}" Content="Extract Emails" HorizontalAlignment="Left" MinWidth="130"/>
+			<TextBlock Text="Paste text with the people to add (emails are pulled out automatically):" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,0,0,4"/>
+			<TextBox x:Name="PasteInput" Style="{DynamicResource TextArea}" Height="90" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<Grid Margin="0,10,0,4">
+				<TextBlock Text="Members - edit if needed:" Style="{DynamicResource Dim}" HorizontalAlignment="Left"/>
 				<TextBlock x:Name="PasteCount" Style="{DynamicResource Small}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
 			</Grid>
-			<TextBlock Text="Members (one per line - edit if needed):" Style="{DynamicResource Dim}" Margin="0,12,0,4"/>
-			<TextBox x:Name="PastePreview" Style="{DynamicResource TextArea}" Height="110" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<TextBox x:Name="PastePreview" Style="{DynamicResource TextArea}" Height="90" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<Border Style="{DynamicResource Divider}"/>
+			<TextBlock Text="Add them to these - distribution lists, shared mailboxes, or Teams / M365 groups, one per line:" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,0,0,4"/>
+			<TextBox x:Name="PasteTargets" Style="{DynamicResource TextArea}" Height="70" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
 			<Grid Margin="0,14,0,0">
 				<Button x:Name="PasteCancelBtn" Style="{DynamicResource BtnGhost}" Content="Cancel" HorizontalAlignment="Left" MinWidth="90"/>
-				<Button x:Name="PasteAddBtn" Style="{DynamicResource BtnPrimary}" Content="$addLabel" HorizontalAlignment="Right" MinWidth="140"/>
+				<Button x:Name="PasteAddBtn" Style="{DynamicResource BtnPrimary}" Content="Add All" HorizontalAlignment="Right" MinWidth="140"/>
 			</Grid>
 		</StackPanel>
 	</Border>
 </StackPanel>
-"@
-	$targetBox  = $win.FindName('PasteTarget'); $targetBox.Text = $TargetValue
+'@
 	$pasteBox   = $win.FindName('PasteInput')
 	$previewBox = $win.FindName('PastePreview')
 	$countText  = $win.FindName('PasteCount')
-	$result = @{ Counts = $null }
+	$targetsBox = $win.FindName('PasteTargets'); $targetsBox.Text = $TargetPrefill
+	$result = @{ Counts = $null; Skipped = 0; TargetCount = 0 }
 	$win.Tag = $result
 
-	$win.FindName('ExtractBtn').Add_Click({
+	# Live: refill the members list from the top box whenever it changes (no button needed).
+	$pasteBox.Add_TextChanged({
 		$emails = @(Get-EmailsFromText $pasteBox.Text)
 		$previewBox.Text = ($emails -join "`r`n")
-		$countText.Text = if ($emails.Count) { "Found $($emails.Count) unique address(es)" } else { 'No email addresses found' }
+		$countText.Text = "$($emails.Count) unique"
 	}.GetNewClosure())
 
 	$win.FindName('PasteCancelBtn').Add_Click({ $win.Close() }.GetNewClosure())
 
 	$win.FindName('PasteAddBtn').Add_Click({
-		$target  = $targetBox.Text.Trim()
 		$members = @(Get-EmailsFromText $previewBox.Text)
-		if (-not $target)         { Show-Notice 'Nothing to do' 'Enter the target first.' 'Warn'; return }
-		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' 'No email addresses yet - paste some text and click Extract Emails.' 'Warn'; return }
-		if (-not (Test-MemberTargetType $target $ExpectedType)) { return }   # shows its own wrong-type notice
-		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
+		# targets: one per line; use the email in the line if present, else the whole line
+		$targets = @()
+		foreach ($line in ($targetsBox.Text -split "\r?\n")) {
+			$line = $line.Trim(); if (-not $line) { continue }
+			$em = @(Get-EmailsFromText $line)
+			$targets += if ($em.Count) { $em[0] } else { $line }
+		}
+		$targets = @($targets | Select-Object -Unique)
+		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' 'No people to add - paste some text with email addresses at the top.' 'Warn'; return }
+		if ($targets.Count -eq 0) { Show-Notice 'Nothing to do' 'Add at least one target (distribution list, shared mailbox, or Teams / M365 group) at the bottom.' 'Warn'; return }
+		$counts = @{ done = 0; noop = 0; failed = 0 }
+		$skipped = 0
 		$progressBar1.Value = 10
-		foreach ($m in $members) {
-			try {
-				& $DoOne $target $m
-				Write-Host "$m -> $target"
-				$counts.done++
-			} catch {
-				$msg = "$($_.Exception.Message)".Trim()
-				if (Test-HarmlessMemberError $msg) { Write-Host "$m already/not there: $msg" -ForegroundColor Yellow; $counts.noop++ }
-				else { Write-Host "Failed for $m on '$target': $msg" -ForegroundColor Red; $counts.failed++ }
+		foreach ($target in $targets) {
+			$cat = Get-RecipientCategory $target
+			if (-not $cat -or $cat -eq 'Other') {
+				Write-Host "Skipping '$target' - couldn't determine its type (not a mailbox / list / group)." -ForegroundColor Yellow
+				$skipped++
+				continue
+			}
+			foreach ($m in $members) {
+				try {
+					switch ($cat) {
+						'DistributionList' { Add-DistributionGroupMember -Identity $target -Member $m -ErrorAction Stop }
+						'UnifiedGroup'     { Add-UnifiedGroupLinks -Identity $target -LinkType Members -Links $m -ErrorAction Stop }
+						'Mailbox'          {
+							Add-MailboxPermission -Identity $target -User $m -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+							Add-RecipientPermission -Identity $target -Trustee $m -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+						}
+					}
+					Write-Host "$m -> $target"
+					$counts.done++
+				} catch {
+					$msg = "$($_.Exception.Message)".Trim()
+					if (Test-HarmlessMemberError $msg) { Write-Host "$m already in '$target'." -ForegroundColor Yellow; $counts.noop++ }
+					else { Write-Host "Failed: $m -> '$target': $msg" -ForegroundColor Red; $counts.failed++ }
+				}
 			}
 		}
-		$result.Counts = $counts
+		$result.Counts = $counts; $result.Skipped = $skipped; $result.TargetCount = $targets.Count
 		$win.Close()
 	}.GetNewClosure())
 
 	return $win
 }
 function Show-PasteMembersDialog {
-	param([string]$Title, [string]$TargetLabel, [string]$TargetValue, [string]$ExpectedType, [string]$Action = 'add', [scriptblock]$DoOne)
-	$win = New-PasteMembersDialog -Title $Title -TargetLabel $TargetLabel -TargetValue $TargetValue -ExpectedType $ExpectedType -Action $Action -DoOne $DoOne
+	param([string]$TargetPrefill = '')
+	$win = New-PasteMembersDialog -TargetPrefill $TargetPrefill
 	[void]$win.ShowDialog()
-	if ($win.Tag -and $win.Tag.Counts) { Show-BulkSummary $win.Tag.Counts $Action }
+	$r = $win.Tag
+	if ($r -and $r.Counts) {
+		$c = $r.Counts
+		$parts = @()
+		if ($c.done -gt 0)    { $parts += "$($c.done) added" }
+		if ($c.noop -gt 0)    { $parts += "$($c.noop) already there" }
+		if ($c.failed -gt 0)  { $parts += "$($c.failed) failed" }
+		if ($r.Skipped -gt 0) { $parts += "$($r.Skipped) target(s) skipped" }
+		$summary = if ($parts.Count) { $parts -join ', ' } else { 'nothing to do' }
+		Write-Host "Paste-add result: $summary." -ForegroundColor Cyan
+		$kind = if ($c.failed -gt 0) { 'Warn' } else { 'Info' }
+		Show-Notice 'Add complete' "Across $($r.TargetCount) target(s):`n`n$summary." $kind
+		$progressBar1.Value = 0
+	}
 }
 
 # Bulk/CSV variant: caches the lookup per run (pass the same [hashtable]$Cache across rows
@@ -666,10 +698,7 @@ function Add-DistributionListMember {
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnAddMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnAddBulkMembersButtonClick })
-	$scriptForm8.FindName('PasteBtn').Add_Click({
-		Show-PasteMembersDialog -Title 'Add distribution list members' -TargetLabel 'Distribution list' -TargetValue $groupInputBox.Text -ExpectedType 'DistributionList' -Action 'add' `
-			-DoOne { param($t, $m) Add-DistributionGroupMember -Identity $t -Member $m -ErrorAction Stop }
-	})
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0
@@ -1128,15 +1157,7 @@ function Add-MailboxMember {
 	$scriptForm1.FindName('SendAsBtn').Add_Click({ OnSendAsButtonClick })
 	$scriptForm1.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$bulkMembersButton.Add_Click({ OnBulkMembersButtonClick })
-	$scriptForm1.FindName('PasteBtn').Add_Click({
-		if ($mailboxMemberMode -eq 0) {
-			Show-PasteMembersDialog -Title 'Add mailbox members' -TargetLabel 'Mailbox' -TargetValue $mailboxInputBox.Text -ExpectedType 'Mailbox' -Action 'add' `
-				-DoOne { param($t, $m) Add-MailboxPermission -Identity $t -User $m -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop; Add-RecipientPermission -Identity $t -Trustee $m -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
-		} else {
-			Show-PasteMembersDialog -Title 'Remove mailbox members' -TargetLabel 'Mailbox' -TargetValue $mailboxInputBox.Text -ExpectedType 'Mailbox' -Action 'remove' `
-				-DoOne { param($t, $m) Remove-MailboxPermission -Identity $t -User $m -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop; Remove-RecipientPermission -Identity $t -Trustee $m -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
-		}
-	})
+	$scriptForm1.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $mailboxInputBox.Text })
 
 	if ($mailboxMemberMode -eq 0) {
 		Set-DialogTitle $scriptForm1 "Add-MailboxMember"
@@ -1268,10 +1289,7 @@ function Add-UnifiedGroupMember {
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnAddMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnAddBulkMembersButtonClick })
-	$scriptForm8.FindName('PasteBtn').Add_Click({
-		Show-PasteMembersDialog -Title 'Add Teams / Microsoft 365 group members' -TargetLabel 'Group' -TargetValue $groupInputBox.Text -ExpectedType 'UnifiedGroup' -Action 'add' `
-			-DoOne { param($t, $m) Add-UnifiedGroupLinks -Identity $t -LinkType Members -Links $m -ErrorAction Stop }
-	})
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0

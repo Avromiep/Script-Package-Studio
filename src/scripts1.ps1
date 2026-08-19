@@ -21,6 +21,23 @@ function Get-RecipientCategory([string]$Identity) {
 	return 'Other'
 }
 
+# Friendly, specific type name from a raw "RecipientTypeDetails RecipientType" string
+# (e.g. 'SharedMailbox UserMailbox' -> 'shared mailbox') so the summary can say exactly
+# what each target was. Pass $script:LastRecipientRaw captured right after Get-RecipientCategory.
+function Get-RecipientTypeName([string]$Raw) {
+	switch -Regex ($Raw) {
+		'SharedMailbox'                 { return 'shared mailbox' }
+		'RoomMailbox'                   { return 'room mailbox' }
+		'EquipmentMailbox'              { return 'equipment mailbox' }
+		'GroupMailbox'                  { return 'Teams / Microsoft 365 group' }
+		'DynamicDistribution'           { return 'dynamic distribution list' }
+		'MailUniversalSecurityGroup'    { return 'mail-enabled security group' }
+		'MailUniversalDistributionGroup|MailNonUniversalGroup|DistributionGroup' { return 'distribution list' }
+		'UserMailbox'                   { return 'mailbox' }
+		default                         { return 'recipient' }
+	}
+}
+
 # If $Identity's real type doesn't match what this script handles, tell the user which
 # script to use and return $false (so the caller skips the doomed cmdlet). If the target
 # can't be looked up, say so and return $true (let the real cmdlet run + surface its error).
@@ -147,15 +164,18 @@ function New-PasteMembersDialog {
 		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' 'No people to add - paste some text with email addresses at the top.' 'Warn'; return }
 		if ($targets.Count -eq 0) { Show-Notice 'Nothing to do' 'Add at least one target (distribution list, shared mailbox, or Teams / M365 group) at the bottom.' 'Warn'; return }
 		$counts = @{ done = 0; noop = 0; failed = 0 }
-		$skipped = 0
+		$lines = [System.Collections.Generic.List[string]]::new()
+		$anyFailed = $false
 		$progressBar1.Value = 10
 		foreach ($target in $targets) {
 			$cat = Get-RecipientCategory $target
+			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
 			if (-not $cat -or $cat -eq 'Other') {
 				Write-Host "Skipping '$target' - couldn't determine its type (not a mailbox / list / group)." -ForegroundColor Yellow
-				$skipped++
+				$lines.Add("$target - skipped (not a mailbox, list, or group)")
 				continue
 			}
+			$td = 0; $tn = 0; $tf = 0
 			foreach ($m in $members) {
 				try {
 					switch ($cat) {
@@ -166,16 +186,23 @@ function New-PasteMembersDialog {
 							Add-RecipientPermission -Identity $target -Trustee $m -AccessRights SendAs -Confirm:$false -ErrorAction Stop
 						}
 					}
-					Write-Host "$m -> $target"
-					$counts.done++
+					Write-Host "$m -> $target ($typeName)"
+					$td++; $counts.done++
 				} catch {
 					$msg = "$($_.Exception.Message)".Trim()
-					if (Test-HarmlessMemberError $msg) { Write-Host "$m already in '$target'." -ForegroundColor Yellow; $counts.noop++ }
-					else { Write-Host "Failed: $m -> '$target': $msg" -ForegroundColor Red; $counts.failed++ }
+					if (Test-HarmlessMemberError $msg) { Write-Host "$m already in '$target'." -ForegroundColor Yellow; $tn++; $counts.noop++ }
+					else { Write-Host "Failed: $m -> '$target': $msg" -ForegroundColor Red; $tf++; $counts.failed++; $anyFailed = $true }
 				}
 			}
+			$bits = @()
+			if ($td) { $bits += "$td added" }
+			if ($tn) { $bits += "$tn already there" }
+			if ($tf) { $bits += "$tf failed" }
+			$lineText = "$target ($typeName): $(if ($bits.Count) { $bits -join ', ' } else { 'nothing to do' })"
+			$lines.Add($lineText)
+			Write-Host $lineText -ForegroundColor Cyan
 		}
-		$result.Counts = $counts; $result.Skipped = $skipped; $result.TargetCount = $targets.Count
+		$result.Counts = $counts; $result.Lines = $lines; $result.AnyFailed = $anyFailed; $result.TargetCount = $targets.Count
 		$win.Close()
 	}.GetNewClosure())
 
@@ -186,17 +213,12 @@ function Show-PasteMembersDialog {
 	$win = New-PasteMembersDialog -TargetPrefill $TargetPrefill
 	[void]$win.ShowDialog()
 	$r = $win.Tag
-	if ($r -and $r.Counts) {
-		$c = $r.Counts
-		$parts = @()
-		if ($c.done -gt 0)    { $parts += "$($c.done) added" }
-		if ($c.noop -gt 0)    { $parts += "$($c.noop) already there" }
-		if ($c.failed -gt 0)  { $parts += "$($c.failed) failed" }
-		if ($r.Skipped -gt 0) { $parts += "$($r.Skipped) target(s) skipped" }
-		$summary = if ($parts.Count) { $parts -join ', ' } else { 'nothing to do' }
-		Write-Host "Paste-add result: $summary." -ForegroundColor Cyan
-		$kind = if ($c.failed -gt 0) { 'Warn' } else { 'Info' }
-		Show-Notice 'Add complete' "Across $($r.TargetCount) target(s):`n`n$summary." $kind
+	if ($r -and $r.Lines) {
+		# One line per target, naming its actual type (shared mailbox / distribution list /
+		# Teams group) so it's clear what was added where.
+		$body = $r.Lines -join "`n"
+		$kind = if ($r.AnyFailed) { 'Warn' } else { 'Info' }
+		Show-Notice 'Add complete' $body $kind
 		$progressBar1.Value = 0
 	}
 }

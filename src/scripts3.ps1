@@ -51,12 +51,13 @@ function Remove-DistributionListMember {
 		Show-BulkSummary $counts 'remove'
 	}
 
-	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members'
+	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0
@@ -236,12 +237,13 @@ function Remove-UnifiedGroupMember {
 		Show-BulkSummary $counts 'remove'
 	}
 
-	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members'
+	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0

@@ -38,23 +38,6 @@ function Get-RecipientTypeName([string]$Raw) {
 	}
 }
 
-# If $Identity's real type doesn't match what this script handles, tell the user which
-# script to use and return $false (so the caller skips the doomed cmdlet). If the target
-# can't be looked up, say so and return $true (let the real cmdlet run + surface its error).
-function Test-MemberTargetType([string]$Identity, [string]$Expected) {
-	$actual = Get-RecipientCategory $Identity
-	if (-not $actual) {
-		Write-Host "(Couldn't look up '$Identity' to check its type - continuing; watch for an error below.)" -ForegroundColor Yellow
-		return $true
-	}
-	if ($actual -eq 'Other' -or $actual -eq $Expected) { return $true }
-	$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
-	$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
-	Write-Host "'$Identity' is $($typeName[$actual]) ($script:LastRecipientRaw), not $($typeName[$Expected]) - this script can't add to it. Use the '$($scriptFor[$actual])' script instead." -ForegroundColor Red
-	Show-Notice 'Wrong script for this target' "'$Identity' is $($typeName[$actual]), not $($typeName[$Expected]).`n`nUse the '$($scriptFor[$actual])' script for it instead." 'Warn'
-	return $false
-}
-
 # True if an add/remove error just means "nothing to do" (already a member on add, or
 # not a member on remove) rather than a real failure - used to summarize bulk runs.
 function Test-HarmlessMemberError([string]$Message) {
@@ -63,34 +46,164 @@ function Test-HarmlessMemberError([string]$Message) {
 
 # Show ONE summary popup after a bulk add/remove (instead of a popup per row). $Counts has
 # done/noop/failed/skipped; $Action is 'add' or 'remove' for the wording.
-function Show-BulkSummary([hashtable]$Counts, [string]$Action) {
+function Show-BulkSummary([hashtable]$Counts, [string]$Action, $Corrected = $null) {
 	$doneWord = if ($Action -eq 'remove') { 'removed' } else { 'added' }
 	$noopWord = if ($Action -eq 'remove') { "weren't members" } else { 'already there' }
 	$parts = @()
 	if ($Counts.done -gt 0)    { $parts += "$($Counts.done) $doneWord" }
 	if ($Counts.noop -gt 0)    { $parts += "$($Counts.noop) $noopWord" }
-	if ($Counts.skipped -gt 0) { $parts += "$($Counts.skipped) skipped (wrong type)" }
+	if ($Counts.skipped -gt 0) { $parts += "$($Counts.skipped) skipped (couldn't look up)" }
 	if ($Counts.failed -gt 0)  { $parts += "$($Counts.failed) failed" }
 	$summary = if ($parts.Count) { $parts -join ', ' } else { 'nothing to do' }
 	Write-Host "Bulk result: $summary." -ForegroundColor Cyan
+	# Note any targets that were auto-routed to a different type than the script is named for.
+	$note = ''
+	$corr = @($Corrected)
+	if ($corr.Count) {
+		$note = "`n`nNote - some targets were a different type than this script, and were handled as their real type:`n" + (($corr | ForEach-Object { "  - $_" }) -join "`n")
+	}
 	$kind  = if ($Counts.failed -gt 0) { 'Warn' } else { 'Info' }
 	$title = if ($Action -eq 'remove') { 'Bulk remove complete' } else { 'Bulk add complete' }
-	Show-Notice $title "Finished processing the list:`n`n$summary." $kind
+	Show-Notice $title "Finished processing the list:`n`n$summary.$note" $kind
 	$progressBar1.Value = 0
 }
 
-# Called from an add-member catch block: pops up a friendly notice if the person is
-# already a member, otherwise a notice with the real error (and logs either way).
-function Show-MemberAddError($Err, [string]$Member, [string]$Target) {
-	$msg = "$($Err.Exception.Message)".Trim()
-	if ($msg -match 'already a member|already exists|already has|is already|AlreadyExists|already present') {
-		Write-Host "$Member is already added to '$Target'." -ForegroundColor Yellow
-		Show-Notice 'Already added' "$Member is already added to `"$Target`"." 'Info'
+# Add or remove ONE member on ONE target, auto-routing by the target's REAL type instead of
+# assuming the script's own type. So 'Add distribution list member' still works when the
+# address is really a shared mailbox (grants access) or a Teams group (adds as member), etc.
+# Returns @{ Category; TypeName; Status ('done'|'noop'|'failed'|'unknown'); Message }.
+# Shows no UI - the caller decides how to report. $MailboxRight picks what to do when the
+# target turns out to be a mailbox: 'FullAndSendAs' (default) | 'FullAccess' | 'SendAs' |
+# 'SendOnBehalf'. $FallbackCategory is used when the target can't be classified (e.g. lookup
+# failed) so we still try the script's native cmdlet and surface its real error. Pass a shared
+# [hashtable]$Cache across a bulk run to avoid re-querying the same target.
+function Invoke-MemberRoute {
+	param(
+		[string]$Target,
+		[string]$Member,
+		[string]$Action = 'add',
+		[string]$MailboxRight = 'FullAndSendAs',
+		[string]$FallbackCategory = '',
+		[hashtable]$Cache = $null
+	)
+	$isRemove = ($Action -eq 'remove')
+	if ($Cache -and $Cache.ContainsKey($Target)) {
+		$cat = $Cache[$Target].Cat; $typeName = $Cache[$Target].Name
 	} else {
-		Write-Host "Couldn't add $Member to '$Target': $msg" -ForegroundColor Red
-		Show-Notice 'Add failed' "Couldn't add $Member to `"$Target`":`n`n$msg" 'Error'
+		$cat = Get-RecipientCategory $Target
+		$typeName = Get-RecipientTypeName $script:LastRecipientRaw
+		if ($Cache) { $Cache[$Target] = @{ Cat = $cat; Name = $typeName } }
+	}
+	$res = @{ Category = $cat; TypeName = $typeName; Status = 'unknown'; Message = '' }
+	$effCat = if ($cat -and $cat -ne 'Other') { $cat } elseif ($FallbackCategory) { $FallbackCategory } else { '' }
+	if (-not $effCat) { return $res }
+	try {
+		if ($isRemove) {
+			switch ($effCat) {
+				'DistributionList' { Remove-DistributionGroupMember -Identity $Target -Member $Member -Confirm:$false -ErrorAction Stop }
+				'UnifiedGroup'     { Remove-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -Confirm:$false -ErrorAction Stop }
+				'Mailbox' {
+					switch ($MailboxRight) {
+						'SendAs'       { Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
+						'SendOnBehalf' { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Remove=$Member} -ErrorAction Stop }
+						'FullAccess'   { Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop }
+						default {
+							Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
+							Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+						}
+					}
+				}
+			}
+		} else {
+			switch ($effCat) {
+				'DistributionList' { Add-DistributionGroupMember -Identity $Target -Member $Member -ErrorAction Stop }
+				'UnifiedGroup'     { Add-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -ErrorAction Stop }
+				'Mailbox' {
+					switch ($MailboxRight) {
+						'SendAs'       { Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
+						'SendOnBehalf' { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Add=$Member} -ErrorAction Stop }
+						'FullAccess'   { Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop }
+						default {
+							Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+							Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+						}
+					}
+				}
+			}
+		}
+		$res.Status = 'done'
+	} catch {
+		$msg = "$($_.Exception.Message)".Trim()
+		$res.Message = $msg
+		$res.Status = if (Test-HarmlessMemberError $msg) { 'noop' } else { 'failed' }
+	}
+	return $res
+}
+
+# What each detected type is "called" for the after-the-fact note.
+$script:MemberTypeArticle = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
+
+# Run one single-target add/remove through Invoke-MemberRoute and report the outcome with a
+# popup - INCLUDING a friendly note when the target turned out to be a different type than the
+# script is named for (e.g. "that address is actually a distribution list, but Jane was added
+# to it anyway"). No confirmation gate: it just does the right thing, then tells you. $Expected
+# is the category this script is for (used only for the note + as the fallback cmdlet).
+function Invoke-SingleMemberChange {
+	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action = 'add', [string]$MailboxRight = 'FullAndSendAs')
+	$isRemove = ($Action -eq 'remove')
+	$verbPast = if ($isRemove) { 'removed from' } else { 'added to' }
+	if (-not $Target -or -not $Member) {
+		Show-Notice 'Missing info' "Enter both a member and a target first." 'Warn'; $progressBar1.Value = 0; return
+	}
+	$progressBar1.Value = 40
+	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected
+	$typeName = $r.TypeName
+	$mismatch = ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected)
+	$expArticle = $script:MemberTypeArticle[$Expected]
+	switch ($r.Status) {
+		'unknown' {
+			Write-Host "Couldn't determine the type of '$Target'." -ForegroundColor Red
+			Show-Notice 'Not found' "Couldn't find `"$Target`" or work out its type (mailbox, distribution list, or Teams / Microsoft 365 group).`n`nCheck the address and that you're connected to the right tenant." 'Error'
+		}
+		'done' {
+			Write-Host "$Member $verbPast $Target ($typeName)." -ForegroundColor Cyan
+			$progressBar1.Value = 80
+			$note = if ($mismatch) { "`n`nNote: `"$Target`" is actually $typeName, not $expArticle - but $Member was still $verbPast it." } else { '' }
+			Show-Notice $(if ($isRemove) { 'Removed' } else { 'Added' }) "$Member was $verbPast `"$Target`" ($typeName).$note" 'Info'
+			OperationComplete
+		}
+		'noop' {
+			$noopMsg = if ($isRemove) { "$Member wasn't on `"$Target`" ($typeName) - nothing to remove." } else { "$Member is already on `"$Target`" ($typeName)." }
+			Write-Host $noopMsg -ForegroundColor Yellow
+			$note = if ($mismatch) { "`n`n(Heads up: `"$Target`" is actually $typeName, not $expArticle.)" } else { '' }
+			Show-Notice 'Nothing to do' "$noopMsg$note" 'Info'
+		}
+		'failed' {
+			$vb = if ($isRemove) { 'remove' } else { 'add' }
+			$pp = if ($isRemove) { 'from' } else { 'to' }
+			Write-Host "Couldn't $vb $Member $pp '$Target': $($r.Message)" -ForegroundColor Red
+			Show-Notice "$(if ($isRemove) { 'Remove' } else { 'Add' }) failed" "Couldn't $vb $Member $pp `"$Target`":`n`n$($r.Message)" 'Error'
+		}
 	}
 	$progressBar1.Value = 0
+}
+
+# Bulk (CSV) auto-route for one row. Uses the shared $Cache + $Notes list so the end summary
+# can mention any targets whose real type differed. Returns 'done'|'noop'|'failed'|'unknown'.
+function Invoke-BulkMemberRow {
+	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action, [hashtable]$Cache, [System.Collections.Generic.HashSet[string]]$Corrected, [string]$MailboxRight = 'FullAndSendAs')
+	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected -Cache $Cache
+	if ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected -and $Corrected) {
+		[void]$Corrected.Add("$Target is $($r.TypeName)")
+	}
+	$verbPast = if ($Action -eq 'remove') { 'removed from' } else { 'added to' }
+	switch ($r.Status) {
+		'done'    { Write-Host "$Member $verbPast $Target ($($r.TypeName))." }
+		'noop'    { Write-Host "${Member}: nothing to do on '$Target' ($($r.TypeName))." -ForegroundColor Yellow }
+		'failed'  { Write-Host "Couldn't process $Member on '$Target': $($r.Message)" -ForegroundColor Red }
+		'unknown' { Write-Host "Skipped $Member on '$Target' - couldn't determine its type." -ForegroundColor Yellow }
+	}
+	return $r.Status
 }
 
 # Pull unique email addresses out of arbitrary pasted text (case-insensitive de-dupe,
@@ -239,22 +352,6 @@ function Show-PasteMembersDialog {
 		Show-Notice $title $body $kind
 		$progressBar1.Value = 0
 	}
-}
-
-# Bulk/CSV variant: caches the lookup per run (pass the same [hashtable]$Cache across rows
-# so a repeated target isn't re-queried) and warns only ONCE per unique wrong-type target.
-# Returns $false for rows whose target is the wrong type (caller should skip that row).
-function Test-MemberTargetTypeCached([string]$Identity, [string]$Expected, [hashtable]$Cache) {
-	$firstSeen = -not $Cache.ContainsKey($Identity)
-	if ($firstSeen) { $Cache[$Identity] = Get-RecipientCategory $Identity }
-	$actual = $Cache[$Identity]
-	if (-not $actual -or $actual -eq 'Other' -or $actual -eq $Expected) { return $true }
-	if ($firstSeen) {
-		$scriptFor = @{ Mailbox = 'Add-MailboxMember'; DistributionList = 'Add-DistributionListMember'; UnifiedGroup = 'Add-TeamsGroupMember' }
-		$typeName  = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
-		Write-Host "Skipping rows for '$Identity' - it's $($typeName[$actual]) ($script:LastRecipientRaw), not $($typeName[$Expected]). Use '$($scriptFor[$actual])' for it." -ForegroundColor Red
-	}
-	return $false
 }
 
 # Shared shape used by Add/Remove DistributionListMember and UnifiedGroupMember
@@ -691,15 +788,7 @@ function Add-DistributionListMember {
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 40
-		if (-not (Test-MemberTargetType $group 'DistributionList')) { $progressBar1.Value = 0; return }
-		try {
-			Add-DistributionGroupMember -Identity $group -Member $member -ErrorAction Stop
-			Write-Host "Added $member to $group." -ForegroundColor Cyan
-			$progressBar1.Value = 80
-			OperationComplete
-		} catch {
-			Show-MemberAddError $_ $member $group
-		}
+		Invoke-SingleMemberChange -Target $group -Member $member -Expected 'DistributionList' -Action 'add'
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplateButton clicked."
@@ -713,23 +802,20 @@ function Add-DistributionListMember {
 		Write-Host "AddBulkMembersButton clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-DistributionListMember.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'DistributionList' $typeCache)) { $counts.skipped++; return }
-			try {
-				Add-DistributionGroupMember -Identity $group -Member $member -ErrorAction Stop
-				Write-Host "Added $member to $group."
-				$counts.done++
-			} catch {
-				$m = "$($_.Exception.Message)".Trim()
-				if (Test-HarmlessMemberError $m) { Write-Host "$member already in '$group'." -ForegroundColor Yellow; $counts.noop++ }
-				else { Write-Host "Couldn't add $member to '$group': $m" -ForegroundColor Red; $counts.failed++ }
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'add' -Cache $typeCache -Corrected $corrected) {
+				'done'    { $counts.done++ }
+				'noop'    { $counts.noop++ }
+				'failed'  { $counts.failed++ }
+				'unknown' { $counts.skipped++ }
 			}
 		}
-		Show-BulkSummary $counts 'add'
+		Show-BulkSummary $counts 'add' $corrected
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste
@@ -993,133 +1079,28 @@ function Add-MailboxMember {
 		Write-Host "Mode = $mailboxMemberMode"
 		CheckForErrors
 	}
+	# All four mailbox buttons auto-route: if the "mailbox" is really a distribution list or
+	# Teams / M365 group, the person is added to / removed from it as a member (mailbox-only
+	# rights like Send As fall back to plain membership), and the summary says so afterward.
 	function OnMemberButtonClick {
-		if ($mailboxMemberMode -eq 0) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
-				$progressBar1.Value = 50
-				Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 80
-				Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
-			} catch {
-				Show-MemberAddError $_ $member $mailbox
-				return
-			}
-		} elseif ($mailboxMemberMode -eq 1) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 50
-				Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 90
-				Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
-			} catch {
-				Write-Host "Couldn't remove $member from '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
-			}
-		}
+		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAndSendAs'
 		CheckForErrors
-		OperationComplete
 	}
 	function OnFullAccessButtonClick {
-		if ($mailboxMemberMode -eq 0) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Added Read and Manage permission for $member to $mailbox." -ForegroundColor Cyan
-			} catch {
-				Show-MemberAddError $_ $member $mailbox
-				return
-			}
-		} elseif ($mailboxMemberMode -eq 1) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Removed FullAccess permission for $member from $mailbox." -ForegroundColor Cyan
-			} catch {
-				Write-Host "Couldn't remove Full Access on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
-			}
-		}
+		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAccess'
 		CheckForErrors
-		OperationComplete
 	}
 	function OnSendOnBehalfButtonClick {
-		if ($mailboxMemberMode -eq 0) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Add=$member} -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Added SendOnBehalf permission for $member to $mailbox" -ForegroundColor Cyan
-			} catch {
-				Show-MemberAddError $_ $member $mailbox
-				return
-			}
-		} elseif ($mailboxMemberMode -eq 1) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Set-Mailbox -Identity $mailbox -GrantSendOnBehalfTo @{Remove=$member} -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Removed SendOnBehalf permission for $member from $mailbox." -ForegroundColor Cyan
-			} catch {
-				Write-Host "Couldn't remove Send on Behalf on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
-			}
-		}
+		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendOnBehalf'
 		CheckForErrors
-		OperationComplete
 	}
 	function OnSendAsButtonClick {
-		if ($mailboxMemberMode -eq 0) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Added SendAs permission for $member to $mailbox." -ForegroundColor Cyan
-			} catch {
-				Show-MemberAddError $_ $member $mailbox
-				return
-			}
-		} elseif ($mailboxMemberMode -eq 1) {
-			$mailbox = $mailboxInputBox.Text
-			$member = $memberInputBox.Text
-			$progressBar1.Value = 10
-			if (-not (Test-MemberTargetType $mailbox 'Mailbox')) { $progressBar1.Value = 0; return }
-			try {
-				Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-				$progressBar1.Value = 50
-				Write-Host "Removed SendAs permission for $member from $mailbox." -ForegroundColor Cyan
-			} catch {
-				Write-Host "Couldn't remove Send As on '$mailbox': $($_.Exception.Message)" -ForegroundColor Red
-				$progressBar1.Value = 0; return
-			}
-		}
+		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendAs'
 		CheckForErrors
-		OperationComplete
 	}
 	function OnOpenTemplateButtonClick {
 		if ($mailboxMemberMode -eq 0) {
@@ -1138,48 +1119,22 @@ function Add-MailboxMember {
 	function OnBulkMembersButtonClick {
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
-		if ($mailboxMemberMode -eq 0) {
-			Import-Csv ".\Templates\Add-MailboxMember.csv" | ForEach-Object {
-				$member = $_.Member
-				$mailbox = $_.Mailbox
-				$progressBar1.Value = 20
-				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { $counts.skipped++; return }
-				try {
-					Add-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
-					$progressBar1.Value = 50
-					Add-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-					$progressBar1.Value = 80
-					Write-Host "Added $member to $mailbox." -ForegroundColor Cyan
-					$counts.done++
-				} catch {
-					$m = "$($_.Exception.Message)".Trim()
-					if (Test-HarmlessMemberError $m) { Write-Host "$member already set up on '$mailbox'." -ForegroundColor Yellow; $counts.noop++ }
-					else { Write-Host "Couldn't add $member to '$mailbox': $m" -ForegroundColor Red; $counts.failed++ }
-				}
+		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
+		$csv = if ($mailboxMemberMode -eq 0) { ".\Templates\Add-MailboxMember.csv" } else { ".\Templates\Remove-MailboxMember.csv" }
+		Import-Csv $csv | ForEach-Object {
+			$member = $_.Member
+			$mailbox = $_.Mailbox
+			$progressBar1.Value = 40
+			switch (Invoke-BulkMemberRow -Target $mailbox -Member $member -Expected 'Mailbox' -Action $act -Cache $typeCache -Corrected $corrected -MailboxRight 'FullAndSendAs') {
+				'done'    { $counts.done++ }
+				'noop'    { $counts.noop++ }
+				'failed'  { $counts.failed++ }
+				'unknown' { $counts.skipped++ }
 			}
-			Show-BulkSummary $counts 'add'
-		} elseif ($mailboxMemberMode -eq 1) {
-			Import-Csv ".\Templates\Remove-MailboxMember.csv" | ForEach-Object {
-				$member = $_.Member
-				$mailbox = $_.Mailbox
-				$progressBar1.Value = 20
-				if (-not (Test-MemberTargetTypeCached $mailbox 'Mailbox' $typeCache)) { $counts.skipped++; return }
-				try {
-					Remove-MailboxPermission -Identity $mailbox -User $member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
-					$progressBar1.Value = 50
-					Remove-RecipientPermission -Identity $mailbox -Trustee $member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
-					$progressBar1.Value = 80
-					Write-Host "Removed $member from $mailbox." -ForegroundColor Cyan
-					$counts.done++
-				} catch {
-					$m = "$($_.Exception.Message)".Trim()
-					if (Test-HarmlessMemberError $m) { Write-Host "$member wasn't on '$mailbox'." -ForegroundColor Yellow; $counts.noop++ }
-					else { Write-Host "Couldn't remove $member from '$mailbox': $m" -ForegroundColor Red; $counts.failed++ }
-				}
-			}
-			Show-BulkSummary $counts 'remove'
 		}
+		Show-BulkSummary $counts $act $corrected
 	}
 
 	$scriptForm1 = New-MailboxMemberDialog
@@ -1282,15 +1237,7 @@ function Add-UnifiedGroupMember {
 		$member = $memberInputBox.Text
 		$group = $groupInputBox.Text
 		$progressBar1.Value = 30
-		if (-not (Test-MemberTargetType $group 'UnifiedGroup')) { $progressBar1.Value = 0; return }
-		try {
-			Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -ErrorAction Stop
-			Write-Host "Added $member to $group." -ForegroundColor Cyan
-			$progressBar1.Value = 80
-			OperationComplete
-		} catch {
-			Show-MemberAddError $_ $member $group
-		}
+		Invoke-SingleMemberChange -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'add'
 	}
 	function OnOpenTemplateButtonClick {
 		Write-Host "OpenTemplate button clicked."
@@ -1304,23 +1251,20 @@ function Add-UnifiedGroupMember {
 		Write-Host "AddBulkMembers button clicked."
 		$progressBar1.Value = 10
 		$typeCache = @{}
+		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | ForEach-Object {
 			$progressBar1.Value = 30
 			$member = $_.Member
 			$group = $_.Group
-			if (-not (Test-MemberTargetTypeCached $group 'UnifiedGroup' $typeCache)) { $counts.skipped++; return }
-			try {
-				Add-UnifiedGroupLinks -Identity $group -LinkType Members -Links $member -ErrorAction Stop
-				Write-Host "Added $member to $group."
-				$counts.done++
-			} catch {
-				$m = "$($_.Exception.Message)".Trim()
-				if (Test-HarmlessMemberError $m) { Write-Host "$member already in '$group'." -ForegroundColor Yellow; $counts.noop++ }
-				else { Write-Host "Couldn't add $member to '$group': $m" -ForegroundColor Red; $counts.failed++ }
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'add' -Cache $typeCache -Corrected $corrected) {
+				'done'    { $counts.done++ }
+				'noop'    { $counts.noop++ }
+				'failed'  { $counts.failed++ }
+				'unknown' { $counts.skipped++ }
 			}
 		}
-		Show-BulkSummary $counts 'add'
+		Show-BulkSummary $counts 'add' $corrected
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-UnifiedGroupMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste

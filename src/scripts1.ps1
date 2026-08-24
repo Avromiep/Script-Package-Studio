@@ -33,7 +33,7 @@ function Get-RecipientTypeName([string]$Raw) {
 		'DynamicDistribution'           { return 'dynamic distribution list' }
 		'MailUniversalSecurityGroup'    { return 'mail-enabled security group' }
 		'MailUniversalDistributionGroup|MailNonUniversalGroup|DistributionGroup' { return 'distribution list' }
-		'UserMailbox'                   { return 'mailbox' }
+		'UserMailbox'                   { return "user's mailbox" }
 		default                         { return 'recipient' }
 	}
 }

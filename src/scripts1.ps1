@@ -295,6 +295,9 @@ function New-PasteMembersDialog {
 				continue
 			}
 			$td = 0; $tn = 0; $tf = 0
+			$addedM = [System.Collections.Generic.List[string]]::new()
+			$noopM  = [System.Collections.Generic.List[string]]::new()
+			$failM  = [System.Collections.Generic.List[string]]::new()
 			foreach ($m in $members) {
 				try {
 					if ($isRemove) {
@@ -317,18 +320,20 @@ function New-PasteMembersDialog {
 						}
 					}
 					Write-Host "$m $(if ($isRemove) { 'removed from' } else { 'added to' }) $target ($typeName)"
-					$td++; $counts.done++
+					$td++; $counts.done++; $addedM.Add($m)
 				} catch {
 					$msg = "$($_.Exception.Message)".Trim()
-					if (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $tn++; $counts.noop++ }
-					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $tf++; $counts.failed++; $anyFailed = $true }
+					if (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $tn++; $counts.noop++; $noopM.Add($m) }
+					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $tf++; $counts.failed++; $anyFailed = $true; $failM.Add($m) }
 				}
 			}
-			$bits = @()
-			if ($td) { $bits += "$td $doneWord" }
-			if ($tn) { $bits += "$tn $noopWord" }
-			if ($tf) { $bits += "$tf failed" }
-			$lineText = "$target ($typeName): $(if ($bits.Count) { $bits -join ', ' } else { 'nothing to do' })"
+			# Name the actual addresses under each target (not just counts) so it's clear WHAT
+			# was added/removed where. Indented one level under the target header.
+			$detail = @()
+			if ($addedM.Count) { $detail += "  $doneWord ($($addedM.Count)): $($addedM -join ', ')" }
+			if ($noopM.Count)  { $detail += "  $noopWord ($($noopM.Count)): $($noopM -join ', ')" }
+			if ($failM.Count)  { $detail += "  failed ($($failM.Count)): $($failM -join ', ')" }
+			$lineText = if ($detail.Count) { "$target ($typeName):`n" + ($detail -join "`n") } else { "$target ($typeName): nothing to do" }
 			$lines.Add($lineText)
 			Write-Host $lineText -ForegroundColor Cyan
 		}

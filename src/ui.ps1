@@ -339,7 +339,9 @@ function New-NoticeDialog([string]$Title, [string]$Message, [string]$Kind = 'Inf
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
 				<TextBlock Text="$glyph" Style="{DynamicResource Icon}" Foreground="{DynamicResource $brush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
-				<TextBlock x:Name="NoticeText" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="290" TextWrapping="Wrap"/>
+				<ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="10,0,0,0">
+					<TextBlock x:Name="NoticeText" Style="{DynamicResource Body}" MaxWidth="290" TextWrapping="Wrap"/>
+				</ScrollViewer>
 			</StackPanel>
 			<Button x:Name="NoticeOkBtn" Style="{DynamicResource BtnPrimary}" Content="OK" HorizontalAlignment="Right" MinWidth="90" Margin="0,16,0,0" IsDefault="True"/>
 		</StackPanel>

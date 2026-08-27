@@ -218,6 +218,64 @@ function Get-EmailsFromText([string]$Text) {
 	return $out.ToArray()
 }
 
+# --- External-address handling ------------------------------------------------------------
+# When a pasted address isn't in one of the tenant's accepted domains it can't be added to a
+# group/mailbox as-is. We offer to bring it in first: distribution lists take a MAIL CONTACT,
+# Teams / Microsoft 365 groups take a GUEST invite, shared mailboxes can't take an external at
+# all. These helpers do the lookups/provisioning and are called from the paste "Add All" flow.
+
+# Tenant's accepted domains (lowercased HashSet), or $null if the lookup fails (then we skip
+# the whole external check and just let the normal cmdlets run + surface their own errors).
+function Get-AcceptedDomainList {
+	try {
+		$set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+		foreach ($d in (Get-AcceptedDomain -ErrorAction Stop)) { [void]$set.Add(("$($d.DomainName)").Trim()) }
+		if ($set.Count -eq 0) { return $null }
+		return $set
+	} catch { return $null }
+}
+
+# Is $Email outside every accepted domain? $Accepted is the HashSet from Get-AcceptedDomainList.
+function Test-IsExternalAddress([string]$Email, $Accepted) {
+	if (-not $Accepted) { return $false }
+	$at = $Email.LastIndexOf('@')
+	if ($at -lt 0) { return $false }
+	$dom = $Email.Substring($at + 1).Trim()
+	return (-not $Accepted.Contains($dom))
+}
+
+# Ensure a mail contact exists for an external address; returns the identity to use as a DL
+# member (the existing recipient if one already resolves, else a freshly created contact).
+# Throws on failure so the caller can record it.
+function Resolve-OrCreateMailContact([string]$Email) {
+	$existing = $null
+	try { $existing = Get-Recipient -Identity $Email -ErrorAction Stop | Select-Object -First 1 } catch { $existing = $null }
+	if ($existing) { return $Email }
+	# Name must be unique in the OU; the address itself is a safe, unique choice.
+	New-MailContact -Name $Email -ExternalEmailAddress $Email -ErrorAction Stop | Out-Null
+	return $Email
+}
+
+# Ensure the external address exists as a guest user; returns its AAD object id. Reuses an
+# existing guest if one is already present, otherwise sends an invitation. Throws on failure.
+function Resolve-OrInviteGuest([string]$Email) {
+	$u = $null
+	try { $u = Get-MgUser -Filter "mail eq '$Email'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
+	if (-not $u) { try { $u = Get-MgUser -Filter "otherMails/any(x:x eq '$Email')" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
+	if ($u) { return $u.Id }
+	$inv = New-MgInvitation -InvitedUserEmailAddress $Email -InviteRedirectUrl 'https://myapps.microsoft.com' -SendInvitationMessage:$true -ErrorAction Stop
+	return $inv.InvitedUser.Id
+}
+
+# Add an already-resolved guest (AAD object id) to a Microsoft 365 / Teams group given by its
+# SMTP address. Resolves the group's AAD id via Get-UnifiedGroup, then New-MgGroupMember.
+function Add-GuestToUnifiedGroup([string]$GroupSmtp, [string]$GuestId) {
+	$g = Get-UnifiedGroup -Identity $GroupSmtp -ErrorAction Stop
+	$gid = $g.ExternalDirectoryObjectId
+	if (-not $gid) { throw "Couldn't resolve the group's directory id for '$GroupSmtp'." }
+	New-MgGroupMember -GroupId $gid -DirectoryObjectId $GuestId -ErrorAction Stop
+}
+
 # Universal paste-to-add/remove: paste people (top, live-extracted) + paste one or more
 # targets (bottom) that can be ANY mix of distribution lists, shared mailboxes, or Teams /
 # M365 groups. On Add/Remove All, each target's real type is detected (Get-RecipientCategory)
@@ -280,11 +338,26 @@ function New-PasteMembersDialog {
 		$targets = @($targets | Select-Object -Unique)
 		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' "No people to $verbLow - paste some text with email addresses at the top." 'Warn'; return }
 		if ($targets.Count -eq 0) { Show-Notice 'Nothing to do' 'Add at least one target (distribution list, shared mailbox, or Teams / M365 group) at the bottom.' 'Warn'; return }
-		$counts = @{ done = 0; noop = 0; failed = 0 }
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$lines = [System.Collections.Generic.List[string]]::new()
 		$anyFailed = $false
 		$doneWord = if ($isRemove) { 'removed' } else { 'added' }
 		$noopWord = if ($isRemove) { "weren't members" } else { 'already there' }
+			# External (non-tenant-domain) addresses: offer once to bring them in first, so a
+			# batch doesn't need a separate contact/guest step. Add only. 'bring-in' | 'skip'.
+			$externalMode = 'skip'
+			$externalSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+			if (-not $isRemove) {
+				$accepted = Get-AcceptedDomainList
+				$ext = @($members | Where-Object { Test-IsExternalAddress $_ $accepted })
+				foreach ($e in $ext) { [void]$externalSet.Add($e) }
+				if ($ext.Count -gt 0) {
+					$plural = if ($ext.Count -ne 1) { 'es' } else { '' }
+					$shown = if ($ext.Count -gt 15) { (@($ext | Select-Object -First 15) -join "`n  ") + "`n  ...and $($ext.Count - 15) more" } else { $ext -join "`n  " }
+					$msg = "$($ext.Count) address$plural aren't in your tenant's domains:`n`n  $shown`n`nBring them in so they can be added? Distribution lists get a mail contact; Teams / Microsoft 365 groups get a guest invite; shared mailboxes can't take external addresses, so those are skipped.`n`nYes = bring them in & add.  No = skip the external ones."
+					if (Confirm-YesNo 'External addresses found' $msg '&#xEA88;') { $externalMode = 'bring-in' }
+				}
+			}
 		$progressBar1.Value = 10
 		foreach ($target in $targets) {
 			$cat = Get-RecipientCategory $target
@@ -294,7 +367,7 @@ function New-PasteMembersDialog {
 				$lines.Add("$target - skipped (not a mailbox, list, or group)")
 				continue
 			}
-			$td = 0; $tn = 0; $tf = 0
+			$skipM  = [System.Collections.Generic.List[string]]::new()
 			$addedM = [System.Collections.Generic.List[string]]::new()
 			$noopM  = [System.Collections.Generic.List[string]]::new()
 			$failM  = [System.Collections.Generic.List[string]]::new()
@@ -311,20 +384,23 @@ function New-PasteMembersDialog {
 						}
 					} else {
 						switch ($cat) {
-							'DistributionList' { Add-DistributionGroupMember -Identity $target -Member $m -ErrorAction Stop }
-							'UnifiedGroup'     { Add-UnifiedGroupLinks -Identity $target -LinkType Members -Links $m -ErrorAction Stop }
+							'DistributionList' { $mm = $m; if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; $mm = Resolve-OrCreateMailContact $m }; Add-DistributionGroupMember -Identity $target -Member $mm -ErrorAction Stop }
+							'UnifiedGroup'     { if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; $gid = Resolve-OrInviteGuest $m; Add-GuestToUnifiedGroup $target $gid } else { Add-UnifiedGroupLinks -Identity $target -LinkType Members -Links $m -ErrorAction Stop } }
 							'Mailbox'          {
+								if ($externalSet.Contains($m)) { throw 'SP_SKIP_MB' }
 								Add-MailboxPermission -Identity $target -User $m -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
 								Add-RecipientPermission -Identity $target -Trustee $m -AccessRights SendAs -Confirm:$false -ErrorAction Stop
 							}
 						}
 					}
 					Write-Host "$m $(if ($isRemove) { 'removed from' } else { 'added to' }) $target ($typeName)"
-					$td++; $counts.done++; $addedM.Add($m)
+					$counts.done++; $addedM.Add($m)
 				} catch {
 					$msg = "$($_.Exception.Message)".Trim()
-					if (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $tn++; $counts.noop++; $noopM.Add($m) }
-					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $tf++; $counts.failed++; $anyFailed = $true; $failM.Add($m) }
+					if ($msg -eq 'SP_SKIP') { Write-Host "${m}: external, skipped on '$target'." -ForegroundColor Yellow; $skipM.Add("$m (external - skipped)"); $counts.skipped++ }
+						elseif ($msg -eq 'SP_SKIP_MB') { Write-Host "${m}: external, can't get mailbox access on '$target'." -ForegroundColor Yellow; $skipM.Add("$m (external - no mailbox access)"); $counts.skipped++ }
+						elseif (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $counts.noop++; $noopM.Add($m) }
+					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $counts.failed++; $anyFailed = $true; $failM.Add($m) }
 				}
 			}
 			# Name the actual addresses under each target (not just counts) so it's clear WHAT
@@ -332,7 +408,8 @@ function New-PasteMembersDialog {
 			$detail = @()
 			if ($addedM.Count) { $detail += "  $doneWord ($($addedM.Count)): $($addedM -join ', ')" }
 			if ($noopM.Count)  { $detail += "  $noopWord ($($noopM.Count)): $($noopM -join ', ')" }
-			if ($failM.Count)  { $detail += "  failed ($($failM.Count)): $($failM -join ', ')" }
+			if ($skipM.Count)  { $detail += "  skipped ($($skipM.Count)): $($skipM -join ', ')" }
+				if ($failM.Count)  { $detail += "  failed ($($failM.Count)): $($failM -join ', ')" }
 			$lineText = if ($detail.Count) { "$target ($typeName):`n" + ($detail -join "`n") } else { "$target ($typeName): nothing to do" }
 			$lines.Add($lineText)
 			Write-Host $lineText -ForegroundColor Cyan

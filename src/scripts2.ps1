@@ -27,10 +27,10 @@ function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
 # Summarize a bulk account-creation run: what was created vs what failed (with reason), by
 # name, so it's clear which rows to re-check. $Created / $Failed are string lists. One bad row
 # no longer aborts the batch - it's caught, recorded here, and the run continues.
-function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview) {
+function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview, [string]$DoneWord = 'Created', [string]$FailWord = 'Failed') {
 	$c = @($Created); $f = @($Failed)
-	$doneLabel = if ($Preview) { 'Would create' } else { 'Created' }
-	$failLabel = if ($Preview) { 'Would skip / fail' } else { 'Failed' }
+	$doneLabel = if ($Preview) { 'Would ' + $DoneWord.ToLower() } else { $DoneWord }
+	$failLabel = if ($Preview) { 'Would skip / fail' } else { $FailWord }
 	$parts = @()
 	if ($c.Count) { $parts += "$doneLabel ($($c.Count)):`n  " + ($c -join "`n  ") }
 	if ($f.Count) { $parts += "$failLabel ($($f.Count)):`n  " + ($f -join "`n  ") }
@@ -806,6 +806,18 @@ $script:EmailLicenseList = @(
 	"Microsoft 365 E5"
 )
 
+# Friendly license name -> SKU GUID. Single source of truth shared by the account creators and
+# Set-License. (Same GUIDs previously inline in the create scripts' switch statements.)
+$script:LicenseSkuMap = [ordered]@{
+	"Exchange Online (Plan 1)"        = "4b9405b0-7788-4568-add1-99614e613b69"
+	"Exchange Online (Plan 2)"        = "19ec0d23-8335-4cbd-94ac-6050e30712fa"
+	"Microsoft 365 Business Basic"    = "3b555118-da6a-4418-894f-7df1e2096870"
+	"Microsoft 365 Business Standard" = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"
+	"Microsoft 365 Business Premium"  = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"
+	"Microsoft 365 E3"                = "05e9a617-0261-4cee-bb44-138d3ef5d965"
+	"Microsoft 365 E5"                = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"
+}
+
 function New-ADAndEmailAccountsDialog {
 	param([string]$ForestName = '')
 	$win = New-StyledDialog -Title 'New-ADAndEmailAccounts' -Icon '&#xEDBB;' -BodyXaml @'
@@ -1164,6 +1176,217 @@ function New-EmailAccounts {
 
 	[void]$addEmailAccountsForm.ShowDialog()
 
+	Stop-Transcript
+}
+
+# ---------------------------------------------------------------------------
+function New-ResetMfaDialog {
+	New-StyledDialog -Title 'Reset-MFA' -Icon '&#xE72E;' -BodyXaml @'
+<StackPanel Margin="16" Width="340">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
+			<Grid Margin="0,12,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<TextBlock Text="User" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="EmailInput" Grid.Column="1"/>
+			</Grid>
+			<CheckBox x:Name="RevokeCheck" Content="Also sign the user out everywhere" IsChecked="True" Margin="0,12,0,0"/>
+			<Button x:Name="ResetBtn" Style="{DynamicResource BtnPrimary}" Content="Reset MFA" Margin="0,14,0,0"/>
+		</StackPanel>
+	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
+			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
+			<Button x:Name="BulkBtn" Style="{DynamicResource BtnPrimary}" Content="Reset MFA (bulk)" Margin="0,8,0,0"/>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+}
+
+function Reset-MFA {
+	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Reset-MFA.txt"
+	Write-Host "Running Reset-MFA script..."
+	$progressBar1.Value = 10
+
+	# Remove every re-registerable auth method (leaves the password), optionally revoke sessions.
+	# Returns the count removed; throws only if the user can't be read at all.
+	function Clear-MfaFor([string]$u) {
+		$methods = Get-MgUserAuthenticationMethod -UserId $u -ErrorAction Stop
+		$removed = 0
+		foreach ($m in $methods) {
+			$type = "$($m.AdditionalProperties['@odata.type'])"
+			try {
+				switch -Wildcard ($type) {
+					'*phoneAuthenticationMethod'                  { Remove-MgUserAuthenticationPhoneMethod -UserId $u -PhoneAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $u -MicrosoftAuthenticatorAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $u -SoftwareOathAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $u -Fido2AuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $u -WindowsHelloForBusinessAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $u -EmailAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $u -TemporaryAccessPassAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+					default { }   # passwordAuthenticationMethod / anything unknown: leave alone
+				}
+			} catch { Write-Host "  couldn't remove $type for $u`: $($_.Exception.Message)" -ForegroundColor Yellow }
+		}
+		if ($revokeCheck.IsChecked -eq $true) { Revoke-MgUserSignInSession -UserId $u -ErrorAction Stop | Out-Null }
+		return $removed
+	}
+	function OnResetButtonClick {
+		$u = $emailInput.Text.Trim()
+		if (-not $u) { Show-Notice 'Missing info' 'Enter a user email first.' 'Warn'; return }
+		$progressBar1.Value = 40
+		try {
+			$n = Clear-MfaFor $u
+			$extra = if ($revokeCheck.IsChecked -eq $true) { ' Signed them out everywhere.' } else { '' }
+			Write-Host "Cleared $n method(s) for $u." -ForegroundColor Cyan
+			Show-Notice 'MFA reset' "Cleared $n registered method(s) for `"$u`".$extra`n`nThey'll be asked to re-register at next sign-in (if MFA is required)." 'Info'
+		} catch { Show-Notice 'Reset MFA failed' "Couldn't reset MFA for `"$u`":`n`n$($_.Exception.Message)" 'Error' }
+		$progressBar1.Value = 0
+	}
+	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Reset-MFA.csv"; $progressBar1.Value = 0; CheckForErrors }
+	function OnBulkButtonClick {
+		$progressBar1.Value = 10
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
+		Import-Csv ".\Templates\Reset-MFA.csv" | ForEach-Object {
+			$u = "$($_.Email)".Trim()
+			if (-not $u) { return }
+			try { $n = Clear-MfaFor $u; $created.Add("$u ($n cleared)") }
+			catch { Write-Host "Failed on $u`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$u - $($_.Exception.Message)") }
+		}
+		Show-AccountResults 'Reset MFA' $created $failed -DoneWord 'Reset' -FailWord 'Failed'
+	}
+
+	$form = New-ResetMfaDialog
+	$emailInput = $form.FindName('EmailInput')
+	$revokeCheck = $form.FindName('RevokeCheck')
+	$form.FindName('ResetBtn').Add_Click({ OnResetButtonClick })
+	$form.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
+	$form.FindName('BulkBtn').Add_Click({ OnBulkButtonClick })
+	Write-Host "Loaded ResetMfaForm."
+	$progressBar1.Value = 0
+	[void]$form.ShowDialog()
+	Stop-Transcript
+}
+
+# ---------------------------------------------------------------------------
+function New-SetLicenseDialog {
+	$win = New-StyledDialog -Title 'Set-License' -Icon '&#xE8FC;' -BodyXaml @'
+<StackPanel Margin="16" Width="360">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
+			<StackPanel Orientation="Horizontal" Margin="0,10,0,4">
+				<RadioButton x:Name="AssignChip" Style="{DynamicResource Chip}" GroupName="LicMode" Content="Assign" IsChecked="True"/>
+				<RadioButton x:Name="RemoveChip" Style="{DynamicResource Chip}" GroupName="LicMode" Content="Remove" Margin="8,0,0,0"/>
+				<RadioButton x:Name="SwapChip" Style="{DynamicResource Chip}" GroupName="LicMode" Content="Swap" Margin="8,0,0,0"/>
+			</StackPanel>
+			<Grid Margin="0,8,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+				<TextBlock Text="User email" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="UserInput" Grid.Column="1"/>
+				<TextBlock x:Name="FromLabel" Text="Remove license" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed"/>
+				<ComboBox x:Name="FromCombo" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" Visibility="Collapsed"/>
+				<TextBlock x:Name="ToLabel" Text="License to add" Style="{DynamicResource Dim}" Grid.Row="2" VerticalAlignment="Center" Margin="0,8,0,0"/>
+				<ComboBox x:Name="ToCombo" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0"/>
+			</Grid>
+			<Button x:Name="ApplyBtn" Style="{DynamicResource BtnPrimary}" Content="Apply" Margin="0,14,0,0"/>
+		</StackPanel>
+	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
+			<TextBlock Text="Applies the mode and license chosen above to every email in the CSV." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,10,0,0"/>
+			<CheckBox x:Name="PreviewCheck" Content="Preview only" Margin="0,10,0,0"/>
+			<Button x:Name="BulkBtn" Style="{DynamicResource BtnPrimary}" Content="Apply to List" Margin="0,8,0,0"/>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+	$to = $win.FindName('ToCombo'); $from = $win.FindName('FromCombo')
+	foreach ($l in $script:LicenseSkuMap.Keys) { [void]$to.Items.Add($l); [void]$from.Items.Add($l) }
+	$to.SelectedIndex = 0; $from.SelectedIndex = 0
+	return $win
+}
+
+function Set-License {
+	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Set-License.txt"
+	Write-Host "Running Set-License script..."
+	$progressBar1.Value = 10
+
+	function Get-Mode { if ($assignChip.IsChecked -eq $true) { 'Assign' } elseif ($removeChip.IsChecked -eq $true) { 'Remove' } else { 'Swap' } }
+	# Apply one license change to one user by the current mode. Assign uses the replication-aware
+	# retry; remove/swap go straight through.
+	function Set-OneLicense([string]$User, [string]$AddSku, [string]$RemoveSku) {
+		if ($AddSku -and $RemoveSku) { Set-MgUserLicense -UserId $User -AddLicenses @(@{SkuId = $AddSku}) -RemoveLicenses @($RemoveSku) -ErrorAction Stop | Out-Null }
+		elseif ($AddSku)    { Assign-MgLicenseWithRetry $User $AddSku }
+		elseif ($RemoveSku) { Set-MgUserLicense -UserId $User -AddLicenses @() -RemoveLicenses @($RemoveSku) -ErrorAction Stop | Out-Null }
+	}
+	# Given the mode + combo selections, return @{ Add; Remove } SKU GUIDs (either may be $null).
+	function Resolve-Skus([string]$Mode) {
+		$toSku   = $script:LicenseSkuMap[[string]$toCombo.SelectedItem]
+		$fromSku = $script:LicenseSkuMap[[string]$fromCombo.SelectedItem]
+		switch ($Mode) {
+			'Assign' { @{ Add = $toSku; Remove = $null } }
+			'Remove' { @{ Add = $null;  Remove = $toSku } }
+			'Swap'   { @{ Add = $toSku; Remove = $fromSku } }
+		}
+	}
+	function OnModeChange {
+		$mode = Get-Mode
+		$swap = ($mode -eq 'Swap')
+		$fromLabel.Visibility = if ($swap) { 'Visible' } else { 'Collapsed' }
+		$fromCombo.Visibility = if ($swap) { 'Visible' } else { 'Collapsed' }
+		$toLabel.Text = switch ($mode) { 'Assign' { 'License to add' } 'Remove' { 'License to remove' } 'Swap' { 'License to add' } }
+		$applyButton.Content = "$mode"
+		$bulkButton.Content = "$mode for List"
+	}
+	function OnApplyButtonClick {
+		$u = $userInput.Text.Trim()
+		if (-not $u) { Show-Notice 'Missing info' 'Enter a user email first.' 'Warn'; return }
+		$mode = Get-Mode; $skus = Resolve-Skus $mode
+		if ($mode -eq 'Swap' -and $skus.Add -eq $skus.Remove) { Show-Notice 'Nothing to do' 'The two licenses are the same - pick different ones to swap.' 'Warn'; return }
+		$progressBar1.Value = 40
+		try { Set-OneLicense $u $skus.Add $skus.Remove; Write-Host "$mode license for $u." -ForegroundColor Cyan; Show-Notice 'License updated' "$mode complete for `"$u`"." 'Info' }
+		catch { Show-Notice 'License change failed' "Couldn't update licenses for `"$u`":`n`n$($_.Exception.Message)" 'Error' }
+		$progressBar1.Value = 0
+	}
+	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Set-License.csv"; $progressBar1.Value = 0; CheckForErrors }
+	function OnBulkButtonClick {
+		$mode = Get-Mode; $skus = Resolve-Skus $mode
+		$preview = ($previewCheck.IsChecked -eq $true)
+		$progressBar1.Value = 10
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
+		Import-Csv ".\Templates\Set-License.csv" | ForEach-Object {
+			$u = "$($_.Email)".Trim()
+			if (-not $u) { return }
+			if ($preview) { $created.Add("$u ($mode)"); return }
+			try { Set-OneLicense $u $skus.Add $skus.Remove; $created.Add("$u ($mode)") }
+			catch { Write-Host "Failed on $u`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$u - $($_.Exception.Message)") }
+		}
+		Show-AccountResults "Set-License ($mode)" $created $failed -Preview:$preview -DoneWord 'Updated' -FailWord 'Failed'
+	}
+
+	$form = New-SetLicenseDialog
+	$userInput = $form.FindName('UserInput')
+	$assignChip = $form.FindName('AssignChip'); $removeChip = $form.FindName('RemoveChip'); $swapChip = $form.FindName('SwapChip')
+	$fromLabel = $form.FindName('FromLabel'); $fromCombo = $form.FindName('FromCombo')
+	$toLabel = $form.FindName('ToLabel'); $toCombo = $form.FindName('ToCombo')
+	$applyButton = $form.FindName('ApplyBtn'); $bulkButton = $form.FindName('BulkBtn')
+	$previewCheck = $form.FindName('PreviewCheck')
+	$assignChip.Add_Checked({ OnModeChange }); $removeChip.Add_Checked({ OnModeChange }); $swapChip.Add_Checked({ OnModeChange })
+	$applyButton.Add_Click({ OnApplyButtonClick })
+	$form.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
+	$bulkButton.Add_Click({ OnBulkButtonClick })
+	Write-Host "Loaded SetLicenseForm."
+	$progressBar1.Value = 0
+	[void]$form.ShowDialog()
 	Stop-Transcript
 }
 

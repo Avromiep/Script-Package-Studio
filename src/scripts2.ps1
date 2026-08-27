@@ -634,10 +634,10 @@ function New-ADAccounts {
 
 			Write-Host "Copying attributes from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy additional attributes from the source user
-			Set-ADUser $newUser -ProfilePath $sourceUser.ProfilePath
-			Set-ADUser $newUser -ScriptPath $sourceUser.ScriptPath
-			Set-ADUser $newUser -PasswordNeverExpires $sourceUser.PasswordNeverExpires
-			Set-ADUser $newUser -CannotChangePassword $sourceUser.CannotChangePassword
+			Set-ADUser -Identity $row.SamAccountName -ProfilePath $sourceUser.ProfilePath
+			Set-ADUser -Identity $row.SamAccountName -ScriptPath $sourceUser.ScriptPath
+			Set-ADUser -Identity $row.SamAccountName -PasswordNeverExpires $sourceUser.PasswordNeverExpires
+			Set-ADUser -Identity $row.SamAccountName -CannotChangePassword $sourceUser.CannotChangePassword
 			$progressBar1.Value = 50
 
 			Write-Host "Checking if source user $($sourceUser.SamAccountName) has a Home Directory..."
@@ -665,8 +665,8 @@ function New-ADAccounts {
 				$progressBar1.Value = 60
 
 				# Add HomeDirectory and HomeDrive
-				Set-ADUser $newUser -HomeDrive $sourceUser.HomeDrive
-				Set-ADUser $newUser -HomeDirectory $homeDirectory
+				Set-ADUser -Identity $row.SamAccountName -HomeDrive $sourceUser.HomeDrive
+				Set-ADUser -Identity $row.SamAccountName -HomeDirectory $homeDirectory
 			} else {
 				Write-Host "Source user $($sourceUser.SamAccountName) does not have a HomeDirectory. Skipping HomeDirectory creation for the new user $($newUser.SamAccountName)."
 			}
@@ -674,13 +674,13 @@ function New-ADAccounts {
 
 			Write-Host "Copying group membership from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy security group memberships
-			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser
+			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
 				# Check if the new user is already a member of the group
-				$isMember = Get-ADGroupMember -Identity $group -Recursive | Where-Object { $_.SamAccountName -eq $newUser.SamAccountName }
+				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {
 					# Add the new user to the group if they are not already a member
-					Add-ADGroupMember -Identity $group -Members $newUser
+					Add-ADGroupMember -Identity $group.DistinguishedName -Members $row.SamAccountName
 				}
 			}
 			Write-Host "Finished creating new user $($newuser.SamAccountName)."
@@ -816,7 +816,7 @@ function New-ADAndEmailAccounts {
 			$displayName = $row.GivenName + " " + $row.Surname
 			$samAccountName = $row.SamAccountName
 			$userPrincipalName = $row.SamAccountName + "@$forest"
-			$emailAddress = $row.SamAccountName + "@$emailDomain.$topLevelDomain"
+			$emailAddress = $row.SamAccountName + "@" + ($emailDomainInput.Text.Trim())
 			# $aliasAddress = $row.SamAccountName + "@$emailDomain.onmicrosoft.com"
 			$progressBar1.Value = 30
 
@@ -828,10 +828,10 @@ function New-ADAndEmailAccounts {
 
 			Write-Host "Copying attributes from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy additional attributes from the source user
-			Set-ADUser $newUser -ProfilePath $sourceUser.ProfilePath
-			Set-ADUser $newUser -ScriptPath $sourceUser.ScriptPath
-			Set-ADUser $newUser -PasswordNeverExpires $sourceUser.PasswordNeverExpires
-			Set-ADUser $newUser -CannotChangePassword $sourceUser.CannotChangePassword
+			Set-ADUser -Identity $row.SamAccountName -ProfilePath $sourceUser.ProfilePath
+			Set-ADUser -Identity $row.SamAccountName -ScriptPath $sourceUser.ScriptPath
+			Set-ADUser -Identity $row.SamAccountName -PasswordNeverExpires $sourceUser.PasswordNeverExpires
+			Set-ADUser -Identity $row.SamAccountName -CannotChangePassword $sourceUser.CannotChangePassword
 			$progressBar1.Value = 50
 
 			Write-Host "Checking if source user $($sourceUser.SamAccountName) has a Home Directory..."
@@ -859,8 +859,8 @@ function New-ADAndEmailAccounts {
 				$progressBar1.Value = 60
 
 				# Add HomeDirectory and HomeDrive
-				Set-ADUser $newUser -HomeDrive $sourceUser.HomeDrive
-				Set-ADUser $newUser -HomeDirectory $homeDirectory
+				Set-ADUser -Identity $row.SamAccountName -HomeDrive $sourceUser.HomeDrive
+				Set-ADUser -Identity $row.SamAccountName -HomeDirectory $homeDirectory
 			} else {
 				Write-Host "Source user $($sourceUser.SamAccountName) does not have a HomeDirectory. Skipping HomeDirectory creation for the new user $($newUser.SamAccountName)."
 			}
@@ -868,13 +868,13 @@ function New-ADAndEmailAccounts {
 
 			Write-Host "Copying group membership from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy security group memberships
-			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser
+			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
 				# Check if the new user is already a member of the group
-				$isMember = Get-ADGroupMember -Identity $group -Recursive | Where-Object { $_.SamAccountName -eq $newUser.SamAccountName }
+				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {
 					# Add the new user to the group if they are not already a member
-					Add-ADGroupMember -Identity $group -Members $newUser
+					Add-ADGroupMember -Identity $group.DistinguishedName -Members $row.SamAccountName
 				}
 			}
 			$progressBar1.Value = 80
@@ -892,31 +892,31 @@ function New-ADAndEmailAccounts {
 			switch ($licenseComboBox.Text) {
 				"Exchange Online (Plan 1)" {
 					Write-Host "Assigning Exchange Online (Plan 1) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"}) -RemoveLicenses @()
 				}
 				"Exchange Online (Plan 2)" {
 					Write-Host "Assigning Exchange Online (Plan 2) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Basic" {
 					Write-Host "Assigning Microsoft 365 Business Basic license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Standard" {
 					Write-Host "Assigning Microsoft 365 Business Standard license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Premium" {
 					Write-Host "Assigning Microsoft 365 Business Premium license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 E3" {
 					Write-Host "Assigning Microsoft 365 E3 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 E5" {
 					Write-Host "Assigning Microsoft 365 E5 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"}) -RemoveLicenses @()
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}
@@ -1004,31 +1004,31 @@ function New-EmailAccounts {
 			switch ($licenseComboBox.Text) {
 				"Exchange Online (Plan 1)" {
 					Write-Host "Assigning Exchange Online (Plan 1) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"}) -RemoveLicenses @()
 				}
 				"Exchange Online (Plan 2)" {
 					Write-Host "Assigning Exchange Online (Plan 2) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Basic" {
 					Write-Host "Assigning Microsoft 365 Business Basic license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Standard" {
 					Write-Host "Assigning Microsoft 365 Business Standard license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 Business Premium" {
 					Write-Host "Assigning Microsoft 365 Business Premium license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 E3" {
 					Write-Host "Assigning Microsoft 365 E3 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"}) -RemoveLicenses @()
 				}
 				"Microsoft 365 E5" {
 					Write-Host "Assigning Microsoft 365 E5 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"} -RemoveLicenses @()
+					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"}) -RemoveLicenses @()
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}

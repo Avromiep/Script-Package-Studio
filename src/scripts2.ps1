@@ -39,6 +39,26 @@ function Show-AccountResults([string]$What, $Created, $Failed) {
 	$progressBar1.Value = 0
 }
 
+# Refuse to create over an existing account. These throw a clear "already exists" message
+# (caught by the per-row handler, recorded in the summary) BEFORE any New-ADUser / New-MgUser
+# runs, so an existing user is never overwritten / re-provisioned / password-reset.
+function Assert-ADUserNotExists([string]$SamAccountName, [string]$UserPrincipalName) {
+	$existing = $null
+	try { $existing = Get-ADUser -Filter "SamAccountName -eq '$SamAccountName'" -ErrorAction Stop | Select-Object -First 1 } catch { $existing = $null }
+	if ($existing) { throw "an AD account named '$SamAccountName' already exists - skipped so it isn't overwritten" }
+	if ($UserPrincipalName) {
+		$byUpn = $null
+		try { $byUpn = Get-ADUser -Filter "UserPrincipalName -eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $byUpn = $null }
+		if ($byUpn) { throw "an AD account with sign-in name '$UserPrincipalName' already exists - skipped so it isn't overwritten" }
+	}
+}
+function Assert-MgUserNotExists([string]$UserPrincipalName) {
+	$u = $null
+	try { $u = Get-MgUser -Filter "userPrincipalName eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
+	if (-not $u) { try { $u = Get-MgUser -Filter "mail eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
+	if ($u) { throw "an account with the email '$UserPrincipalName' already exists in the tenant - skipped so it isn't overwritten" }
+}
+
 function New-BlockUserDialog {
 	New-StyledDialog -Title 'Block-User' -Icon '&#xEEE3;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
@@ -667,6 +687,7 @@ function New-ADAccounts {
 			$progressBar1.Value = 30
 
 			Write-Host "Creating new user $samAccountName..."
+			Assert-ADUserNotExists $samAccountName $userPrincipalName
 			New-ADUser -SamAccountName $samAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 			$progressBar1.Value = 40
 
@@ -860,6 +881,8 @@ function New-ADAndEmailAccounts {
 			$progressBar1.Value = 30
 
 			Write-Host "Creating new user $samAccountName..."
+			Assert-ADUserNotExists $row.SamAccountName $userPrincipalName
+			Assert-MgUserNotExists $emailAddress
 			New-ADUser -SamAccountName $row.SamAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 			$progressBar1.Value = 40
 
@@ -1047,6 +1070,7 @@ function New-EmailAccounts {
 
 			$progressBar1.Value = 30
 
+			Assert-MgUserNotExists $emailAddress
 			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $firstName -Surname $lastName -UserPrincipalName $emailAddress -MailNickname $mailNickname -UsageLocation US
 			$progressBar1.Value = 60
 

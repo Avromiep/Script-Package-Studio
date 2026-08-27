@@ -1,4 +1,4 @@
-$version = "v3.1.34"
+$version = "v3.1.35"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -395,7 +395,7 @@ $script:TenantsPath = Join-Path $PSScriptRoot 'tenants.json'
 $script:Tenants = [System.Collections.Generic.List[object]]::new()
 $script:ActiveTenant = $null
 $script:SuppressTenantEvents = $false
-$script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All")
+$script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All", "User.Invite.All", "Group.ReadWrite.All")
 
 function Load-Tenants {
 	$script:Tenants.Clear()
@@ -1234,6 +1234,7 @@ if ($env:SP_SHOT) {
 		'dlg-notice-summary'     = { New-NoticeDialog 'Add complete' "sales@contoso.com (shared mailbox): 5 added, 1 already there`nContoso Team (Teams / Microsoft 365 group): 5 added`ndl@contoso.com (distribution list): 4 added, 1 failed" 'Warn' }
 		'dlg-paste'              = { New-PasteMembersDialog -TargetPrefill "sales@contoso.com`nContoso Team" }
 		'dlg-confirm'            = { New-ConfirmDialog 'Forget tenant' 'Forget "Contoso Ltd" (admin@contoso.com)? This removes it from the saved list.' }
+		'dlg-confirm-external'   = { New-ConfirmDialog 'External addresses found' "3 addresses aren't in your tenant's domains:`n`n  amy@gmail.com`n  ben@outlook.com`n  cara@partner.co`n`nBring them in so they can be added? Distribution lists get a mail contact; Teams / Microsoft 365 groups get a guest invite; shared mailboxes can't take external addresses, so those are skipped.`n`nYes = bring them in & add.  No = skip the external ones." '&#xEA88;' }
 	}
 
 	$script:Window.Add_ContentRendered({

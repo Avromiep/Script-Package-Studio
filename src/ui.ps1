@@ -466,7 +466,9 @@ function New-ConfirmDialog([string]$Title, [string]$Message, [string]$Icon = '&#
 		<StackPanel>
 			<StackPanel Orientation="Horizontal">
 				<TextBlock Text="$Icon" Style="{DynamicResource Icon}" Foreground="{DynamicResource WarnBrush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
-				<TextBlock x:Name="MsgText" Style="{DynamicResource Body}" Margin="10,0,0,0" MaxWidth="260"/>
+				<ScrollViewer MaxHeight="340" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="10,0,0,0">
+					<TextBlock x:Name="MsgText" Style="{DynamicResource Body}" MaxWidth="260" TextWrapping="Wrap"/>
+				</ScrollViewer>
 			</StackPanel>
 			<Border Style="{DynamicResource Divider}"/>
 			<Grid>

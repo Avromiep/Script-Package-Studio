@@ -1,4 +1,4 @@
-$version = "v3.1.40"
+$version = "v3.1.41"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -395,7 +395,7 @@ $script:TenantsPath = Join-Path $PSScriptRoot 'tenants.json'
 $script:Tenants = [System.Collections.Generic.List[object]]::new()
 $script:ActiveTenant = $null
 $script:SuppressTenantEvents = $false
-$script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All", "User.Invite.All", "Group.ReadWrite.All")
+$script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All", "User.Invite.All", "Group.ReadWrite.All", "UserAuthenticationMethod.ReadWrite.All")
 
 function Load-Tenants {
 	$script:Tenants.Clear()
@@ -816,6 +816,8 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Remove-EmailAlias'; Desc = 'Remove aliases from a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
 	@{ Name = 'Remove-MailboxMember'; Desc = 'Revoke FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED93 }
 	@{ Name = 'Remove-UnifiedGroupMember'; Desc = 'Remove members from a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Reset-MFA'; Desc = 'Clear a user''s MFA methods so they re-register, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE72E }
+	@{ Name = 'Set-License'; Desc = 'Assign, remove or swap Microsoft 365 licenses, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE8FC }
 	@{ Name = 'Update-ScriptPackage'; Desc = 'Download and install the latest release.'; SignIn = $false; Cat = 'App'; Icon = 0xE0BF }
 	@{ Name = 'Set-ACLPermissions'; Desc = 'Add NTFS ACL permission rules to files and folders.'; SignIn = $false; Cat = 'System'; Icon = 0xEAA7 }
 	@{ Name = 'Set-NTP'; Desc = 'Check or set the Windows time source.'; SignIn = $false; Cat = 'System'; Icon = 0xE508 }
@@ -941,6 +943,8 @@ function OnRunButtonClick {
 		"Remove-EmailAlias" { Remove-EmailAlias }
 		"Remove-MailboxMember" { Add-MailboxMember }
 		"Remove-UnifiedGroupMember" { Remove-UnifiedGroupMember }
+		"Reset-MFA" { Reset-MFA }
+		"Set-License" { Set-License }
 		"Update-ScriptPackage" { Update-ScriptPackage }
 		"Set-ACLPermissions" { Set-ACLPermissions }
 		"Set-NTP" { Set-NTP }
@@ -1223,6 +1227,8 @@ if ($env:SP_SHOT) {
 		'dlg-set-acl'            = { New-AclPermissionsDialog -DomainName 'CONTOSO' -UserGroupList @('Administrator', 'Domain Admins', 'Domain Users') }
 		'dlg-remove-emailalias'  = { New-EmailAliasDialog -Title 'Remove-EmailAlias' -ActionText 'Remove Alias' -BulkText 'Remove Aliases' -CheckText 'Remove Incremental Aliases' }
 		'dlg-set-ntp'            = { New-SetNTPDialog }
+		'dlg-reset-mfa'          = { New-ResetMfaDialog }
+		'dlg-set-license'        = { New-SetLicenseDialog }
 		'dlg-show-information'   = { New-InformationDialog }
 		'dlg-error'              = { New-ErrorDialog "Add-MailboxPermission: mailbox admin@contoso.com`nwas not found on the server." }
 		'dlg-opcomplete'         = { New-OperationCompleteDialog }

@@ -917,8 +917,34 @@ function Add-DistributionListMember {
 }
 
 # ---------------------------------------------------------------------------
+# Add one alias to a mailbox. $AsPrimary promotes it to the PRIMARY address (the old primary
+# becomes a secondary alias); otherwise it's added as a secondary alias. Pre-checks the alias
+# domain is an accepted tenant domain so you get a friendly message instead of a raw Exchange
+# error. Returns @{ Status='done'|'noop'|'failed'|'skipped'; Message }.
+function Add-OneAlias([string]$Mailbox, [string]$Alias, [bool]$AsPrimary, $Accepted) {
+	$res = @{ Status = 'failed'; Message = '' }
+	$Mailbox = "$Mailbox".Trim(); $Alias = "$Alias".Trim()
+	if (-not $Mailbox -or -not $Alias) { $res.Status = 'skipped'; $res.Message = 'blank mailbox or alias'; return $res }
+	if ($Accepted -and (Test-IsExternalAddress $Alias $Accepted)) {
+		$dom = $Alias.Substring($Alias.LastIndexOf('@') + 1)
+		$res.Status = 'skipped'; $res.Message = "the domain '$dom' isn't an accepted domain in this tenant"; return $res
+	}
+	try {
+		if ($AsPrimary) { Set-Mailbox -Identity $Mailbox -WindowsEmailAddress $Alias -ErrorAction Stop }
+		else { Set-Mailbox -Identity $Mailbox -EmailAddresses @{Add = $Alias} -ErrorAction Stop }
+		$res.Status = 'done'; return $res
+	} catch {
+		$msg = "$($_.Exception.Message)".Trim()
+		if ($msg -match 'already|proxy|in use|ProxyAddress|must be unique|duplicate') { $res.Status = 'noop'; $res.Message = 'already assigned as an address' }
+		else { $res.Status = 'failed'; $res.Message = $msg }
+		return $res
+	}
+}
+
 function New-EmailAliasDialog {
-	param([string]$Title = 'Add-EmailAlias', [string]$ActionText = 'Add Alias', [string]$BulkText = 'Add Aliases', [string]$CheckText = 'Create Incremental Aliases')
+	param([string]$Title = 'Add-EmailAlias', [string]$ActionText = 'Add Alias', [string]$BulkText = 'Add Aliases', [string]$CheckText = 'Create Incremental Aliases', [switch]$WithPrimary)
+	$primaryChk = if ($WithPrimary) { '<CheckBox x:Name="PrimaryCheck" Content="Set as primary address (single only)" Margin="0,10,0,0"/>' } else { '' }
+	$previewChk = if ($WithPrimary) { '<CheckBox x:Name="PreviewCheck" Content="Preview only" Margin="0,10,0,0"/>' } else { '' }
 	New-StyledDialog -Title $Title -Icon '&#xEBBC;' -BodyXaml @"
 <StackPanel Margin="16" Orientation="Horizontal">
 	<StackPanel Width="330">
@@ -945,6 +971,7 @@ function New-EmailAliasDialog {
 					<TextBox x:Name="CountBox" Grid.Column="1" Width="64" Text="0" IsEnabled="False"
 							 HorizontalContentAlignment="Center"/>
 				</Grid>
+				$primaryChk
 				<Button x:Name="ActionBtn" Style="{DynamicResource BtnPrimary}" Content="$ActionText" Margin="0,14,0,0"/>
 			</StackPanel>
 		</Border>
@@ -952,6 +979,7 @@ function New-EmailAliasDialog {
 			<StackPanel>
 				<TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
 				<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
+				$previewChk
 				<Button x:Name="BulkBtn" Style="{DynamicResource BtnPrimary}" Content="$BulkText" Margin="0,8,0,0"/>
 			</StackPanel>
 		</Border>
@@ -975,44 +1003,36 @@ function Add-EmailAlias {
 
 	function OnAddAliasButtonClick {
 		Write-Host "AddAliasButton clicked."
-		switch ($incrementalCheckBox.IsChecked) {
-			$true {
-				Write-Host "Creating incremental aliases..."
-				$progressBar1.Value = 10
-				$mailbox = $mailboxTextBox.Text
-				$alias = $aliasTextBox.Text
-				$splitAlias = $alias -split '\@'
-				$aliasName = $splitAlias[0]
-				$aliasDomain = $splitAlias[1]
-				$progressBar1.Value = 30
-				for ($i = 0; $i -lt $numericUpDown1.Value; $i++) {
-					$progressBar1.Value = 10
-					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
-					Set-Mailbox $mailbox -EmailAddresses @{Add= $completeAlias}
-					Write-Host "Added $completeAlias to $mailbox."
-					$progressBar1.Value = 90
-				}
-				$progressBar1.Value = 90
-				CheckForErrors
-				OperationComplete
+		$mailbox = $mailboxTextBox.Text
+		$alias = $aliasTextBox.Text
+		$accepted = Get-AcceptedDomainList
+		if ($incrementalCheckBox.IsChecked -eq $true) {
+			Write-Host "Creating incremental aliases..."
+			$progressBar1.Value = 20
+			$splitAlias = $alias -split '\@'
+			$aliasName = $splitAlias[0]; $aliasDomain = $splitAlias[1]
+			$created = [System.Collections.Generic.List[string]]::new()
+			$failed  = [System.Collections.Generic.List[string]]::new()
+			for ($i = 0; $i -lt $numericUpDown1.Value; $i++) {
+				$completeAlias = "$aliasName$i@$aliasDomain"
+				$r = Add-OneAlias $mailbox $completeAlias $false $accepted
+				if ($r.Status -eq 'done') { $created.Add($completeAlias) }
+				elseif ($r.Status -eq 'noop') { $failed.Add("$completeAlias - already assigned") }
+				else { $failed.Add("$completeAlias - $($r.Message)") }
 			}
-			$false {
-				Write-Host "Creating single alias..."
-				$progressBar1.Value = 10
-				$mailbox = $mailboxTextBox.Text
-				$alias = $aliasTextBox.Text
-				$progressBar1.Value = 30
-				Set-Mailbox $mailbox -EmailAddresses @{Add= $alias}
-				$progressBar1.Value = 50
-				Write-Host "Added $alias to $mailbox."
-				$progressBar1.Value = 80
-				CheckForErrors
-				OperationComplete
+			Show-AccountResults "Add aliases to $mailbox" $created $failed
+		} else {
+			Write-Host "Creating single alias..."
+			$progressBar1.Value = 40
+			$asPrimary = ($primaryCheckBox.IsChecked -eq $true)
+			$r = Add-OneAlias $mailbox $alias $asPrimary $accepted
+			switch ($r.Status) {
+				'done'    { $verb = if ($asPrimary) { "set as the primary address on" } else { "added to" }; Write-Host "$alias $verb $mailbox." -ForegroundColor Cyan; Show-Notice 'Alias added' "'$alias' was $verb `"$mailbox`"." 'Info' }
+				'noop'    { Write-Host "$alias already assigned." -ForegroundColor Yellow; Show-Notice 'Already an alias' "'$alias' is already assigned as an address (on this or another recipient)." 'Info' }
+				'skipped' { Write-Host "Skipped '$alias': $($r.Message)" -ForegroundColor Yellow; Show-Notice "Can't add that alias" "Couldn't add '$alias' - $($r.Message)." 'Warn' }
+				'failed'  { Write-Host "Failed to add '$alias': $($r.Message)" -ForegroundColor Red; Show-Notice 'Add alias failed' "Couldn't add '$alias' to `"$mailbox`":`n`n$($r.Message)" 'Error' }
 			}
-			Default {
-				Write-Host "An error seems to have occurred."
-				CheckForErrors
-			}
+			$progressBar1.Value = 0
 		}
 	}
 	function OnOpenTemplateButtonClick {
@@ -1023,17 +1043,26 @@ function Add-EmailAlias {
 		$progressBar1.Value = 0
 	}
 	function OnAddAliasBulkButtonClick {
+		$accepted = Get-AcceptedDomainList
+		$preview = ($previewCheckBox.IsChecked -eq $true)
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Add-EmailAlias.csv" | ForEach-Object {
-			$progressBar1.Value = 20
-			$mailbox = $_.Mailbox
-			$alias = $_.Alias
-			$progressBar1.Value = 50
-			Set-Mailbox $mailbox -EmailAddresses @{Add= $alias}
-			Write-Host "Added $alias to $mailbox."
-			$progressBar1.Value = 80
+			$progressBar1.Value = 40
+			$mailbox = "$($_.Mailbox)".Trim(); $alias = "$($_.Alias)".Trim()
+			$label = "$alias -> $mailbox"
+			if ($preview) {
+				if (-not $mailbox -or -not $alias) { $failed.Add("$label - blank mailbox or alias") }
+				elseif ($accepted -and (Test-IsExternalAddress $alias $accepted)) { $failed.Add("$label - domain not accepted") }
+				else { $created.Add($label) }
+				return
+			}
+			$r = Add-OneAlias $mailbox $alias $false $accepted
+			if ($r.Status -eq 'done') { $created.Add($label) }
+			elseif ($r.Status -eq 'noop') { $failed.Add("$label - already assigned") }
+			else { $failed.Add("$label - $($r.Message)") }
 		}
-		CheckForErrors
-		OperationComplete
+		Show-AccountResults 'Add email aliases' $created $failed -Preview:$preview
 	}
 	function OnIncrementalCheckBoxChecked {
 		if ($incrementalCheckBox.IsChecked -eq $true) {
@@ -1061,10 +1090,12 @@ function Add-EmailAlias {
 		OperationComplete
 	}
 
-	$emailAliasForm = New-EmailAliasDialog
+	$emailAliasForm = New-EmailAliasDialog -WithPrimary
 	$mailboxTextBox = $emailAliasForm.FindName('MailboxInput')
 	$aliasTextBox = $emailAliasForm.FindName('AliasInput')
 	$incrementalCheckBox = $emailAliasForm.FindName('IncrementalCheck')
+	$primaryCheckBox = $emailAliasForm.FindName('PrimaryCheck')
+	$previewCheckBox = $emailAliasForm.FindName('PreviewCheck')
 	$addAliasButton = $emailAliasForm.FindName('ActionBtn')
 	$infoTextBox = $emailAliasForm.FindName('InfoBox')
 	$numericUpDown1 = New-NumericProxy ($emailAliasForm.FindName('CountBox')) 1000

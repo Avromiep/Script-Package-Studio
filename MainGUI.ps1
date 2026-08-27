@@ -1,4 +1,4 @@
-$version = "v3.1.39"
+$version = "v3.1.40"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1208,7 +1208,7 @@ if ($env:SP_SHOT) {
 		'dlg-add-distlistmember' = { New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste }
 		'dlg-remove-distlistmember' = { New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste }
 		'dlg-paste-remove'          = { New-PasteMembersDialog -TargetPrefill 'dl@contoso.com' -Action 'remove' }
-		'dlg-add-emailalias'     = { New-EmailAliasDialog }
+		'dlg-add-emailalias'     = { New-EmailAliasDialog -WithPrimary }
 		'dlg-add-mailboxmember'  = { New-MailboxMemberDialog }
 		'dlg-add-trustedsender'  = { New-TrustedSenderDialog }
 		'dlg-block-user'         = { New-BlockUserDialog }

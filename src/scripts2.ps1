@@ -1,5 +1,29 @@
 # Script-Package - script dialogs (Block-User .. New-*)
 
+# Assign one license SKU to a just-created user, retrying ONLY on the transient
+# "user doesn't exist yet / not replicated" error that can follow New-MgUser. Real errors
+# (invalid SKU, no seats available, user not licensable, bad UsageLocation) are thrown right
+# away without retrying. Returns nothing on success; throws if it ultimately can't assign.
+function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
+	$delays = @(2, 5, 10)   # seconds between attempts; total added wait only happens on failure
+	for ($i = 0; $i -le $delays.Count; $i++) {
+		try {
+			Set-MgUserLicense -UserId $UserId -AddLicenses @(@{SkuId = $SkuId}) -RemoveLicenses @() -ErrorAction Stop
+			return
+		} catch {
+			$msg = "$($_.Exception.Message)"
+			# Transient = the user object isn't visible to Graph yet after New-MgUser.
+			$transient = ($msg -match 'does not exist|not found|ResourceNotFound|Request_ResourceNotExists|could not be found|being provisioned|replicat')
+			if ($i -lt $delays.Count -and $transient) {
+				Write-Host "License assign for '$UserId' not ready yet (attempt $($i + 1)): $msg. Retrying in $($delays[$i])s..." -ForegroundColor Yellow
+				Start-Sleep -Seconds $delays[$i]
+				continue
+			}
+			throw
+		}
+	}
+}
+
 function New-BlockUserDialog {
 	New-StyledDialog -Title 'Block-User' -Icon '&#xEEE3;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
@@ -130,8 +154,12 @@ function Block-User {
 			Write-Host "Disabled $user account" -ForegroundColor Cyan -NoNewline
 			$progressBar1.Value = 60
 			$license = Get-MgUserLicenseDetail -UserId $user
-			Set-MgUserLicense -UserId $user -RemoveLicenses $license.SkuId -AddLicenses @{}
-			Write-Host "Removed licenses from $user" -ForegroundColor Cyan
+			if ($license) {
+				Set-MgUserLicense -UserId $user -RemoveLicenses @($license.SkuId) -AddLicenses @()
+				Write-Host "Removed licenses from $user" -ForegroundColor Cyan
+			} else {
+				Write-Host "$user has no licenses to remove." -ForegroundColor Cyan
+			}
 			$progressBar1.Value = 70
 			$phoneMethod = Get-MgUserAuthenticationPhoneMethod -UserId $user
 			if ($null -eq $phoneMethod) {
@@ -579,20 +607,15 @@ function New-ADAccounts {
 	}
 	function OnCreateAccountsButtonClick {
 		Write-Host "Checking if any SamAccountNames are over 20 characters."
-		Import-Csv -Path ".\Templates\New-ADAccounts.csv" | ForEach-Object {
-			if ($_.SamAccountName.Length -gt 20) {
-				Write-Host "$($_.SamAccountName) is over 20 characters, requesting user confirmation." -ForegroundColor Red
-				$getUserConfirmation = ShowWarningForm -warningText "One or more SamAccountNames are over 20 characters - this may cause issues.`nPlease confirm if you'd like to proceed anyways."
-				if ($getUserConfirmation -eq $true) {
-					Write-Host "User confirmed to continue, running script..."
-					CreateADAccounts
-				} else {
-					Write-Host "User closed confirmation window, cancelling action..."
-				}
-				break
-			}
+		$tooLong = @(Import-Csv -Path ".\Templates\New-ADAccounts.csv" | Where-Object { $_.SamAccountName.Length -gt 20 })
+		if ($tooLong.Count -gt 0) {
+			Write-Host "$($tooLong.Count) SamAccountName(s) over 20 characters, requesting user confirmation." -ForegroundColor Red
+			$getUserConfirmation = ShowWarningForm -warningText "One or more SamAccountNames are over 20 characters - this may cause issues.`nPlease confirm if you'd like to proceed anyways."
+			if ($getUserConfirmation -ne $true) { Write-Host "User closed confirmation window, cancelling action..."; return }
+			Write-Host "User confirmed to continue, running script..."
+		} else {
+			Write-Host "All SamAccountNames are within 20 characters."
 		}
-		Write-Host "All SamAccountNames are within 20 characters."
 		CreateADAccounts
 	}
 	function CreateADAccounts {
@@ -769,20 +792,15 @@ function New-ADAndEmailAccounts {
 	}
 	function OnCreateAccountsButtonClick {
 		Write-Host "Checking if any SamAccountNames are over 20 characters."
-		Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv" | ForEach-Object {
-			if ($_.SamAccountName.Length -gt 20) {
-				Write-Host "$($_.SamAccountName) is over 20 characters, requesting user confirmation." -ForegroundColor Red
-				$getUserConfirmation = ShowWarningForm -warningText "One or more SamAccountNames are over 20 characters - this may cause issues.`nPlease confirm if you'd like to proceed anyways."
-				if ($getUserConfirmation -eq $true) {
-					Write-Host "User confirmed to continue, running script..."
-					CreateAccounts
-				} else {
-					Write-Host "User closed confirmation window, cancelling action..."
-				}
-				break
-			}
+		$tooLong = @(Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv" | Where-Object { $_.SamAccountName.Length -gt 20 })
+		if ($tooLong.Count -gt 0) {
+			Write-Host "$($tooLong.Count) SamAccountName(s) over 20 characters, requesting user confirmation." -ForegroundColor Red
+			$getUserConfirmation = ShowWarningForm -warningText "One or more SamAccountNames are over 20 characters - this may cause issues.`nPlease confirm if you'd like to proceed anyways."
+			if ($getUserConfirmation -ne $true) { Write-Host "User closed confirmation window, cancelling action..."; return }
+			Write-Host "User confirmed to continue, running script..."
+		} else {
+			Write-Host "All SamAccountNames are within 20 characters."
 		}
-		Write-Host "All SamAccountNames are within 20 characters."
 		CreateAccounts
 	}
 	function CreateAccounts {
@@ -810,14 +828,10 @@ function New-ADAndEmailAccounts {
 			}
 
 			$forest = $adDomainInput.Text
-			$domain = $emailDomainInput.Text -split '\.'
-			$emailDomain = $domain[0]
-			$topLevelDomain = $domain[1]
 			$displayName = $row.GivenName + " " + $row.Surname
 			$samAccountName = $row.SamAccountName
 			$userPrincipalName = $row.SamAccountName + "@$forest"
 			$emailAddress = $row.SamAccountName + "@" + ($emailDomainInput.Text.Trim())
-			# $aliasAddress = $row.SamAccountName + "@$emailDomain.onmicrosoft.com"
 			$progressBar1.Value = 30
 
 			Write-Host "Creating new user $samAccountName..."
@@ -892,31 +906,31 @@ function New-ADAndEmailAccounts {
 			switch ($licenseComboBox.Text) {
 				"Exchange Online (Plan 1)" {
 					Write-Host "Assigning Exchange Online (Plan 1) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "4b9405b0-7788-4568-add1-99614e613b69"
 				}
 				"Exchange Online (Plan 2)" {
 					Write-Host "Assigning Exchange Online (Plan 2) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "19ec0d23-8335-4cbd-94ac-6050e30712fa"
 				}
 				"Microsoft 365 Business Basic" {
 					Write-Host "Assigning Microsoft 365 Business Basic license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "3b555118-da6a-4418-894f-7df1e2096870"
 				}
 				"Microsoft 365 Business Standard" {
 					Write-Host "Assigning Microsoft 365 Business Standard license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "f245ecc8-75af-4f8e-b61f-27d8114de5f3"
 				}
 				"Microsoft 365 Business Premium" {
 					Write-Host "Assigning Microsoft 365 Business Premium license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"
 				}
 				"Microsoft 365 E3" {
 					Write-Host "Assigning Microsoft 365 E3 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "05e9a617-0261-4cee-bb44-138d3ef5d965"
 				}
 				"Microsoft 365 E5" {
 					Write-Host "Assigning Microsoft 365 E5 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "06ebc4ee-1bb5-47dd-8120-11324bc54e06"
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}
@@ -1004,31 +1018,31 @@ function New-EmailAccounts {
 			switch ($licenseComboBox.Text) {
 				"Exchange Online (Plan 1)" {
 					Write-Host "Assigning Exchange Online (Plan 1) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "4b9405b0-7788-4568-add1-99614e613b69"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "4b9405b0-7788-4568-add1-99614e613b69"
 				}
 				"Exchange Online (Plan 2)" {
 					Write-Host "Assigning Exchange Online (Plan 2) license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "19ec0d23-8335-4cbd-94ac-6050e30712fa"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "19ec0d23-8335-4cbd-94ac-6050e30712fa"
 				}
 				"Microsoft 365 Business Basic" {
 					Write-Host "Assigning Microsoft 365 Business Basic license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "3b555118-da6a-4418-894f-7df1e2096870"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "3b555118-da6a-4418-894f-7df1e2096870"
 				}
 				"Microsoft 365 Business Standard" {
 					Write-Host "Assigning Microsoft 365 Business Standard license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "f245ecc8-75af-4f8e-b61f-27d8114de5f3"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "f245ecc8-75af-4f8e-b61f-27d8114de5f3"
 				}
 				"Microsoft 365 Business Premium" {
 					Write-Host "Assigning Microsoft 365 Business Premium license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46"
 				}
 				"Microsoft 365 E3" {
 					Write-Host "Assigning Microsoft 365 E3 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "05e9a617-0261-4cee-bb44-138d3ef5d965"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "05e9a617-0261-4cee-bb44-138d3ef5d965"
 				}
 				"Microsoft 365 E5" {
 					Write-Host "Assigning Microsoft 365 E5 license..."
-					Set-MgUserLicense -UserId $emailAddress -AddLicenses @(@{SkuId = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"}) -RemoveLicenses @()
+					Assign-MgLicenseWithRetry $emailAddress "06ebc4ee-1bb5-47dd-8120-11324bc54e06"
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}

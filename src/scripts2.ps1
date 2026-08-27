@@ -27,15 +27,37 @@ function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
 # Summarize a bulk account-creation run: what was created vs what failed (with reason), by
 # name, so it's clear which rows to re-check. $Created / $Failed are string lists. One bad row
 # no longer aborts the batch - it's caught, recorded here, and the run continues.
-function Show-AccountResults([string]$What, $Created, $Failed) {
+function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview) {
 	$c = @($Created); $f = @($Failed)
+	$doneLabel = if ($Preview) { 'Would create' } else { 'Created' }
+	$failLabel = if ($Preview) { 'Would skip / fail' } else { 'Failed' }
 	$parts = @()
-	if ($c.Count) { $parts += "Created ($($c.Count)):`n  " + ($c -join "`n  ") }
-	if ($f.Count) { $parts += "Failed ($($f.Count)):`n  " + ($f -join "`n  ") }
+	if ($c.Count) { $parts += "$doneLabel ($($c.Count)):`n  " + ($c -join "`n  ") }
+	if ($f.Count) { $parts += "$failLabel ($($f.Count)):`n  " + ($f -join "`n  ") }
 	if (-not $parts.Count) { $parts += 'Nothing to do - the template had no rows.' }
-	Write-Host "$What summary: created=$($c.Count) failed=$($f.Count)" -ForegroundColor Cyan
+	# Export the summary to a CSV in Logs so it can be kept / reviewed.
+	$csvPath = ''
+	try {
+		if (-not (Test-Path '.\Logs')) { New-Item -ItemType Directory -Path '.\Logs' | Out-Null }
+		$rows = @()
+		foreach ($n in $c) { $rows += [pscustomobject]@{ Name = $n; Result = $doneLabel; Detail = '' } }
+		foreach ($n in $f) {
+			$name = $n; $detail = ''
+			$dash = $n.IndexOf(' - ')
+			if ($dash -ge 0) { $name = $n.Substring(0, $dash); $detail = $n.Substring($dash + 3) }
+			$rows += [pscustomobject]@{ Name = $name; Result = $failLabel; Detail = $detail }
+		}
+		if ($rows.Count) {
+			$safe = ($What -replace '[^A-Za-z0-9]+', '-').Trim('-')
+			$csvPath = ".\Logs\$safe-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+			$rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+		}
+	} catch { $csvPath = '' }
+	if ($csvPath) { $parts += "Saved a copy to:`n  $csvPath" }
+	$title = if ($Preview) { "$What - preview" } else { "$What complete" }
+	Write-Host "${title}: done/would=$($c.Count) failed/skip=$($f.Count). CSV: $csvPath" -ForegroundColor Cyan
 	$kind = if ($f.Count) { 'Warn' } else { 'Info' }
-	Show-Notice "$What complete" ($parts -join "`n`n") $kind
+	Show-Notice $title ($parts -join "`n`n") $kind
 	$progressBar1.Value = 0
 }
 
@@ -610,6 +632,7 @@ function New-ADAccountsDialog {
 				<TextBox x:Name="AdDomainInput" Grid.Column="1"/>
 			</Grid>
 			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,14,0,0"/>
+			<CheckBox x:Name="PreviewCheck" Content="Preview only (don't create)" Margin="0,12,0,0"/>
 			<Button x:Name="CreateAccountsBtn" Style="{DynamicResource BtnPrimary}" Content="Create Accounts" Margin="0,8,0,0"/>
 		</StackPanel>
 	</Border>
@@ -656,6 +679,7 @@ function New-ADAccounts {
 	function CreateADAccounts {
 		Write-Host "Importing template csv..."
 		$progressBar1.Value = 10
+		$preview = ($previewCheck.IsChecked -eq $true)
 		$csvFile = Import-Csv -Path ".\Templates\New-ADAccounts.csv"
 		$progressBar1.Value = 20
 		CheckForErrors
@@ -688,6 +712,7 @@ function New-ADAccounts {
 
 			Write-Host "Creating new user $samAccountName..."
 			Assert-ADUserNotExists $samAccountName $userPrincipalName
+			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $samAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 			$progressBar1.Value = 40
 
@@ -752,11 +777,12 @@ function New-ADAccounts {
 				$failed.Add("$who - $msg")
 			}
 		}
-		Show-AccountResults 'Create AD accounts' $created $failed
+		Show-AccountResults 'Create AD accounts' $created $failed -Preview:$preview
 		CheckForErrors
 	}
 
 	$scriptForm9 = New-ADAccountsDialog -ForestName $domain.forest
+	$previewCheck = $scriptForm9.FindName('PreviewCheck')
 	$adDomainInput = $scriptForm9.FindName('AdDomainInput')
 	$scriptForm9.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm9.FindName('CreateAccountsBtn').Add_Click({ OnCreateAccountsButtonClick })
@@ -802,6 +828,7 @@ function New-ADAndEmailAccountsDialog {
 			</Grid>
 			<TextBlock Text="Email domain example: contoso.com" Style="{DynamicResource Small}" Margin="100,6,0,0"/>
 			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,14,0,0"/>
+			<CheckBox x:Name="PreviewCheck" Content="Preview only (don't create)" Margin="0,12,0,0"/>
 			<Button x:Name="CreateAccountsBtn" Style="{DynamicResource BtnPrimary}" Content="Create Accounts" Margin="0,8,0,0"/>
 		</StackPanel>
 	</Border>
@@ -850,6 +877,7 @@ function New-ADAndEmailAccounts {
 	function CreateAccounts {
 		Write-Host "Importing template csv..."
 		$progressBar1.Value = 10
+		$preview = ($previewCheck.IsChecked -eq $true)
 		$csvFile = Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv"
 		$progressBar1.Value = 30
 		CheckForErrors
@@ -883,6 +911,7 @@ function New-ADAndEmailAccounts {
 			Write-Host "Creating new user $samAccountName..."
 			Assert-ADUserNotExists $row.SamAccountName $userPrincipalName
 			Assert-MgUserNotExists $emailAddress
+			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $row.SamAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 			$progressBar1.Value = 40
 
@@ -990,7 +1019,7 @@ function New-ADAndEmailAccounts {
 				$failed.Add("$who - $msg")
 			}
 		}
-		Show-AccountResults 'Create AD & Email accounts' $created $failed
+		Show-AccountResults 'Create AD & Email accounts' $created $failed -Preview:$preview
 		CheckForErrors
 	}
 
@@ -998,6 +1027,7 @@ function New-ADAndEmailAccounts {
 	$adDomainInput = $scriptForm9.FindName('AdDomainInput')
 	$emailDomainInput = $scriptForm9.FindName('EmailDomainInput')
 	$licenseComboBox = $scriptForm9.FindName('LicenseCombo')
+	$previewCheck = $scriptForm9.FindName('PreviewCheck')
 	$scriptForm9.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm9.FindName('CreateAccountsBtn').Add_Click({ OnCreateAccountsButtonClick })
 
@@ -1023,6 +1053,7 @@ function New-EmailAccountsDialog {
 				<ComboBox x:Name="LicenseCombo" Grid.Column="1"/>
 			</Grid>
 			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,14,0,0"/>
+			<CheckBox x:Name="PreviewCheck" Content="Preview only (don't create)" Margin="0,12,0,0"/>
 			<Button x:Name="CreateAccountsBtn" Style="{DynamicResource BtnPrimary}" Content="Create Accounts" Margin="0,8,0,0"/>
 		</StackPanel>
 	</Border>
@@ -1051,6 +1082,7 @@ function New-EmailAccounts {
 		$progressBar1.Value = 10
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
+		$preview = ($previewCheck.IsChecked -eq $true)
 		Import-Csv ".\Templates\New-EmailAccounts.csv" | ForEach-Object {
 			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
 			try {
@@ -1071,6 +1103,7 @@ function New-EmailAccounts {
 			$progressBar1.Value = 30
 
 			Assert-MgUserNotExists $emailAddress
+			if ($preview) { $created.Add($who); return }
 			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $firstName -Surname $lastName -UserPrincipalName $emailAddress -MailNickname $mailNickname -UsageLocation US
 			$progressBar1.Value = 60
 
@@ -1114,12 +1147,13 @@ function New-EmailAccounts {
 				$failed.Add("$who - $msg")
 			}
 		}
-		Show-AccountResults 'Create email accounts' $created $failed
+		Show-AccountResults 'Create email accounts' $created $failed -Preview:$preview
 		CheckForErrors
 	}
 
 	$addEmailAccountsForm = New-EmailAccountsDialog
 	$licenseComboBox = $addEmailAccountsForm.FindName('LicenseCombo')
+	$previewCheck = $addEmailAccountsForm.FindName('PreviewCheck')
 	$addEmailAccountsForm.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$addEmailAccountsForm.FindName('CreateAccountsBtn').Add_Click({ OnCreateAccountsButtonClick })
 

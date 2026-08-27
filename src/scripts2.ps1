@@ -24,6 +24,21 @@ function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
 	}
 }
 
+# Summarize a bulk account-creation run: what was created vs what failed (with reason), by
+# name, so it's clear which rows to re-check. $Created / $Failed are string lists. One bad row
+# no longer aborts the batch - it's caught, recorded here, and the run continues.
+function Show-AccountResults([string]$What, $Created, $Failed) {
+	$c = @($Created); $f = @($Failed)
+	$parts = @()
+	if ($c.Count) { $parts += "Created ($($c.Count)):`n  " + ($c -join "`n  ") }
+	if ($f.Count) { $parts += "Failed ($($f.Count)):`n  " + ($f -join "`n  ") }
+	if (-not $parts.Count) { $parts += 'Nothing to do - the template had no rows.' }
+	Write-Host "$What summary: created=$($c.Count) failed=$($f.Count)" -ForegroundColor Cyan
+	$kind = if ($f.Count) { 'Warn' } else { 'Info' }
+	Show-Notice "$What complete" ($parts -join "`n`n") $kind
+	$progressBar1.Value = 0
+}
+
 function New-BlockUserDialog {
 	New-StyledDialog -Title 'Block-User' -Icon '&#xEEE3;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
@@ -625,22 +640,24 @@ function New-ADAccounts {
 		$progressBar1.Value = 20
 		CheckForErrors
 
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
+			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
+			try {
 			Write-Host "Gathering info..."
 
 			$sourceUser = Get-ADUser -Identity $row.SourceUser -Properties *
 
 			if ($null -eq $sourceUser) {
-				Write-Host "Source user '$($row.SourceUser)' not found. Skipping user creation for '$($row.SamAccountName)'."
-				continue
+				throw "source user '$($row.SourceUser)' not found"
 			}
 
 			$ouPath = $sourceUser.DistinguishedName -replace "CN=[^,]+,", ""
 			$ou = Get-ADOrganizationalUnit -Filter "DistinguishedName -eq '$ouPath'"
 
 			if ($null -eq $ou) {
-				Write-Host "OU '$ouPath' not found. Skipping user creation for '$($row.SamAccountName)'."
-				continue
+				throw "the source user's OU ('$ouPath') was not found, so the new user has nowhere to go"
 			}
 
 			$forest = $adDomainInput.Text
@@ -706,10 +723,16 @@ function New-ADAccounts {
 					Add-ADGroupMember -Identity $group.DistinguishedName -Members $row.SamAccountName
 				}
 			}
-			Write-Host "Finished creating new user $($newuser.SamAccountName)."
+			$created.Add($who)
+			Write-Host "Finished creating new user $who."
+			} catch {
+				$msg = "$($_.Exception.Message)".Trim()
+				Write-Host "Failed to create '$who': $msg" -ForegroundColor Red
+				$failed.Add("$who - $msg")
+			}
 		}
+		Show-AccountResults 'Create AD accounts' $created $failed
 		CheckForErrors
-		OperationComplete
 	}
 
 	$scriptForm9 = New-ADAccountsDialog -ForestName $domain.forest
@@ -809,22 +832,24 @@ function New-ADAndEmailAccounts {
 		$csvFile = Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv"
 		$progressBar1.Value = 30
 		CheckForErrors
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
+			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
+			try {
 			Write-Host "Gathering info..."
 
 			$sourceUser = Get-ADUser -Identity $row.SourceUser -Properties *
 
 			if ($null -eq $sourceUser) {
-				Write-Host "Source user '$($row.SourceUser)' not found. Skipping user creation for '$($row.SamAccountName)'."
-				continue
+				throw "source user '$($row.SourceUser)' not found"
 			}
 
 			$ouPath = $sourceUser.DistinguishedName -replace "CN=[^,]+,", ""
 			$ou = Get-ADOrganizationalUnit -Filter "DistinguishedName -eq '$ouPath'"
 
 			if ($null -eq $ou) {
-				Write-Host "OU '$ouPath' not found. Skipping user creation for '$($row.SamAccountName)'."
-				continue
+				throw "the source user's OU ('$ouPath') was not found, so the new user has nowhere to go"
 			}
 
 			$forest = $adDomainInput.Text
@@ -934,9 +959,16 @@ function New-ADAndEmailAccounts {
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}
+			$created.Add($who)
+			Write-Host "Finished creating $who." -ForegroundColor Cyan
+			} catch {
+				$msg = "$($_.Exception.Message)".Trim()
+				Write-Host "Failed to create '$who': $msg" -ForegroundColor Red
+				$failed.Add("$who - $msg")
+			}
 		}
+		Show-AccountResults 'Create AD & Email accounts' $created $failed
 		CheckForErrors
-		OperationComplete
 	}
 
 	$scriptForm9 = New-ADAndEmailAccountsDialog -ForestName $domain.forest
@@ -994,7 +1026,11 @@ function New-EmailAccounts {
 	function OnCreateAccountsButtonClick {
 		Write-Host "createAccountsButton clicked."
 		$progressBar1.Value = 10
+		$created = [System.Collections.Generic.List[string]]::new()
+		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\New-EmailAccounts.csv" | ForEach-Object {
+			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
+			try {
 			$progressBar1.Value = 10
 			$firstName = $_.FirstName
 			$lastName = $_.LastName
@@ -1047,9 +1083,15 @@ function New-EmailAccounts {
 				Default { Write-Host "No license selected or invalid entry." }
 			}
 			$progressBar1.Value = 90
+			$created.Add($who)
+			} catch {
+				$msg = "$($_.Exception.Message)".Trim()
+				Write-Host "Failed to create '$who': $msg" -ForegroundColor Red
+				$failed.Add("$who - $msg")
+			}
 		}
+		Show-AccountResults 'Create email accounts' $created $failed
 		CheckForErrors
-		OperationComplete
 	}
 
 	$addEmailAccountsForm = New-EmailAccountsDialog

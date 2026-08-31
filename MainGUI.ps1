@@ -1,4 +1,4 @@
-$version = "v3.1.46"
+$version = "v3.1.47"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -807,7 +807,7 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Block-User'; Desc = 'Disable a user in AD and Microsoft 365, convert their mailbox to shared.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
 	@{ Name = 'Clear-RecycleBin'; Desc = 'Empty all recycle bins on this computer.'; SignIn = $false; Cat = 'System'; Icon = 0xE66D }
 	@{ Name = 'Convert-UnifiedGroupToDistributionGroup'; Desc = 'Rebuild a Microsoft 365 group as a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE16F }
-	@{ Name = 'Disable-ADAndEmailAccounts'; Display = 'Disable-ADAndEmailAccounts (terminate)'; Desc = 'Terminate a user: disable AD, convert mailbox to shared, strip licenses/2FA, optional delegate + auto-reply.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
+	@{ Name = 'Terminate-Disable-ADAndEmailAccounts'; Desc = 'Terminate a user: disable AD, convert mailbox to shared, strip licenses/2FA, optional add-members + auto-reply.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
 	@{ Name = 'Enable-Archive'; Desc = 'Enable, jumpstart or auto-expand mailbox archiving.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE085 }
 	@{ Name = 'Install-RequiredModules'; Desc = 'Install the Microsoft.Graph and ExchangeOnlineManagement modules.'; SignIn = $false; Cat = 'App'; Icon = 0xE0DD }
 	@{ Name = 'New-ADAccounts'; Desc = 'Create Active Directory accounts in bulk from a CSV.'; SignIn = $false; Cat = 'Active Directory'; Icon = 0xEDBB }
@@ -936,7 +936,7 @@ function OnRunButtonClick {
 		"Block-User" { Block-User }
 		"Clear-RecycleBin" { Clear-RecycleBin }
 		"Convert-UnifiedGroupToDistributionGroup" { Convert-UnifiedGroupToDistributionGroup }
-		"Disable-ADAndEmailAccounts" { Disable-ADAndEmailAccounts }
+		"Terminate-Disable-ADAndEmailAccounts" { Terminate-Disable-ADAndEmailAccounts }
 		"Enable-Archive" { Enable-Archive }
 		"Install-RequiredModules" { Install-RequiredModules }
 		"New-ADAccounts" { New-ADAccounts }

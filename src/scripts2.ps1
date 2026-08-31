@@ -24,6 +24,30 @@ function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
 	}
 }
 
+# Remove a user's licenses. Handles BOTH directly-assigned licenses (Set-MgUserLicense) and
+# licenses that come from GROUP-BASED LICENSING - which Graph refuses to remove from the user
+# directly ("license is inherited from a group membership"), so the only way to drop them is to
+# remove the user from the assigning group. Reads LicenseAssignmentStates to tell which is which.
+# Writes progress; never throws (logs per item). Reused by the termination and Block-User scripts.
+function Remove-UserLicenses([string]$User) {
+	$u = $null
+	try { $u = Get-MgUser -UserId $User -Property 'Id,LicenseAssignmentStates' -ErrorAction Stop } catch { Write-Host "  couldn't read license state: $($_.Exception.Message)" -ForegroundColor Yellow; return }
+	$states = @($u.LicenseAssignmentStates)
+	if (-not $states.Count) { Write-Host "  no licenses to remove."; return }
+	$directSkus = @($states | Where-Object { -not $_.AssignedByGroup } | Select-Object -ExpandProperty SkuId -Unique)
+	$groupIds   = @($states | Where-Object { $_.AssignedByGroup } | Select-Object -ExpandProperty AssignedByGroup -Unique)
+	if ($directSkus.Count) {
+		try { Set-MgUserLicense -UserId $User -RemoveLicenses @($directSkus) -AddLicenses @() -ErrorAction Stop | Out-Null; Write-Host "  removed $($directSkus.Count) directly-assigned license(s)." -ForegroundColor Cyan }
+		catch { Write-Host "  couldn't remove directly-assigned licenses: $($_.Exception.Message)" -ForegroundColor Yellow }
+	}
+	foreach ($gid in $groupIds) {
+		$gname = $gid
+		try { $gname = (Get-MgGroup -GroupId $gid -Property DisplayName -ErrorAction Stop).DisplayName } catch {}
+		try { Remove-MgGroupMemberByRef -GroupId $gid -DirectoryObjectId $u.Id -ErrorAction Stop; Write-Host "  removed from licensing group '$gname' to drop its group-assigned license(s)." -ForegroundColor Cyan }
+		catch { Write-Host "  license from group '$gname' still assigned - remove them from that group manually: $($_.Exception.Message)" -ForegroundColor Yellow }
+	}
+}
+
 # Remove EVERY re-registerable auth method for a user - phone, Microsoft Authenticator,
 # software OATH, FIDO2, Windows Hello, email, temporary access pass - leaving only the password.
 # Loops so a user with several methods (or several phone numbers) is fully cleared, and a
@@ -237,13 +261,7 @@ function Block-User {
 			Update-MgUser -UserId $user -AccountEnabled:$false
 			Write-Host "Disabled $user account" -ForegroundColor Cyan -NoNewline
 			$progressBar1.Value = 60
-			$license = Get-MgUserLicenseDetail -UserId $user
-			if ($license) {
-				Set-MgUserLicense -UserId $user -RemoveLicenses @($license.SkuId) -AddLicenses @()
-				Write-Host "Removed licenses from $user" -ForegroundColor Cyan
-			} else {
-				Write-Host "$user has no licenses to remove." -ForegroundColor Cyan
-			}
+			Remove-UserLicenses $user
 			$progressBar1.Value = 70
 			try {
 				$cleared = Clear-UserAuthMethods $user
@@ -1404,7 +1422,7 @@ function Set-License {
 # tool; the module-install / Connect-MgGraph / Connect-ExchangeOnline / sign-in-out plumbing is
 # dropped because Script-Package Studio manages the tenant connection centrally.
 function New-DisableAccountsDialog {
-	New-StyledDialog -Title 'Disable-ADAndEmailAccounts' -Icon '&#xEEE3;' -BodyXaml @'
+	New-StyledDialog -Title 'Terminate-Disable-ADAndEmailAccounts' -Icon '&#xEEE3;' -BodyXaml @'
 <StackPanel Margin="16" Width="380">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -1424,7 +1442,7 @@ function New-DisableAccountsDialog {
 			<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
 				<StackPanel>
 					<TextBlock Text="Email options" Style="{DynamicResource Dim}"/>
-					<CheckBox x:Name="AddMembersCheck" Content="Grant a delegate Full Access + Send As" IsChecked="True" Margin="0,8,0,0"/>
+					<CheckBox x:Name="AddMembersCheck" Content="Add mailbox members" IsChecked="True" Margin="0,8,0,0"/>
 					<CheckBox x:Name="AddAutoReplyCheck" Content="Set an auto-reply" Margin="0,8,0,0"/>
 				</StackPanel>
 			</Border>
@@ -1440,32 +1458,6 @@ function New-DisableAccountsDialog {
 	</Border>
 </StackPanel>
 '@
-}
-
-# Sub-dialog: optionally grant one delegate Full Access + Send As. Returns @{ Skip; Member }.
-function New-TermAddMemberDialog([string]$Email) {
-	$win = New-StyledDialog -Title "Grant access - $Email" -Icon '&#xED93;' -BodyXaml @"
-<StackPanel Margin="16" Width="360">
-	<Border Style="{DynamicResource Card}">
-		<StackPanel>
-			<TextBlock Text="Give someone Full Access + Send As on this mailbox, or skip." Style="{DynamicResource Dim}" TextWrapping="Wrap"/>
-			<Grid Margin="0,10,0,0">
-				<Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-				<TextBlock Text="Member" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
-				<TextBox x:Name="MemberInput" Grid.Column="1"/>
-			</Grid>
-			<Grid Margin="0,14,0,0">
-				<Button x:Name="SkipBtn" Style="{DynamicResource BtnGhost}" Content="Skip" HorizontalAlignment="Left" MinWidth="100"/>
-				<Button x:Name="AddBtn" Style="{DynamicResource BtnPrimary}" Content="Add" HorizontalAlignment="Right" MinWidth="120" IsDefault="True"/>
-			</Grid>
-		</StackPanel>
-	</Border>
-</StackPanel>
-"@
-	$win.Tag = @{ Skip = $true; Member = '' }
-	$win.FindName('AddBtn').Add_Click({ param($s, $e) $w = [System.Windows.Window]::GetWindow($s); $w.Tag = @{ Skip = $false; Member = $w.FindName('MemberInput').Text.Trim() }; $w.Close() })
-	$win.FindName('SkipBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
-	return $win
 }
 
 # Sub-dialog: compose an auto-reply. Returns @{ Skip; Internal; External; UseSchedule; Start; End }.
@@ -1521,9 +1513,9 @@ function New-TermAutoReplyDialog([string]$Email) {
 	return $win
 }
 
-function Disable-ADAndEmailAccounts {
-	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Disable-ADAndEmailAccounts.txt"
-	Write-Host "Running Disable-ADAndEmailAccounts script..."
+function Terminate-Disable-ADAndEmailAccounts {
+	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Terminate-Disable-ADAndEmailAccounts.txt"
+	Write-Host "Running Terminate-Disable-ADAndEmailAccounts script..."
 	$progressBar1.Value = 10
 
 	# Disable one on-prem AD account (idempotent - reports if already disabled).
@@ -1544,22 +1536,10 @@ function Disable-ADAndEmailAccounts {
 		try { $pm = Get-MgUserAuthenticationPasswordMethod -UserId $email -ErrorAction Stop; Reset-MgUserAuthenticationMethodPassword -UserId $email -AuthenticationMethodId $pm.Id -ErrorAction Stop | Out-Null; Write-Host "  reset password." } catch { Write-Host "  couldn't reset password: $($_.Exception.Message)" -ForegroundColor Yellow }
 		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow }
 		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow }
-		try { $lic = Get-MgUserLicenseDetail -UserId $email -ErrorAction Stop; if ($lic) { Set-MgUserLicense -UserId $email -RemoveLicenses @($lic.SkuId) -AddLicenses @() -ErrorAction Stop | Out-Null; Write-Host "  removed licenses." } else { Write-Host "  no licenses to remove." } } catch { Write-Host "  couldn't remove licenses: $($_.Exception.Message)" -ForegroundColor Yellow }
+		Remove-UserLicenses $email
 		try { $n = Clear-UserAuthMethods $email; if ($n -gt 0) { Write-Host "  removed $n MFA method(s)." } else { Write-Host "  no MFA methods to remove." } } catch { Write-Host "  couldn't clear MFA methods: $($_.Exception.Message)" -ForegroundColor Yellow }
 	}
 
-	function Invoke-AddMemberPrompt([string]$email) {
-		$d = New-TermAddMemberDialog $email
-		[void]$d.ShowDialog()
-		$r = $d.Tag
-		if (-not $r.Skip -and $r.Member) {
-			try {
-				Add-MailboxPermission -Identity $email -User $r.Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
-				Add-RecipientPermission -Identity $email -Trustee $r.Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
-				Write-Host "  granted $($r.Member) Full Access + Send As on $email." -ForegroundColor Cyan
-			} catch { Write-Host "  couldn't grant access to $($r.Member): $($_.Exception.Message)" -ForegroundColor Yellow }
-		}
-	}
 	function Invoke-AutoReplyPrompt([string]$email) {
 		$d = New-TermAutoReplyDialog $email
 		[void]$d.ShowDialog()
@@ -1587,7 +1567,7 @@ function Disable-ADAndEmailAccounts {
 		if ($blockEmail) {
 			try {
 				Disable-OneEmail $email
-				if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $email }
+				if ($addMembersCheck.IsChecked -eq $true) { Add-MailboxMember -MailboxPrefill $email }
 				if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $email }
 				Write-Host "Finished blocking $email." -ForegroundColor Cyan
 			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
@@ -1599,14 +1579,14 @@ function Disable-ADAndEmailAccounts {
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10
-		$csv = ".\Templates\Disable-ADAndEmailAccounts.csv"
+		$csv = ".\Templates\Terminate-Disable-ADAndEmailAccounts.csv"
 		if (-not (Test-Path $csv)) { "Username,Email" | Out-File $csv -Encoding UTF8 }
 		Invoke-Item $csv
 		$progressBar1.Value = 0
 		CheckForErrors
 	}
 	function OnDisableBulkButtonClick {
-		$csv = ".\Templates\Disable-ADAndEmailAccounts.csv"
+		$csv = ".\Templates\Terminate-Disable-ADAndEmailAccounts.csv"
 		if (-not (Test-Path $csv)) { Show-Notice 'No template' 'Use Open Template to create the CSV first.' 'Warn'; return }
 		$rows = @(Import-Csv $csv)
 		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
@@ -1624,7 +1604,7 @@ function Disable-ADAndEmailAccounts {
 				if ($blockAd -and $u) { Disable-OneAd $u }
 				if ($blockEmail -and $e) {
 					Disable-OneEmail $e
-					if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $e }
+					if ($addMembersCheck.IsChecked -eq $true) { Add-MailboxMember -MailboxPrefill $e }
 					if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $e }
 				}
 				$done.Add($who)

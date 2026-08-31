@@ -1164,14 +1164,16 @@ function New-MailboxMemberDialog {
 }
 
 function Add-MailboxMember {
+	param([string]$MailboxPrefill = '')   # when set (e.g. called from the termination script), pre-fills the mailbox
 	$progressBar1.Value = 10
 	$Script:mailboxMemberMode = 0
+	$startedTranscript = $false
 	if ($selectedScript -eq "Add-MailboxMember") {
-		Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Add-MailboxMember.txt"
+		Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Add-MailboxMember.txt"; $startedTranscript = $true
 		Write-Host "Running Add-MailboxMember script..."
 		$Script:mailboxMemberMode = 0
 	} elseif ($selectedScript -eq "Remove-MailboxMember") {
-		Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Remove-MailboxMember.txt"
+		Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Remove-MailboxMember.txt"; $startedTranscript = $true
 		Write-Host "Running Remove-MailboxMember script..."
 		$Script:mailboxMemberMode = 1
 	}
@@ -1253,6 +1255,7 @@ function Add-MailboxMember {
 	$scriptForm1 = New-MailboxMemberDialog
 	$memberInputBox = $scriptForm1.FindName('MemberInput')
 	$mailboxInputBox = $scriptForm1.FindName('MailboxInput')
+	if ($MailboxPrefill) { $mailboxInputBox.Text = $MailboxPrefill }
 	$addMemberRadioButton = $scriptForm1.FindName('AddMemberChip')
 	$removeMemberRadioButton = $scriptForm1.FindName('RemoveMemberChip')
 	$memberButton = $scriptForm1.FindName('MemberBtn')
@@ -1284,7 +1287,7 @@ function Add-MailboxMember {
 
 	[void]$scriptForm1.ShowDialog()
 
-	Stop-Transcript
+	if ($startedTranscript) { Stop-Transcript }
 }
 
 # ---------------------------------------------------------------------------

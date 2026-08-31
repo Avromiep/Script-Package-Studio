@@ -1,4 +1,4 @@
-$version = "v3.1.43"
+$version = "v3.1.44"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -817,6 +817,7 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Remove-EmailAlias'; Desc = 'Remove aliases from a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xEBBC }
 	@{ Name = 'Remove-MailboxMember'; Desc = 'Revoke FullAccess / SendAs / SendOnBehalf on a mailbox.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED93 }
 	@{ Name = 'Remove-UnifiedGroupMember'; Desc = 'Remove members from a Microsoft 365 group.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
+	@{ Name = 'Remove-UserFromAllGroups'; Desc = 'Remove a user from all (or selected) groups - DLs, Teams/M365, security, AD. Offboarding.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
 	@{ Name = 'Reset-MFA'; Desc = 'Clear a user''s MFA methods so they re-register, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE72E }
 	@{ Name = 'Set-License'; Desc = 'Assign, remove or swap Microsoft 365 licenses, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE8FC }
 	@{ Name = 'Update-ScriptPackage'; Desc = 'Download and install the latest release.'; SignIn = $false; Cat = 'App'; Icon = 0xE0BF }
@@ -945,6 +946,7 @@ function OnRunButtonClick {
 		"Remove-EmailAlias" { Remove-EmailAlias }
 		"Remove-MailboxMember" { Add-MailboxMember }
 		"Remove-UnifiedGroupMember" { Remove-UnifiedGroupMember }
+		"Remove-UserFromAllGroups" { Remove-UserFromAllGroups }
 		"Reset-MFA" { Reset-MFA }
 		"Set-License" { Set-License }
 		"Update-ScriptPackage" { Update-ScriptPackage }
@@ -1231,6 +1233,7 @@ if ($env:SP_SHOT) {
 		'dlg-set-ntp'            = { New-SetNTPDialog }
 		'dlg-reset-mfa'          = { New-ResetMfaDialog }
 		'dlg-disable-accounts'   = { New-DisableAccountsDialog }
+		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
 		'dlg-show-information'   = { New-InformationDialog }

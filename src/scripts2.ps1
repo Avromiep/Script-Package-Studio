@@ -24,6 +24,33 @@ function Assign-MgLicenseWithRetry([string]$UserId, [string]$SkuId) {
 	}
 }
 
+# Remove EVERY re-registerable auth method for a user - phone, Microsoft Authenticator,
+# software OATH, FIDO2, Windows Hello, email, temporary access pass - leaving only the password.
+# Loops so a user with several methods (or several phone numbers) is fully cleared, and a
+# per-method failure is logged and skipped rather than stopping the rest. Returns the count
+# removed; throws only if the user's method list can't be read at all. Shared by Reset-MFA and
+# the termination script. Needs the Graph scope UserAuthenticationMethod.ReadWrite.All.
+function Clear-UserAuthMethods([string]$User) {
+	$methods = Get-MgUserAuthenticationMethod -UserId $User -ErrorAction Stop
+	$removed = 0
+	foreach ($m in $methods) {
+		$type = "$($m.AdditionalProperties['@odata.type'])"
+		try {
+			switch -Wildcard ($type) {
+				'*phoneAuthenticationMethod'                  { Remove-MgUserAuthenticationPhoneMethod -UserId $User -PhoneAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $User -MicrosoftAuthenticatorAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $User -SoftwareOathAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $User -Fido2AuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $User -EmailAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $User -TemporaryAccessPassAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				default { }   # passwordAuthenticationMethod / anything unknown: leave alone
+			}
+		} catch { Write-Host "  couldn't remove $type for $User`: $($_.Exception.Message)" -ForegroundColor Yellow }
+	}
+	return $removed
+}
+
 # Summarize a bulk account-creation run: what was created vs what failed (with reason), by
 # name, so it's clear which rows to re-check. $Created / $Failed are string lists. One bad row
 # no longer aborts the batch - it's caught, recorded here, and the run continues.
@@ -218,13 +245,10 @@ function Block-User {
 				Write-Host "$user has no licenses to remove." -ForegroundColor Cyan
 			}
 			$progressBar1.Value = 70
-			$phoneMethod = Get-MgUserAuthenticationPhoneMethod -UserId $user
-			if ($null -eq $phoneMethod) {
-				Write-Host "$user doesn't have a 2FA phone number" -ForegroundColor Cyan
-			} else {
-				Remove-MgUserAuthenticationPhoneMethod -UserId $user -PhoneAuthenticationMethodId $phoneMethod.Id
-				Write-Host "Removed 2FA phone number from $user" -ForegroundColor Cyan
-			}
+			try {
+				$cleared = Clear-UserAuthMethods $user
+				if ($cleared -gt 0) { Write-Host "Removed $cleared MFA method(s) from $user" -ForegroundColor Cyan } else { Write-Host "$user has no MFA methods to remove" -ForegroundColor Cyan }
+			} catch { Write-Host "Couldn't clear MFA methods for $user`: $($_.Exception.Message)" -ForegroundColor Yellow }
 			$progressBar1.Value = 80
 			CheckForErrors
 			if ($addMembersCheckBox.IsChecked -eq $true) {
@@ -1211,26 +1235,9 @@ function Reset-MFA {
 	Write-Host "Running Reset-MFA script..."
 	$progressBar1.Value = 10
 
-	# Remove every re-registerable auth method (leaves the password), optionally revoke sessions.
-	# Returns the count removed; throws only if the user can't be read at all.
+	# Clear all re-registerable methods (shared helper), then optionally revoke sessions.
 	function Clear-MfaFor([string]$u) {
-		$methods = Get-MgUserAuthenticationMethod -UserId $u -ErrorAction Stop
-		$removed = 0
-		foreach ($m in $methods) {
-			$type = "$($m.AdditionalProperties['@odata.type'])"
-			try {
-				switch -Wildcard ($type) {
-					'*phoneAuthenticationMethod'                  { Remove-MgUserAuthenticationPhoneMethod -UserId $u -PhoneAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $u -MicrosoftAuthenticatorAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $u -SoftwareOathAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $u -Fido2AuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $u -WindowsHelloForBusinessAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $u -EmailAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $u -TemporaryAccessPassAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-					default { }   # passwordAuthenticationMethod / anything unknown: leave alone
-				}
-			} catch { Write-Host "  couldn't remove $type for $u`: $($_.Exception.Message)" -ForegroundColor Yellow }
-		}
+		$removed = Clear-UserAuthMethods $u
 		if ($revokeCheck.IsChecked -eq $true) { Revoke-MgUserSignInSession -UserId $u -ErrorAction Stop | Out-Null }
 		return $removed
 	}
@@ -1538,7 +1545,7 @@ function Disable-ADAndEmailAccounts {
 		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow }
 		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow }
 		try { $lic = Get-MgUserLicenseDetail -UserId $email -ErrorAction Stop; if ($lic) { Set-MgUserLicense -UserId $email -RemoveLicenses @($lic.SkuId) -AddLicenses @() -ErrorAction Stop | Out-Null; Write-Host "  removed licenses." } else { Write-Host "  no licenses to remove." } } catch { Write-Host "  couldn't remove licenses: $($_.Exception.Message)" -ForegroundColor Yellow }
-		try { $ph = Get-MgUserAuthenticationPhoneMethod -UserId $email -ErrorAction SilentlyContinue; if ($ph) { Remove-MgUserAuthenticationPhoneMethod -UserId $email -PhoneAuthenticationMethodId $ph.Id -ErrorAction Stop; Write-Host "  removed 2FA phone." } else { Write-Host "  no 2FA phone." } } catch { Write-Host "  couldn't remove 2FA phone: $($_.Exception.Message)" -ForegroundColor Yellow }
+		try { $n = Clear-UserAuthMethods $email; if ($n -gt 0) { Write-Host "  removed $n MFA method(s)." } else { Write-Host "  no MFA methods to remove." } } catch { Write-Host "  couldn't clear MFA methods: $($_.Exception.Message)" -ForegroundColor Yellow }
 	}
 
 	function Invoke-AddMemberPrompt([string]$email) {

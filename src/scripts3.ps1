@@ -238,11 +238,8 @@ function New-RemoveGroupsDialog {
 			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
 			<Grid Margin="0,12,0,0">
 				<Grid.ColumnDefinitions><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-				<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 				<TextBlock Text="Email" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="EmailInput" Grid.Column="1"/>
-				<TextBlock Text="AD user" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
-				<TextBox x:Name="AdUserInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
 			</Grid>
 			<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
 				<StackPanel>
@@ -252,7 +249,6 @@ function New-RemoveGroupsDialog {
 					<CheckBox x:Name="M365Check" Content="Microsoft 365 / Teams groups" IsChecked="True" Margin="0,6,0,0"/>
 					<CheckBox x:Name="SecCheck" Content="Security groups" IsChecked="True" Margin="0,6,0,0"/>
 					<CheckBox x:Name="MailSecCheck" Content="Mail-enabled security groups" IsChecked="True" Margin="0,6,0,0"/>
-					<CheckBox x:Name="AdCheck" Content="Active Directory groups (on-prem)" Margin="0,6,0,0"/>
 				</StackPanel>
 			</Border>
 			<CheckBox x:Name="PreviewCheck" Content="Preview only (list, don't remove)" Margin="0,12,0,0"/>
@@ -307,43 +303,25 @@ function Remove-UserFromAllGroups {
 			} catch { Write-Host "  failed on $name`: $($_.Exception.Message)" -ForegroundColor Yellow; $failed.Add("$label $name ($cat) - $($_.Exception.Message)") }
 		}
 	}
-	# Remove a user's on-prem AD group memberships (except the primary group, which can't be removed).
-	function Remove-AdGroups([string]$adUser, [bool]$preview, $done, $failed, [string]$label) {
-		Import-Module ActiveDirectory
-		$groups = @()
-		try { $groups = Get-ADPrincipalGroupMembership -Identity $adUser -ErrorAction Stop } catch { $failed.Add("$label AD groups lookup - $($_.Exception.Message)"); return }
-		foreach ($g in $groups) {
-			$gname = "$($g.Name)"
-			if ($gname -eq 'Domain Users') { $failed.Add("$label $gname - skipped (AD primary group)"); continue }
-			if ($preview) { $done.Add("$label $gname (AD)"); continue }
-			try { Remove-ADGroupMember -Identity $g.DistinguishedName -Members $adUser -Confirm:$false -ErrorAction Stop; Write-Host "  removed $adUser from $gname (AD)."; $done.Add("$label $gname (AD)") }
-			catch { $failed.Add("$label $gname (AD) - $($_.Exception.Message)") }
-		}
-	}
-
 	function Get-SelectedTypes { @{ DL = ($dlCheck.IsChecked -eq $true); M365 = ($m365Check.IsChecked -eq $true); Sec = ($secCheck.IsChecked -eq $true); MailSec = ($mailSecCheck.IsChecked -eq $true) } }
 
 	function OnRemoveButtonClick {
-		$email = $emailInput.Text.Trim(); $adUser = $adUserInput.Text.Trim()
-		$types = Get-SelectedTypes; $doAd = ($adCheck.IsChecked -eq $true)
-		$anyCloud = ($types.Values -contains $true)
-		if (-not ($anyCloud -or $doAd)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
-		if ($anyCloud -and -not $email) { Show-Notice 'Missing info' 'Enter the user email for the Microsoft 365 group types.' 'Warn'; return }
-		if ($doAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username for Active Directory groups.' 'Warn'; return }
-		if ($anyCloud -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) for the Microsoft 365 group types." 'Warn'; return }
+		$email = $emailInput.Text.Trim()
+		$types = Get-SelectedTypes
+		if (-not ($types.Values -contains $true)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
+		if (-not $email) { Show-Notice 'Missing info' 'Enter the user email.' 'Warn'; return }
+		if (-not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar)." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$progressBar1.Value = 30
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
-		if ($anyCloud) { Remove-CloudGroups $email $types $preview $done $failed '' }
-		if ($doAd) { Remove-AdGroups $adUser $preview $done $failed '' }
+		Remove-CloudGroups $email $types $preview $done $failed ''
 		$progressBar1.Value = 0
-		$who = @($email, $adUser | Where-Object { $_ }) -join ' / '
-		Show-AccountResults "Remove $who from groups" $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
+		Show-AccountResults "Remove $email from groups" $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10
 		$csv = ".\Templates\Remove-UserFromAllGroups.csv"
-		if (-not (Test-Path $csv)) { "Email,ADUsername" | Out-File $csv -Encoding UTF8 }
+		if (-not (Test-Path $csv)) { "Email" | Out-File $csv -Encoding UTF8 }
 		Invoke-Item $csv
 		$progressBar1.Value = 0
 		CheckForErrors
@@ -353,29 +331,27 @@ function Remove-UserFromAllGroups {
 		if (-not (Test-Path $csv)) { Show-Notice 'No template' 'Use Open Template to create the CSV first.' 'Warn'; return }
 		$rows = @(Import-Csv $csv)
 		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
-		$types = Get-SelectedTypes; $doAd = ($adCheck.IsChecked -eq $true)
-		$anyCloud = ($types.Values -contains $true)
-		if (-not ($anyCloud -or $doAd)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
-		if ($anyCloud -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first for the Microsoft 365 group types." 'Warn'; return }
+		$types = Get-SelectedTypes
+		if (-not ($types.Values -contains $true)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
+		if (-not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $rows) {
-			$email = "$($row.Email)".Trim(); $adUser = "$($row.ADUsername)".Trim()
-			$label = if ($email) { "${email}:" } elseif ($adUser) { "${adUser}:" } else { '(blank):' }
-			Write-Host "Processing $label..."
-			if ($anyCloud -and $email) { Remove-CloudGroups $email $types $preview $done $failed $label }
-			if ($doAd -and $adUser) { Remove-AdGroups $adUser $preview $done $failed $label }
+			$email = "$($row.Email)".Trim()
+			if (-not $email) { continue }
+			Write-Host "Processing $email..."
+			Remove-CloudGroups $email $types $preview $done $failed "${email}:"
 		}
 		Show-AccountResults 'Remove users from groups' $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
 	}
 
 	$form = New-RemoveGroupsDialog
-	$emailInput = $form.FindName('EmailInput'); $adUserInput = $form.FindName('AdUserInput')
+	$emailInput = $form.FindName('EmailInput')
 	$allCheck = $form.FindName('AllCheck')
-	$dlCheck = $form.FindName('DlCheck'); $m365Check = $form.FindName('M365Check'); $secCheck = $form.FindName('SecCheck'); $mailSecCheck = $form.FindName('MailSecCheck'); $adCheck = $form.FindName('AdCheck')
+	$dlCheck = $form.FindName('DlCheck'); $m365Check = $form.FindName('M365Check'); $secCheck = $form.FindName('SecCheck'); $mailSecCheck = $form.FindName('MailSecCheck')
 	$previewCheck = $form.FindName('PreviewCheck')
-	$childChecks = @($dlCheck, $m365Check, $secCheck, $mailSecCheck, $adCheck)
+	$childChecks = @($dlCheck, $m365Check, $secCheck, $mailSecCheck)
 	# "All groups" master: ticks/unticks every type; a type toggle keeps the master in sync.
 	$allCheck.Add_Checked({ if (-not $script:RgSync) { $script:RgSync = $true; foreach ($c in $childChecks) { $c.IsChecked = $true }; $script:RgSync = $false } })
 	$allCheck.Add_Unchecked({ if (-not $script:RgSync) { $script:RgSync = $true; foreach ($c in $childChecks) { $c.IsChecked = $false }; $script:RgSync = $false } })

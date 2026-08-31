@@ -1391,6 +1391,263 @@ function Set-License {
 }
 
 # ---------------------------------------------------------------------------
+# Termination / offboarding: disable an AD account and/or convert the mailbox to shared, reset
+# password, revoke sessions, disable the cloud account, strip licenses + 2FA - with optional
+# "grant a delegate access" and "set an auto-reply" prompts. Ported from a standalone WinForms
+# tool; the module-install / Connect-MgGraph / Connect-ExchangeOnline / sign-in-out plumbing is
+# dropped because Script-Package Studio manages the tenant connection centrally.
+function New-DisableAccountsDialog {
+	New-StyledDialog -Title 'Disable-ADAndEmailAccounts' -Icon '&#xEEE3;' -BodyXaml @'
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
+			<Grid Margin="0,12,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+				<TextBlock Text="Email" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="EmailInput" Grid.Column="1"/>
+				<TextBlock Text="AD user" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
+				<TextBox x:Name="AdUserInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
+			</Grid>
+			<StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+				<CheckBox x:Name="BlockEmailCheck" Content="Block email" IsChecked="True"/>
+				<CheckBox x:Name="BlockAdCheck" Content="Block AD" IsChecked="True" Margin="18,0,0,0"/>
+			</StackPanel>
+			<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+				<StackPanel>
+					<TextBlock Text="Email options" Style="{DynamicResource Dim}"/>
+					<CheckBox x:Name="AddMembersCheck" Content="Grant a delegate Full Access + Send As" IsChecked="True" Margin="0,8,0,0"/>
+					<CheckBox x:Name="AddAutoReplyCheck" Content="Set an auto-reply" Margin="0,8,0,0"/>
+				</StackPanel>
+			</Border>
+			<Button x:Name="BlockBtn" Style="{DynamicResource BtnPrimary}" Content="Block" Margin="0,14,0,0"/>
+		</StackPanel>
+	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
+			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
+			<Button x:Name="DisableBulkBtn" Style="{DynamicResource BtnPrimary}" Content="Disable Bulk Accounts" Margin="0,8,0,0"/>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+}
+
+# Sub-dialog: optionally grant one delegate Full Access + Send As. Returns @{ Skip; Member }.
+function New-TermAddMemberDialog([string]$Email) {
+	$win = New-StyledDialog -Title "Grant access - $Email" -Icon '&#xED93;' -BodyXaml @"
+<StackPanel Margin="16" Width="360">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Give someone Full Access + Send As on this mailbox, or skip." Style="{DynamicResource Dim}" TextWrapping="Wrap"/>
+			<Grid Margin="0,10,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<TextBlock Text="Member" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="MemberInput" Grid.Column="1"/>
+			</Grid>
+			<Grid Margin="0,14,0,0">
+				<Button x:Name="SkipBtn" Style="{DynamicResource BtnGhost}" Content="Skip" HorizontalAlignment="Left" MinWidth="100"/>
+				<Button x:Name="AddBtn" Style="{DynamicResource BtnPrimary}" Content="Add" HorizontalAlignment="Right" MinWidth="120" IsDefault="True"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+	$win.Tag = @{ Skip = $true; Member = '' }
+	$win.FindName('AddBtn').Add_Click({ param($s, $e) $w = [System.Windows.Window]::GetWindow($s); $w.Tag = @{ Skip = $false; Member = $w.FindName('MemberInput').Text.Trim() }; $w.Close() })
+	$win.FindName('SkipBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+	return $win
+}
+
+# Sub-dialog: compose an auto-reply. Returns @{ Skip; Internal; External; UseSchedule; Start; End }.
+function New-TermAutoReplyDialog([string]$Email) {
+	$win = New-StyledDialog -Title "Auto-reply - $Email" -Icon '&#xEBBC;' -BodyXaml @"
+<StackPanel Margin="16" Width="520">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<Grid>
+				<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<StackPanel Grid.Column="0">
+					<TextBlock Text="Internal Auto-Reply" Style="{DynamicResource Dim}"/>
+					<TextBox x:Name="InternalReplyBox" Style="{DynamicResource TextArea}" Height="150" Margin="0,6,0,0"/>
+				</StackPanel>
+				<StackPanel Grid.Column="2">
+					<TextBlock Text="External Auto-Reply" Style="{DynamicResource Dim}"/>
+					<TextBox x:Name="ExternalReplyBox" Style="{DynamicResource TextArea}" Height="150" Margin="0,6,0,0"/>
+				</StackPanel>
+			</Grid>
+			<CheckBox x:Name="MatchRepliesCheck" Content="Match Replies" IsChecked="True" Margin="0,12,0,0"/>
+			<Border Style="{DynamicResource Divider}"/>
+			<CheckBox x:Name="UseScheduleCheck" Content="Use Start and End Date"/>
+			<Grid Margin="0,10,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+				<TextBlock Text="Start" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<DatePicker x:Name="StartDatePicker" Grid.Column="1" IsEnabled="False"/>
+				<TextBlock Text="End" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
+				<DatePicker x:Name="EndDatePicker" Grid.Row="1" Grid.Column="1" IsEnabled="False" Margin="0,8,0,0"/>
+			</Grid>
+			<Grid Margin="0,16,0,0">
+				<Button x:Name="SkipBtn" Style="{DynamicResource BtnGhost}" Content="Skip" HorizontalAlignment="Left" MinWidth="120"/>
+				<Button x:Name="ConfirmBtn" Style="{DynamicResource BtnPrimary}" Content="Confirm" HorizontalAlignment="Right" MinWidth="160" IsDefault="True"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+	$internal = $win.FindName('InternalReplyBox'); $external = $win.FindName('ExternalReplyBox')
+	$match = $win.FindName('MatchRepliesCheck'); $useSched = $win.FindName('UseScheduleCheck')
+	$startP = $win.FindName('StartDatePicker'); $endP = $win.FindName('EndDatePicker')
+	$startP.SelectedDate = [DateTime]::Now; $endP.SelectedDate = [DateTime]::Now
+	$internal.Add_TextChanged({ if ($match.IsChecked -eq $true) { $external.Text = $internal.Text } }.GetNewClosure())
+	$external.Add_TextChanged({ if ($match.IsChecked -eq $true) { $internal.Text = $external.Text } }.GetNewClosure())
+	$useSched.Add_Checked({ $startP.IsEnabled = $true; $endP.IsEnabled = $true }.GetNewClosure())
+	$useSched.Add_Unchecked({ $startP.IsEnabled = $false; $endP.IsEnabled = $false }.GetNewClosure())
+	$win.Tag = @{ Skip = $true }
+	$win.FindName('ConfirmBtn').Add_Click({
+		$win.Tag = @{ Skip = $false; Internal = $internal.Text; External = $external.Text; UseSchedule = ($useSched.IsChecked -eq $true); Start = $startP.SelectedDate; End = $endP.SelectedDate }
+		$win.Close()
+	}.GetNewClosure())
+	$win.FindName('SkipBtn').Add_Click({ $win.Close() }.GetNewClosure())
+	return $win
+}
+
+function Disable-ADAndEmailAccounts {
+	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Disable-ADAndEmailAccounts.txt"
+	Write-Host "Running Disable-ADAndEmailAccounts script..."
+	$progressBar1.Value = 10
+
+	# Disable one on-prem AD account (idempotent - reports if already disabled).
+	function Disable-OneAd([string]$username) {
+		Import-Module ActiveDirectory
+		$adUser = Get-ADUser -Identity $username -Properties Enabled -ErrorAction Stop
+		if ($adUser.Enabled -eq $false) { Write-Host "$username is already disabled in AD." -ForegroundColor Yellow; return }
+		Disable-ADAccount -Identity $username -ErrorAction Stop
+		Write-Host "Disabled AD account $username." -ForegroundColor Cyan
+	}
+
+	# The full email offboarding for one mailbox. Throws if the mailbox can't be found; the
+	# individual cloud steps tolerate their own failures so one hiccup doesn't stop the rest.
+	function Disable-OneEmail([string]$email) {
+		$mailbox = Get-Mailbox -Identity $email -ErrorAction Stop
+		Set-Mailbox -Identity $email -Type Shared -ErrorAction Stop
+		Write-Host "Converted $email to a shared mailbox." -ForegroundColor Cyan
+		try { $pm = Get-MgUserAuthenticationPasswordMethod -UserId $email -ErrorAction Stop; Reset-MgUserAuthenticationMethodPassword -UserId $email -AuthenticationMethodId $pm.Id -ErrorAction Stop | Out-Null; Write-Host "  reset password." } catch { Write-Host "  couldn't reset password: $($_.Exception.Message)" -ForegroundColor Yellow }
+		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow }
+		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow }
+		try { $lic = Get-MgUserLicenseDetail -UserId $email -ErrorAction Stop; if ($lic) { Set-MgUserLicense -UserId $email -RemoveLicenses @($lic.SkuId) -AddLicenses @() -ErrorAction Stop | Out-Null; Write-Host "  removed licenses." } else { Write-Host "  no licenses to remove." } } catch { Write-Host "  couldn't remove licenses: $($_.Exception.Message)" -ForegroundColor Yellow }
+		try { $ph = Get-MgUserAuthenticationPhoneMethod -UserId $email -ErrorAction SilentlyContinue; if ($ph) { Remove-MgUserAuthenticationPhoneMethod -UserId $email -PhoneAuthenticationMethodId $ph.Id -ErrorAction Stop; Write-Host "  removed 2FA phone." } else { Write-Host "  no 2FA phone." } } catch { Write-Host "  couldn't remove 2FA phone: $($_.Exception.Message)" -ForegroundColor Yellow }
+	}
+
+	function Invoke-AddMemberPrompt([string]$email) {
+		$d = New-TermAddMemberDialog $email
+		[void]$d.ShowDialog()
+		$r = $d.Tag
+		if (-not $r.Skip -and $r.Member) {
+			try {
+				Add-MailboxPermission -Identity $email -User $r.Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
+				Add-RecipientPermission -Identity $email -Trustee $r.Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+				Write-Host "  granted $($r.Member) Full Access + Send As on $email." -ForegroundColor Cyan
+			} catch { Write-Host "  couldn't grant access to $($r.Member): $($_.Exception.Message)" -ForegroundColor Yellow }
+		}
+	}
+	function Invoke-AutoReplyPrompt([string]$email) {
+		$d = New-TermAutoReplyDialog $email
+		[void]$d.ShowDialog()
+		$r = $d.Tag
+		if (-not $r.Skip) {
+			try {
+				if ($r.UseSchedule) { Set-MailboxAutoReplyConfiguration -Identity $email -AutoReplyState Scheduled -StartTime $r.Start -EndTime $r.End -InternalMessage $r.Internal -ExternalMessage $r.External -ExternalAudience All -Confirm:$false -ErrorAction Stop }
+				else { Set-MailboxAutoReplyConfiguration -Identity $email -AutoReplyState Enabled -InternalMessage $r.Internal -ExternalMessage $r.External -ExternalAudience All -Confirm:$false -ErrorAction Stop }
+				Write-Host "  set auto-reply for $email." -ForegroundColor Cyan
+			} catch { Write-Host "  couldn't set auto-reply: $($_.Exception.Message)" -ForegroundColor Yellow }
+		}
+	}
+
+	function OnBlockButtonClick {
+		$email = $emailInput.Text.Trim(); $adUser = $adUserInput.Text.Trim()
+		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
+		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
+		if ($blockEmail -and -not $email) { Show-Notice 'Missing info' 'Enter the email to block.' 'Warn'; return }
+		if ($blockAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username to block.' 'Warn'; return }
+		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		$progressBar1.Value = 20
+		$errors = @()
+		if ($blockAd) { try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
+		$progressBar1.Value = 50
+		if ($blockEmail) {
+			try {
+				Disable-OneEmail $email
+				if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $email }
+				if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $email }
+				Write-Host "Finished blocking $email." -ForegroundColor Cyan
+			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
+		}
+		$progressBar1.Value = 0
+		$who = @($email, $adUser | Where-Object { $_ }) -join ' / '
+		if ($errors.Count) { Show-Notice 'Finished with errors' ("Blocked $who, but:`n`n" + ($errors -join "`n")) 'Warn' }
+		else { Show-Notice 'Done' "Blocked $who." 'Info' }
+	}
+	function OnOpenTemplateButtonClick {
+		$progressBar1.Value = 10
+		$csv = ".\Templates\Disable-ADAndEmailAccounts.csv"
+		if (-not (Test-Path $csv)) { "Username,Email" | Out-File $csv -Encoding UTF8 }
+		Invoke-Item $csv
+		$progressBar1.Value = 0
+		CheckForErrors
+	}
+	function OnDisableBulkButtonClick {
+		$csv = ".\Templates\Disable-ADAndEmailAccounts.csv"
+		if (-not (Test-Path $csv)) { Show-Notice 'No template' 'Use Open Template to create the CSV first.' 'Warn'; return }
+		$rows = @(Import-Csv $csv)
+		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
+		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
+		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
+		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		$progressBar1.Value = 10
+		$done = [System.Collections.Generic.List[string]]::new()
+		$failed = [System.Collections.Generic.List[string]]::new()
+		foreach ($row in $rows) {
+			$u = "$($row.Username)".Trim(); $e = "$($row.Email)".Trim()
+			$who = if ($e) { $e } elseif ($u) { $u } else { '(blank row)' }
+			Write-Host "Processing $who..."
+			try {
+				if ($blockAd -and $u) { Disable-OneAd $u }
+				if ($blockEmail -and $e) {
+					Disable-OneEmail $e
+					if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $e }
+					if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $e }
+				}
+				$done.Add($who)
+			} catch { Write-Host "Failed $who`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$who - $($_.Exception.Message)") }
+		}
+		Show-AccountResults 'Disable AD & Email accounts' $done $failed -DoneWord 'Disabled' -FailWord 'Failed'
+	}
+
+	$form = New-DisableAccountsDialog
+	$emailInput = $form.FindName('EmailInput')
+	$adUserInput = $form.FindName('AdUserInput')
+	$blockEmailCheck = $form.FindName('BlockEmailCheck')
+	$blockAdCheck = $form.FindName('BlockAdCheck')
+	$addMembersCheck = $form.FindName('AddMembersCheck')
+	$addAutoReplyCheck = $form.FindName('AddAutoReplyCheck')
+	# Enable/disable the email + AD inputs with their checkboxes.
+	$blockEmailCheck.Add_Checked({ $emailInput.IsEnabled = $true; $addMembersCheck.IsEnabled = $true; $addAutoReplyCheck.IsEnabled = $true })
+	$blockEmailCheck.Add_Unchecked({ $emailInput.IsEnabled = $false; $addMembersCheck.IsEnabled = $false; $addAutoReplyCheck.IsEnabled = $false })
+	$blockAdCheck.Add_Checked({ $adUserInput.IsEnabled = $true })
+	$blockAdCheck.Add_Unchecked({ $adUserInput.IsEnabled = $false })
+	$form.FindName('BlockBtn').Add_Click({ OnBlockButtonClick })
+	$form.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
+	$form.FindName('DisableBulkBtn').Add_Click({ OnDisableBulkButtonClick })
+	Write-Host "Loaded DisableAccountsForm."
+	$progressBar1.Value = 0
+	[void]$form.ShowDialog()
+	Stop-Transcript
+}
+
+# ---------------------------------------------------------------------------
 function New-InboxRule-SP {
 	New-InboxRule -Name ForwardMail -Mailbox example@contoso.com -From example@contoso.com -ForwardTo example@contoso.com -MarkAsRead $true -MoveToFolder example@contoso.com:\Completed
 }

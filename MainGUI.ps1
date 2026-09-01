@@ -1,4 +1,4 @@
-$version = "v3.1.49"
+$version = "v3.1.50"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1256,6 +1256,31 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
+		'dlg-autocomplete'       = {
+			$w = New-StyledDialog -Title 'Recipient type-ahead' -Icon '&#xE721;' -BodyXaml @'
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Mailbox / user (start typing a name)" Style="{DynamicResource Dim}"/>
+			<TextBox x:Name="AcField" Margin="0,6,0,0" Text="sa"/>
+			<Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1" CornerRadius="8" Padding="3" Margin="0,4,0,0">
+				<ListBox x:Name="AcList" Background="Transparent" BorderThickness="0"/>
+			</Border>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+			$list = $w.FindName('AcList')
+			$sample = @(
+				@('Sara Adler', 'sadler@contoso.com', ''),
+				@('Sales', 'sales@contoso.com', 'shared mailbox'),
+				@('All Staff', 'allstaff@contoso.com', 'distribution list'),
+				@('Marketing Team', 'marketing@contoso.com', 'Teams / Microsoft 365 group'),
+				@('Reception Room', 'reception@contoso.com', 'room')
+			)
+			foreach ($s in $sample) { $it = New-Object System.Windows.Controls.ListBoxItem; $it.Content = New-RecipientRow $s[0] $s[1] $s[2]; [void]$list.Items.Add($it) }
+			$w
+		}
 		'dlg-show-information'   = { New-InformationDialog }
 		'dlg-error'              = { New-ErrorDialog "Add-MailboxPermission: mailbox admin@contoso.com`nwas not found on the server." }
 		'dlg-opcomplete'         = { New-OperationCompleteDialog }

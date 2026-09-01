@@ -351,6 +351,7 @@ function Block-User {
 
 	$ScriptForm2 = New-BlockUserDialog
 	$emailInputBox = $ScriptForm2.FindName('EmailInput')
+	Enable-RecipientAutocomplete $emailInputBox 'Mailbox'
 	$adNameInputBox = $ScriptForm2.FindName('AdNameInput')
 	$emailCheckBox = $ScriptForm2.FindName('EmailCheck')
 	$adCheckBox = $ScriptForm2.FindName('AdCheck')
@@ -542,6 +543,7 @@ function Convert-UnifiedGroupToDistributionGroup {
 
 	$ScriptForm6 = New-ConvertGroupDialog
 	$sourceInputBox = $ScriptForm6.FindName('SourceInput')
+	Enable-RecipientAutocomplete $sourceInputBox 'Group'
 	$singlePanel = $ScriptForm6.FindName('SinglePanel')
 	$bulkPanel = $ScriptForm6.FindName('BulkPanel')
 	$ScriptForm6.FindName('SingleChip').Add_Checked({
@@ -633,6 +635,7 @@ function Enable-Archive {
 
 	$ScriptForm3 = New-EnableArchiveDialog
 	$archiveInputBox = $ScriptForm3.FindName('ArchiveInput')
+	Enable-RecipientAutocomplete $archiveInputBox 'Mailbox'
 	$ScriptForm3.FindName('ArchiveBtn').Add_Click({ OnArchiveButtonClick })
 	$ScriptForm3.FindName('JumpstartBtn').Add_Click({ OnJumpstartButtonClick })
 	$ScriptForm3.FindName('ExpandBtn').Add_Click({ OnExpandButtonClick })
@@ -1288,6 +1291,7 @@ function Reset-MFA {
 	$form = New-ResetMfaDialog
 	$emailInput = $form.FindName('EmailInput')
 	$revokeCheck = $form.FindName('RevokeCheck')
+	Enable-RecipientAutocomplete $emailInput 'User'
 	$form.FindName('ResetBtn').Add_Click({ OnResetButtonClick })
 	$form.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$form.FindName('BulkBtn').Add_Click({ OnBulkButtonClick })
@@ -1400,6 +1404,7 @@ function Set-License {
 
 	$form = New-SetLicenseDialog
 	$userInput = $form.FindName('UserInput')
+	Enable-RecipientAutocomplete $userInput 'User'
 	$assignChip = $form.FindName('AssignChip'); $removeChip = $form.FindName('RemoveChip'); $swapChip = $form.FindName('SwapChip')
 	$fromLabel = $form.FindName('FromLabel'); $fromCombo = $form.FindName('FromCombo')
 	$toLabel = $form.FindName('ToLabel'); $toCombo = $form.FindName('ToCombo')
@@ -1616,6 +1621,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 	$form = New-DisableAccountsDialog
 	$emailInput = $form.FindName('EmailInput')
 	$adUserInput = $form.FindName('AdUserInput')
+	Enable-RecipientAutocomplete $emailInput 'Mailbox'
 	$blockEmailCheck = $form.FindName('BlockEmailCheck')
 	$blockAdCheck = $form.FindName('BlockAdCheck')
 	$addMembersCheck = $form.FindName('AddMembersCheck')

@@ -200,6 +200,194 @@ function Set-DialogTitle($Win, [string]$Text) {
 	if ($t) { $t.Text = $Text }
 }
 
+# ---------------------------------------------------------------------------
+# Recipient type-ahead: start typing a name in any email field and pick a match from the tenant.
+# ---------------------------------------------------------------------------
+
+# Short tag shown next to a suggestion. Empty for a normal user mailbox (so those just show
+# name + email); a friendly label for anything else.
+function Get-RecipientTypeLabel([string]$RecipientTypeDetails) {
+	switch -Regex ($RecipientTypeDetails) {
+		'SharedMailbox'                 { return 'shared mailbox' }
+		'RoomMailbox'                   { return 'room' }
+		'EquipmentMailbox'              { return 'equipment' }
+		'SchedulingMailbox'             { return 'scheduling' }
+		'GroupMailbox'                  { return 'Teams / Microsoft 365 group' }
+		'DynamicDistributionGroup'      { return 'dynamic distribution list' }
+		'MailUniversalSecurityGroup'    { return 'mail-enabled security group' }
+		'RoomList'                      { return 'room list' }
+		'MailUniversalDistributionGroup|MailNonUniversalGroup' { return 'distribution list' }
+		'MailContact'                   { return 'contact' }
+		'GuestMailUser'                 { return 'guest' }
+		'MailUser'                      { return 'external / mail user' }
+		'UserMailbox'                   { return '' }
+		default                         { return '' }
+	}
+}
+# Ranking bucket for a recipient type, used to float the field's relevant kind to the top.
+function Get-RecipientBucket([string]$rtd) {
+	if ($rtd -match 'GroupMailbox|Distribution|MailUniversal|MailNonUniversal|RoomList') { return 'Group' }
+	if ($rtd -match 'Mailbox')  { return 'Mailbox' }
+	return 'Other'
+}
+
+# Find recipients matching $Term. Auto mode: on first use, preload up to ~2000 recipients and
+# filter locally (instant); if the tenant is bigger, fall back to a live ANR query per keystroke.
+# Cache is per-tenant and rebuilt when the tenant changes. $Prefer ('User'/'Mailbox'/'Group'/'Any')
+# only affects ordering - all types are always returned, the relevant kind just sorts first.
+$script:RecipientIndex = $null
+function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 12) {
+	$Term = "$Term".Trim()
+	if ($Term.Length -lt 2) { return @() }
+	try { if (-not (Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return @() } } catch { return @() }
+	$tid = ''
+	try { $tid = "$((Get-MgContext).TenantId)" } catch {}
+	if (-not $script:RecipientIndex -or $script:RecipientIndex.TenantId -ne $tid) {
+		$script:RecipientIndex = @{ TenantId = $tid; Mode = $null; Items = $null }
+	}
+	if ($null -eq $script:RecipientIndex.Mode) {
+		try {
+			$all = @(Get-Recipient -ResultSize 2001 -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails)
+			if ($all.Count -gt 2000) { $script:RecipientIndex.Mode = 'live'; $script:RecipientIndex.Items = $null }
+			else { $script:RecipientIndex.Mode = 'cache'; $script:RecipientIndex.Items = $all }
+		} catch { $script:RecipientIndex.Mode = 'live'; $script:RecipientIndex.Items = $null }
+	}
+	$raw = @()
+	if ($script:RecipientIndex.Mode -eq 'cache') {
+		$raw = @($script:RecipientIndex.Items | Where-Object { "$($_.DisplayName)" -like "*$Term*" -or "$($_.PrimarySmtpAddress)" -like "*$Term*" })
+	} else {
+		try { $raw = @(Get-Recipient -Anr $Term -ResultSize 40 -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails) } catch { $raw = @() }
+	}
+	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
+	$out = foreach ($r in $raw) {
+		$rtd = "$($r.RecipientTypeDetails)"
+		[pscustomobject]@{
+			Name  = "$($r.DisplayName)"
+			Email = "$($r.PrimarySmtpAddress)"
+			Label = Get-RecipientTypeLabel $rtd
+			Rank  = if ($target -and (Get-RecipientBucket $rtd) -eq $target) { 0 } else { 1 }
+		}
+	}
+	return @($out | Where-Object { $_.Email } | Sort-Object Rank, Name | Select-Object -First $Max)
+}
+
+# Build one suggestion row: "Name" over "email" on the left, an optional type tag on the right.
+function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
+	$g = New-Object System.Windows.Controls.Grid
+	$c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = New-Object System.Windows.GridLength (1, ([System.Windows.GridUnitType]::Star))
+	$c2 = New-Object System.Windows.Controls.ColumnDefinition; $c2.Width = [System.Windows.GridLength]::Auto
+	$g.ColumnDefinitions.Add($c1); $g.ColumnDefinitions.Add($c2)
+	$sp = New-Object System.Windows.Controls.StackPanel
+	$nm = New-Object System.Windows.Controls.TextBlock; $nm.Text = $Name; $nm.Foreground = $script:StyleDict['TextBrush']; $nm.FontSize = 13; $nm.TextTrimming = 'CharacterEllipsis'
+	$em = New-Object System.Windows.Controls.TextBlock; $em.Text = $Email; $em.Foreground = $script:StyleDict['TextDimBrush']; $em.FontSize = 11; $em.TextTrimming = 'CharacterEllipsis'
+	[void]$sp.Children.Add($nm); [void]$sp.Children.Add($em)
+	[System.Windows.Controls.Grid]::SetColumn($sp, 0); [void]$g.Children.Add($sp)
+	if ($Label) {
+		$lb = New-Object System.Windows.Controls.TextBlock; $lb.Text = $Label; $lb.Foreground = $script:StyleDict['TextDimBrush']; $lb.FontSize = 11; $lb.VerticalAlignment = 'Center'; $lb.Margin = '12,0,2,0'
+		[System.Windows.Controls.Grid]::SetColumn($lb, 1); [void]$g.Children.Add($lb)
+	}
+	return $g
+}
+
+# Attach name/email type-ahead to a TextBox. As the user types, a themed dropdown lists matching
+# recipients (name + email, with a type tag for non-user mailboxes); picking one fills in the
+# email. Free typing still works, and it stays silent when not connected to a tenant. $Prefer
+# floats the field's relevant kind to the top. Never throws - on any error the box stays plain.
+function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
+	if (-not $TextBox) { return }
+	try {
+		$borderXaml = @'
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+        BorderThickness="1" CornerRadius="8" Padding="3">
+  <ListBox x:Name="AcList" Background="Transparent" BorderThickness="0" MaxHeight="264"
+           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+    <ListBox.ItemContainerStyle>
+      <Style TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ListBoxItem">
+              <Border x:Name="ib" Background="Transparent" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                <ContentPresenter/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ib" Property="Background" Value="{DynamicResource CardHoverBrush}"/></Trigger>
+                <Trigger Property="IsSelected" Value="True"><Setter TargetName="ib" Property="Background" Value="{DynamicResource SelectionBrush}"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+    </ListBox.ItemContainerStyle>
+  </ListBox>
+</Border>
+'@
+		$border = Read-XamlString $borderXaml
+		[void]$border.Resources.MergedDictionaries.Add($script:StyleDict)
+		$list = $border.FindName('AcList')
+		$popup = New-Object System.Windows.Controls.Primitives.Popup
+		$popup.PlacementTarget = $TextBox
+		$popup.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+		$popup.StaysOpen = $false
+		$popup.AllowsTransparency = $true
+		$popup.Child = $border
+
+		$state = [pscustomobject]@{ Suppress = $false }
+		$timer = New-Object System.Windows.Threading.DispatcherTimer
+		$timer.Interval = [TimeSpan]::FromMilliseconds(350)
+
+		$choose = {
+			if ($list.SelectedItem) {
+				$state.Suppress = $true
+				$TextBox.Text = [string]$list.SelectedItem.Tag
+				try { $TextBox.CaretIndex = $TextBox.Text.Length } catch {}
+				$state.Suppress = $false
+				$popup.IsOpen = $false
+				$TextBox.Focus()
+			}
+		}.GetNewClosure()
+
+		$runQuery = {
+			$timer.Stop()
+			$term = "$($TextBox.Text)".Trim()
+			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
+			$hits = @(Get-RecipientMatches $term $Prefer 12)
+			$list.Items.Clear()
+			if (-not $hits.Count) { $popup.IsOpen = $false; return }
+			foreach ($m in $hits) {
+				$it = New-Object System.Windows.Controls.ListBoxItem
+				$it.Content = New-RecipientRow $m.Name $m.Email $m.Label
+				$it.Tag = $m.Email
+				$it.Add_MouseLeftButtonUp($choose)
+				[void]$list.Items.Add($it)
+			}
+			try { $popup.Width = [Math]::Max(240, $TextBox.ActualWidth) } catch {}
+			$popup.IsOpen = $true
+		}.GetNewClosure()
+
+		$timer.Add_Tick($runQuery)
+		$TextBox.Add_TextChanged({ if (-not $state.Suppress) { $timer.Stop(); $timer.Start() } }.GetNewClosure())
+		$TextBox.Add_PreviewKeyDown({
+			param($s, $e)
+			if (-not $popup.IsOpen) { return }
+			if ($e.Key -eq 'Down') {
+				if ($list.Items.Count) { $list.SelectedIndex = 0; $c = $list.ItemContainerGenerator.ContainerFromIndex(0); if ($c) { [void]$c.Focus() } }
+				$e.Handled = $true
+			} elseif ($e.Key -eq 'Escape') { $popup.IsOpen = $false; $e.Handled = $true }
+			elseif ($e.Key -eq 'Enter' -and $list.SelectedItem) { & $choose; $e.Handled = $true }
+		}.GetNewClosure())
+		$list.Add_PreviewKeyDown({
+			param($s, $e)
+			if ($e.Key -eq 'Enter') { & $choose; $e.Handled = $true }
+			elseif ($e.Key -eq 'Escape') { $popup.IsOpen = $false; $TextBox.Focus(); $e.Handled = $true }
+		}.GetNewClosure())
+		$TextBox.Add_LostKeyboardFocus({ if ($popup.IsOpen -and -not $popup.IsKeyboardFocusWithin) { $popup.IsOpen = $false } }.GetNewClosure())
+	} catch { }
+}
+
 # Reads a bounded integer out of a plain TextBox (replaces WinForms NumericUpDown)
 function Get-NumericValue($TextBox, [int]$Max = 100) {
 	$n = 0

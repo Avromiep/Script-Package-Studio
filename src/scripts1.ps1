@@ -547,6 +547,7 @@ function Add-AuthenticationPhoneMethod {
 
 	$scriptForm8 = New-AuthenticationPhoneDialog
 	$emailInput = $scriptForm8.FindName('EmailInput')
+	Enable-RecipientAutocomplete $emailInput 'User'
 	$phoneInput = $scriptForm8.FindName('PhoneInput')
 	$scriptForm8.FindName('AddPhoneBtn').Add_Click({ OnAddPhoneButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
@@ -675,6 +676,7 @@ function Add-AutoReply {
 
 	$addAutoReplyForm = New-AutoReplyDialog
 	$emailInputBox = $addAutoReplyForm.FindName('EmailInputBox')
+	Enable-RecipientAutocomplete $emailInputBox 'Mailbox'
 	$internalReplyTextBox = $addAutoReplyForm.FindName('InternalReplyBox')
 	$externalReplyTextBox = $addAutoReplyForm.FindName('ExternalReplyBox')
 	$matchRepliesCheckBox = $addAutoReplyForm.FindName('MatchRepliesCheck')
@@ -948,6 +950,8 @@ function Add-DistributionListMember {
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
+	Enable-RecipientAutocomplete $memberInputBox 'User'
+	Enable-RecipientAutocomplete $groupInputBox 'Group'
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnAddMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnAddBulkMembersButtonClick })
@@ -1137,6 +1141,7 @@ function Add-EmailAlias {
 
 	$emailAliasForm = New-EmailAliasDialog -WithPrimary
 	$mailboxTextBox = $emailAliasForm.FindName('MailboxInput')
+	Enable-RecipientAutocomplete $mailboxTextBox 'Mailbox'
 	$aliasTextBox = $emailAliasForm.FindName('AliasInput')
 	$incrementalCheckBox = $emailAliasForm.FindName('IncrementalCheck')
 	$primaryCheckBox = $emailAliasForm.FindName('PrimaryCheck')
@@ -1301,6 +1306,8 @@ function Add-MailboxMember {
 	$memberInputBox = $scriptForm1.FindName('MemberInput')
 	$mailboxInputBox = $scriptForm1.FindName('MailboxInput')
 	if ($MailboxPrefill) { $mailboxInputBox.Text = $MailboxPrefill }
+	Enable-RecipientAutocomplete $memberInputBox 'User'
+	Enable-RecipientAutocomplete $mailboxInputBox 'Mailbox'
 	$addMemberRadioButton = $scriptForm1.FindName('AddMemberChip')
 	$removeMemberRadioButton = $scriptForm1.FindName('RemoveMemberChip')
 	$memberButton = $scriptForm1.FindName('MemberBtn')
@@ -1431,6 +1438,8 @@ function Add-UnifiedGroupMember {
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-UnifiedGroupMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
+	Enable-RecipientAutocomplete $memberInputBox 'User'
+	Enable-RecipientAutocomplete $groupInputBox 'Group'
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnAddMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnAddBulkMembersButtonClick })

@@ -42,6 +42,8 @@ function Remove-DistributionListMember {
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
+	Enable-RecipientAutocomplete $memberInputBox 'User'
+	Enable-RecipientAutocomplete $groupInputBox 'Group'
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
@@ -151,6 +153,7 @@ function Remove-EmailAlias {
 
 	$emailAliasForm = New-EmailAliasDialog -Title 'Remove-EmailAlias' -ActionText 'Remove Alias' -BulkText 'Remove Aliases' -CheckText 'Remove Incremental Aliases'
 	$mailboxTextBox = $emailAliasForm.FindName('MailboxInput')
+	Enable-RecipientAutocomplete $mailboxTextBox 'Mailbox'
 	$aliasTextBox = $emailAliasForm.FindName('AliasInput')
 	$incrementalCheckBox = $emailAliasForm.FindName('IncrementalCheck')
 	$removeAliasButton = $emailAliasForm.FindName('ActionBtn')
@@ -216,6 +219,8 @@ function Remove-UnifiedGroupMember {
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
 	$memberInputBox = $scriptForm8.FindName('MemberInput')
 	$groupInputBox = $scriptForm8.FindName('GroupInput')
+	Enable-RecipientAutocomplete $memberInputBox 'User'
+	Enable-RecipientAutocomplete $groupInputBox 'Group'
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
@@ -348,6 +353,7 @@ function Remove-UserFromAllGroups {
 
 	$form = New-RemoveGroupsDialog
 	$emailInput = $form.FindName('EmailInput')
+	Enable-RecipientAutocomplete $emailInput 'User'
 	$allCheck = $form.FindName('AllCheck')
 	$dlCheck = $form.FindName('DlCheck'); $m365Check = $form.FindName('M365Check'); $secCheck = $form.FindName('SecCheck'); $mailSecCheck = $form.FindName('MailSecCheck')
 	$previewCheck = $form.FindName('PreviewCheck')

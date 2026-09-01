@@ -1,4 +1,4 @@
-$version = "v3.1.50"
+$version = "v3.1.51"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1256,6 +1256,28 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
+		'dlg-ac-empty'           = {
+			$w = New-StyledDialog -Title 'Type a name OR an email' -Icon '&#xE721;' -BodyXaml @'
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Add-DistributionListMember" Style="{DynamicResource H3}"/>
+			<Grid Margin="0,12,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+				<TextBlock Text="Member" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="Mem" Grid.Column="1"/>
+				<TextBlock Text="Group" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
+				<TextBox x:Name="Grp" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+			Set-FieldWatermark $w.FindName('Mem') 'Name or email address'
+			Set-FieldWatermark $w.FindName('Grp') 'Name or email address'
+			$w
+		}
 		'dlg-ac-mixed'           = { New-AcPreviewDialog 'Type-ahead - mixed results' 'Mailbox / user (start typing a name)' 'sa' @(
 			@('Sara Adler', 'sadler@contoso.com', ''),
 			@('Sales', 'sales@contoso.com', 'shared mailbox'),

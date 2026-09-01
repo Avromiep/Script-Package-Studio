@@ -271,6 +271,33 @@ function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max 
 	return @($out | Where-Object { $_.Email } | Sort-Object Rank, Name | Select-Object -First $Max)
 }
 
+# Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
+# clear you can type either. Overlays a non-clickable TextBlock in the field's Grid cell and
+# hides it once you type. Only applies when the field lives in a Grid (which the recipient
+# fields do); otherwise it's a harmless no-op.
+function Set-FieldWatermark($TextBox, [string]$Text) {
+	if (-not $TextBox) { return }
+	$parent = $TextBox.Parent
+	if (-not ($parent -is [System.Windows.Controls.Grid])) { return }
+	try {
+		$ph = New-Object System.Windows.Controls.TextBlock
+		$ph.Text = $Text
+		$ph.Foreground = $script:StyleDict['TextFaintBrush']
+		$ph.IsHitTestVisible = $false
+		$ph.VerticalAlignment = 'Center'
+		$ph.FontSize = 13
+		$ph.Margin = New-Object System.Windows.Thickness (11, 0, 6, 0)
+		$ph.TextTrimming = 'CharacterEllipsis'
+		[System.Windows.Controls.Grid]::SetColumn($ph, [System.Windows.Controls.Grid]::GetColumn($TextBox))
+		[System.Windows.Controls.Grid]::SetRow($ph, [System.Windows.Controls.Grid]::GetRow($TextBox))
+		[System.Windows.Controls.Grid]::SetColumnSpan($ph, [System.Windows.Controls.Grid]::GetColumnSpan($TextBox))
+		[void]$parent.Children.Add($ph)
+		$upd = { $ph.Visibility = if ("$($TextBox.Text)".Length -gt 0) { 'Collapsed' } else { 'Visible' } }.GetNewClosure()
+		& $upd
+		$TextBox.Add_TextChanged($upd)
+	} catch {}
+}
+
 # Build one suggestion row: "Name" over "email" on the left, an optional type tag on the right.
 function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	$g = New-Object System.Windows.Controls.Grid
@@ -315,6 +342,7 @@ function New-AcPreviewDialog([string]$Title, [string]$FieldLabel, [string]$Typed
 # floats the field's relevant kind to the top. Never throws - on any error the box stays plain.
 function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 	if (-not $TextBox) { return }
+	Set-FieldWatermark $TextBox 'Name or email address'
 	try {
 		$borderXaml = @'
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"

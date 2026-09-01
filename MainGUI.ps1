@@ -1,4 +1,4 @@
-$version = "v3.1.47"
+$version = "v3.1.48"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1211,7 +1211,26 @@ if ($env:SP_SHOT) {
 
 	$script:ShotBuilders = [ordered]@{
 		'dlg-add-2fa'            = { New-AuthenticationPhoneDialog }
-		'dlg-add-autoreply'      = { New-AutoReplyDialog }
+		'dlg-add-autoreply'      = {
+			$w = New-AutoReplyDialog
+			$msg = "I'm out of the office until Monday. For anything urgent, contact sales@contoso.com."
+			$w.FindName('InternalReplyBox').Text = $msg; $w.FindName('ExternalReplyBox').Text = $msg
+			$t = $w.FindName('ReplyBannerText'); $b = $w.FindName('ReplyBanner')
+			$t.Text = 'NEW auto-reply - this is what will be set on the mailbox when you click Confirm.'
+			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'AccentBrush')
+			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
+			$w
+		}
+		'dlg-autoreply-current'  = {
+			$w = New-AutoReplyDialog
+			$msg = "Thank you for your message. I have left the company; please contact hr@contoso.com."
+			$w.FindName('InternalReplyBox').Text = $msg; $w.FindName('ExternalReplyBox').Text = $msg
+			$t = $w.FindName('ReplyBannerText'); $b = $w.FindName('ReplyBanner')
+			$t.Text = 'PREVIEW - this is the auto-reply CURRENTLY on the mailbox. Edit it to compose a new one.'
+			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
+			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+			$w
+		}
 		'dlg-add-contacts'       = { New-AddContactsDialog }
 		'dlg-add-distlistmember' = { New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste }
 		'dlg-remove-distlistmember' = { New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste }

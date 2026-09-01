@@ -584,7 +584,10 @@ function New-AutoReplyDialog {
 				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0"
 						ToolTip="Load the mailbox's current auto-reply so you can review it"/>
 			</Grid>
-			<Grid Margin="0,14,0,0">
+			<Border x:Name="ReplyBanner" Margin="0,14,0,0" Padding="10,6" CornerRadius="6" BorderThickness="1">
+				<TextBlock x:Name="ReplyBannerText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
+			</Border>
+			<Grid Margin="0,10,0,0">
 				<Grid.ColumnDefinitions>
 					<ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/>
 				</Grid.ColumnDefinitions>
@@ -649,6 +652,25 @@ function Add-AutoReply {
 		OperationComplete
 	}
 
+	# Banner above the reply boxes makes it obvious whether they hold the mailbox's CURRENT
+	# auto-reply (loaded by Show current, amber) or the NEW text you're composing (accent). It
+	# flips to NEW the moment you edit. $ArSuppress silences the flip while Show current loads
+	# text programmatically.
+	$script:ArShowingCurrent = $false
+	$script:ArSuppress = $false
+	function Set-BannerNew([string]$msg = 'NEW auto-reply - this is what will be set on the mailbox when you click Confirm.') {
+		$replyBannerText.Text = $msg
+		$replyBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'AccentBrush')
+		$replyBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
+		$script:ArShowingCurrent = $false
+	}
+	function Set-BannerCurrent {
+		$replyBannerText.Text = 'PREVIEW - this is the auto-reply CURRENTLY on the mailbox. Edit it to compose a new one.'
+		$replyBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
+		$replyBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		$script:ArShowingCurrent = $true
+	}
+
 	$addAutoReplyForm = New-AutoReplyDialog
 	$emailInputBox = $addAutoReplyForm.FindName('EmailInputBox')
 	$internalReplyTextBox = $addAutoReplyForm.FindName('InternalReplyBox')
@@ -659,12 +681,17 @@ function Add-AutoReply {
 	$endDatePicker = $addAutoReplyForm.FindName('EndDatePicker')
 	$startDatePicker.SelectedDate = [DateTime]::Now
 	$endDatePicker.SelectedDate = [DateTime]::Now
+	$replyBanner = $addAutoReplyForm.FindName('ReplyBanner')
+	$replyBannerText = $addAutoReplyForm.FindName('ReplyBannerText')
+	Set-BannerNew
 
 	$internalReplyTextBox.Add_TextChanged({
 		if ($matchRepliesCheckBox.IsChecked -eq $true) { $externalReplyTextBox.Text = $internalReplyTextBox.Text }
+		if (-not $script:ArSuppress -and $script:ArShowingCurrent) { Set-BannerNew }
 	})
 	$externalReplyTextBox.Add_TextChanged({
 		if ($matchRepliesCheckBox.IsChecked -eq $true) { $internalReplyTextBox.Text = $externalReplyTextBox.Text }
+		if (-not $script:ArSuppress -and $script:ArShowingCurrent) { Set-BannerNew }
 	})
 	$onSchedule = {
 		if ($useScheduleCheckBox.IsChecked -eq $true) {
@@ -695,9 +722,12 @@ function Add-AutoReply {
 		}
 		$progressBar1.Value = 60
 		$state = [string]$cfg.AutoReplyState
+		$script:ArSuppress = $true
 		if (-not $state -or $state -eq 'Disabled') {
 			$internalReplyTextBox.Text = ''
 			$externalReplyTextBox.Text = ''
+			$script:ArSuppress = $false
+			Set-BannerNew 'No auto-reply is currently set on this mailbox - compose a new one below (set on Confirm).'
 			Write-Host "No auto-reply is currently set on $mailbox (state: $state). You can create a new one." -ForegroundColor Cyan
 		} else {
 			$intText = ConvertFrom-AutoReplyHtml ([string]$cfg.InternalMessage)
@@ -711,7 +741,9 @@ function Add-AutoReply {
 				if ($cfg.StartTime) { try { $startDatePicker.SelectedDate = [datetime]$cfg.StartTime } catch {} }
 				if ($cfg.EndTime)   { try { $endDatePicker.SelectedDate   = [datetime]$cfg.EndTime }   catch {} }
 			}
-			Write-Host "Current auto-reply on $mailbox is '$state' - loaded its message(s) below for review." -ForegroundColor Green
+			$script:ArSuppress = $false
+			Set-BannerCurrent
+			Write-Host "Current auto-reply on $mailbox is '$state' - loaded below for REVIEW (edit it to replace)." -ForegroundColor Green
 		}
 		CheckForErrors
 		$progressBar1.Value = 0

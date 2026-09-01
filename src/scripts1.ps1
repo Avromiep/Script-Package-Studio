@@ -581,8 +581,8 @@ function New-AutoReplyDialog {
 				</Grid.ColumnDefinitions>
 				<TextBlock Text="Mailbox" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="EmailInputBox" Grid.Column="1"/>
-				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0"
-						ToolTip="Load the mailbox's current auto-reply so you can review it"/>
+				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0" MinWidth="104"
+						ToolTip="Load the mailbox's current auto-reply, then click again to clear it"/>
 			</Grid>
 			<Border x:Name="ReplyBanner" Margin="0,14,0,0" Padding="10,6" CornerRadius="6" BorderThickness="1">
 				<TextBlock x:Name="ReplyBannerText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
@@ -663,12 +663,14 @@ function Add-AutoReply {
 		$replyBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'AccentBrush')
 		$replyBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
 		$script:ArShowingCurrent = $false
+		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Show current' }
 	}
 	function Set-BannerCurrent {
 		$replyBannerText.Text = 'PREVIEW - this is the auto-reply CURRENTLY on the mailbox. Edit it to compose a new one.'
 		$replyBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
 		$replyBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
 		$script:ArShowingCurrent = $true
+		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Clear preview' }
 	}
 
 	$addAutoReplyForm = New-AutoReplyDialog
@@ -683,6 +685,7 @@ function Add-AutoReply {
 	$endDatePicker.SelectedDate = [DateTime]::Now
 	$replyBanner = $addAutoReplyForm.FindName('ReplyBanner')
 	$replyBannerText = $addAutoReplyForm.FindName('ReplyBannerText')
+	$showCurrentBtn = $addAutoReplyForm.FindName('ShowCurrentBtn')
 	Set-BannerNew
 
 	$internalReplyTextBox.Add_TextChanged({
@@ -708,7 +711,17 @@ function Add-AutoReply {
 
 	# "Show current": load the mailbox's existing auto-reply so the user can see if
 	# there's already one they like before writing a new one.
-	$addAutoReplyForm.FindName('ShowCurrentBtn').Add_Click({
+	$showCurrentBtn.Add_Click({
+		# Toggle: while a preview is loaded this button clears it; otherwise it loads the current reply.
+		if ($script:ArShowingCurrent) {
+			$script:ArSuppress = $true
+			$internalReplyTextBox.Text = ''
+			$externalReplyTextBox.Text = ''
+			$script:ArSuppress = $false
+			Set-BannerNew
+			Write-Host "Cleared the preview - compose a new auto-reply." -ForegroundColor Cyan
+			return
+		}
 		$mailbox = $emailInputBox.Text.Trim()
 		if (-not $mailbox) { Write-Host "Enter a mailbox email address first." -ForegroundColor Yellow; return }
 		Write-Host "Fetching current auto-reply for $mailbox..."

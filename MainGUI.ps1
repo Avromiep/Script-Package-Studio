@@ -1256,31 +1256,23 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
-		'dlg-autocomplete'       = {
-			$w = New-StyledDialog -Title 'Recipient type-ahead' -Icon '&#xE721;' -BodyXaml @'
-<StackPanel Margin="16" Width="380">
-	<Border Style="{DynamicResource Card}">
-		<StackPanel>
-			<TextBlock Text="Mailbox / user (start typing a name)" Style="{DynamicResource Dim}"/>
-			<TextBox x:Name="AcField" Margin="0,6,0,0" Text="sa"/>
-			<Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1" CornerRadius="8" Padding="3" Margin="0,4,0,0">
-				<ListBox x:Name="AcList" Background="Transparent" BorderThickness="0"/>
-			</Border>
-		</StackPanel>
-	</Border>
-</StackPanel>
-'@
-			$list = $w.FindName('AcList')
-			$sample = @(
-				@('Sara Adler', 'sadler@contoso.com', ''),
-				@('Sales', 'sales@contoso.com', 'shared mailbox'),
-				@('All Staff', 'allstaff@contoso.com', 'distribution list'),
-				@('Marketing Team', 'marketing@contoso.com', 'Teams / Microsoft 365 group'),
-				@('Reception Room', 'reception@contoso.com', 'room')
-			)
-			foreach ($s in $sample) { $it = New-Object System.Windows.Controls.ListBoxItem; $it.Content = New-RecipientRow $s[0] $s[1] $s[2]; [void]$list.Items.Add($it) }
-			$w
-		}
+		'dlg-ac-mixed'           = { New-AcPreviewDialog 'Type-ahead - mixed results' 'Mailbox / user (start typing a name)' 'sa' @(
+			@('Sara Adler', 'sadler@contoso.com', ''),
+			@('Sales', 'sales@contoso.com', 'shared mailbox'),
+			@('All Staff', 'allstaff@contoso.com', 'distribution list'),
+			@('Marketing Team', 'marketing@contoso.com', 'Teams / Microsoft 365 group'),
+			@('Reception Room', 'reception@contoso.com', 'room')) }
+		'dlg-ac-member'          = { New-AcPreviewDialog 'Type-ahead - a member field' 'Member (person to add)' 'jo' @(
+			@('John Doe', 'jdoe@contoso.com', ''),
+			@('Joanna Klein', 'jklein@contoso.com', ''),
+			@('Jordan Prima', 'jprima@contoso.com', ''),
+			@('Johnson, Alex', 'ajohnson@contoso.com', ''),
+			@('Job Applicants', 'jobs@contoso.com', 'shared mailbox')) }
+		'dlg-ac-group'           = { New-AcPreviewDialog 'Type-ahead - a group field' 'Group (distribution list / Teams group)' 'sal' @(
+			@('Sales Team', 'salesteam@contoso.com', 'Teams / Microsoft 365 group'),
+			@('Sales', 'sales@contoso.com', 'distribution list'),
+			@('Sales Managers', 'salesmgrs@contoso.com', 'mail-enabled security group'),
+			@('Sally Ann Reyes', 'sreyes@contoso.com', '')) }
 		'dlg-show-information'   = { New-InformationDialog }
 		'dlg-error'              = { New-ErrorDialog "Add-MailboxPermission: mailbox admin@contoso.com`nwas not found on the server." }
 		'dlg-opcomplete'         = { New-OperationCompleteDialog }

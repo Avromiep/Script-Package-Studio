@@ -289,6 +289,26 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	return $g
 }
 
+# Screenshot-only: a dialog showing a field with an open suggestion dropdown of sample rows.
+function New-AcPreviewDialog([string]$Title, [string]$FieldLabel, [string]$Typed, $Rows) {
+	$w = New-StyledDialog -Title $Title -Icon '&#xE721;' -BodyXaml @"
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="$FieldLabel" Style="{DynamicResource Dim}"/>
+			<TextBox x:Name="AcField" Margin="0,6,0,0" Text="$Typed"/>
+			<Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1" CornerRadius="8" Padding="3" Margin="0,4,0,0">
+				<ListBox x:Name="AcList" Background="Transparent" BorderThickness="0"/>
+			</Border>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+	$list = $w.FindName('AcList')
+	foreach ($r in $Rows) { $it = New-Object System.Windows.Controls.ListBoxItem; $it.Content = New-RecipientRow $r[0] $r[1] $r[2]; [void]$list.Items.Add($it) }
+	return $w
+}
+
 # Attach name/email type-ahead to a TextBox. As the user types, a themed dropdown lists matching
 # recipients (name + email, with a type tag for non-user mailboxes); picking one fills in the
 # email. Free typing still works, and it stays silent when not connected to a tenant. $Prefer

@@ -1,4 +1,4 @@
-$version = "v3.1.48"
+$version = "v3.1.49"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1229,6 +1229,7 @@ if ($env:SP_SHOT) {
 			$t.Text = 'PREVIEW - this is the auto-reply CURRENTLY on the mailbox. Edit it to compose a new one.'
 			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
 			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+			$w.FindName('ShowCurrentBtn').Content = 'Clear preview'
 			$w
 		}
 		'dlg-add-contacts'       = { New-AddContactsDialog }

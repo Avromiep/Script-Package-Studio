@@ -1,4 +1,4 @@
-$version = "v3.1.52"
+$version = "v3.1.53"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -38,12 +38,13 @@ $script:SettingsIniPath = Join-Path $PSScriptRoot 'settings.ini'
 
 # ---- settings (persisted in settings.ini) -----------------------------------
 $script:Settings = @{
-	theme        = 'Dark'
-	winWidth     = 560
-	winHeight    = 760
-	winMaximized = $false
-	logExpanded  = $false
-	blurTenant   = $false
+	theme           = 'Dark'
+	winWidth        = 560
+	winHeight       = 760
+	winMaximized    = $false
+	logExpanded     = $false
+	blurTenant      = $false
+	recipientSearch = $true
 }
 
 function Read-AppSettings {
@@ -55,6 +56,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*WinMaximized\s*=\s*(0|1)\s*$') { $script:Settings.winMaximized = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*LogExpanded\s*=\s*(0|1)\s*$') { $script:Settings.logExpanded = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*BlurTenant\s*=\s*(0|1)\s*$') { $script:Settings.blurTenant = $Matches[1] -eq '1' }
+		elseif ($line -match '^\s*RecipientSearch\s*=\s*(0|1)\s*$') { $script:Settings.recipientSearch = $Matches[1] -eq '1' }
 	}
 }
 
@@ -67,6 +69,7 @@ function Save-AppSettings {
 			WinMaximized = if ($script:Settings.winMaximized) { '1' } else { '0' }
 			LogExpanded  = if ($script:Settings.logExpanded) { '1' } else { '0' }
 			BlurTenant   = if ($script:Settings.blurTenant) { '1' } else { '0' }
+			RecipientSearch = if ($script:Settings.recipientSearch) { '1' } else { '0' }
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -176,6 +179,11 @@ $mainXaml = @"
 								   Style="{DynamicResource Small}"/>
 					</StackPanel>
 					<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+						<Button x:Name="SettingsBtn" Style="{DynamicResource IconBtn}" Margin="0,7,6,0"
+								ToolTip="Settings" WindowChrome.IsHitTestVisibleInChrome="True">
+							<Path Width="15" Height="15" Stretch="Uniform" Fill="{DynamicResource TextBrush}"
+								  Data="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94L14.4 2.81c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41L9.25 5.35C8.66 5.59 8.12 5.92 7.63 6.29L5.24 5.33c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+						</Button>
 						<Button x:Name="ThemeBtn" Style="{DynamicResource IconBtn}" Margin="0,7,6,0"
 								ToolTip="Toggle dark / light theme" WindowChrome.IsHitTestVisibleInChrome="True">
 							<TextBlock x:Name="ThemeIcon" Text="&#xF597;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
@@ -336,7 +344,7 @@ $script:Window = Read-XamlString $mainXaml
 [void]$script:Window.Resources.MergedDictionaries.Add($script:StyleDict)
 
 $script:UI = @{}
-foreach ($n in @('RootBorder','Root','TitleIcon','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
+foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
@@ -820,7 +828,6 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Remove-UserFromAllGroups'; Desc = 'Remove a user from all (or selected) tenant groups - DLs, Teams/M365, security. Offboarding.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
 	@{ Name = 'Reset-MFA'; Desc = 'Clear a user''s MFA methods so they re-register, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE72E }
 	@{ Name = 'Set-License'; Desc = 'Assign, remove or swap Microsoft 365 licenses, single or bulk.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE8FC }
-	@{ Name = 'Update-ScriptPackage'; Desc = 'Download and install the latest release.'; SignIn = $false; Cat = 'App'; Icon = 0xE0BF }
 	@{ Name = 'Set-ACLPermissions'; Desc = 'Add NTFS ACL permission rules to files and folders.'; SignIn = $false; Cat = 'System'; Icon = 0xEAA7 }
 	@{ Name = 'Set-NTP'; Desc = 'Check or set the Windows time source.'; SignIn = $false; Cat = 'System'; Icon = 0xE508 }
 	@{ Name = 'Show-Information'; Desc = 'Script-Package Studio info and links.'; SignIn = $false; Cat = 'App'; Icon = 0xEA88 }
@@ -949,7 +956,6 @@ function OnRunButtonClick {
 		"Remove-UserFromAllGroups" { Remove-UserFromAllGroups }
 		"Reset-MFA" { Reset-MFA }
 		"Set-License" { Set-License }
-		"Update-ScriptPackage" { Update-ScriptPackage }
 		"Set-ACLPermissions" { Set-ACLPermissions }
 		"Set-NTP" { Set-NTP }
 		"Show-Information" { Show-Information }
@@ -1154,6 +1160,74 @@ $script:UI.ThemeBtn.Add_Click({
 	Save-AppSettings
 })
 
+# ---- settings dialog (recipient type-ahead toggle + in-app updater) --------------
+function New-SettingsDialog {
+	New-StyledDialog -Title 'Settings' -Icon '&#xEA88;' -BodyXaml @'
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="General" Style="{DynamicResource H3}"/>
+			<CheckBox x:Name="RecipientSearchCheck" Content="Search recipients by name (type-ahead)" Margin="0,10,0,0"/>
+			<TextBlock Text="Type a name in any email field to look up users, groups and mailboxes. If it ever causes trouble, turn this off and let us know so we can fix it." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="24,4,0,0"/>
+		</StackPanel>
+	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Updates" Style="{DynamicResource H3}"/>
+			<TextBlock x:Name="UpdateStatus" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+			<ProgressBar x:Name="UpdateProg" Height="6" Maximum="100" Margin="0,10,0,0" Visibility="Collapsed"/>
+			<Grid Margin="0,12,0,0">
+				<Button x:Name="UpdateBtn" Style="{DynamicResource BtnPrimary}" Content="Check for updates" HorizontalAlignment="Left" MinWidth="150"/>
+				<Button x:Name="RelaunchBtn" Style="{DynamicResource BtnPrimary}" Content="Relaunch now" HorizontalAlignment="Right" MinWidth="130" Visibility="Collapsed"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+}
+function Show-Settings {
+	$win = New-SettingsDialog
+	$rc = $win.FindName('RecipientSearchCheck')
+	$rc.IsChecked = [bool]$script:Settings.recipientSearch
+	$rc.Add_Checked({ $script:Settings.recipientSearch = $true; Save-AppSettings })
+	$rc.Add_Unchecked({ $script:Settings.recipientSearch = $false; Save-AppSettings })
+
+	$status = $win.FindName('UpdateStatus'); $prog = $win.FindName('UpdateProg')
+	$updateBtn = $win.FindName('UpdateBtn'); $relaunchBtn = $win.FindName('RelaunchBtn')
+	$status.Text = "You're on $version."
+	$setStatus = { param($t) $status.Text = $t; try { $status.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {} }.GetNewClosure()
+
+	$updateBtn.Add_Click({
+		$updateBtn.IsEnabled = $false
+		$prog.Visibility = 'Visible'; $prog.Value = 10
+		& $setStatus 'Checking for updates...'
+		try {
+			try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+			$resp = Invoke-WebRequest -Uri 'https://github.com/Avromiep/Script-Package-Studio/releases/latest' -UseBasicParsing
+			$tag = @($resp.Links.href | Where-Object { $_ -like '*/releases/tag/v*' }) | Select-Object -First 1
+			$remote = if ($tag) { ($tag -split 'tag/')[1] } else { '' }
+			$prog.Value = 30
+			if (-not $remote) { & $setStatus "Couldn't check for updates - try again later."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
+			if ($remote -eq $version) { & $setStatus "You're on the latest version ($version)."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; $updateBtn.Content = 'Check for updates'; return }
+			& $setStatus "Downloading $remote..."; $prog.Value = 50
+			$tmp = "$env:TEMP\Script-Package-Studio-Setup.exe"
+			Remove-Item -Path $tmp -Force -ErrorAction Ignore
+			Invoke-WebRequest -Uri 'https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio-Setup.exe' -OutFile $tmp -UseBasicParsing
+			if (-not (Test-Path $tmp)) { & $setStatus 'Download failed - opening the releases page.'; Start-Process 'https://github.com/Avromiep/Script-Package-Studio/releases/latest'; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
+			$prog.Value = 70; & $setStatus "Installing $remote..."
+			$appRoot = Split-Path $script:SrcDir -Parent
+			Start-Process $tmp -ArgumentList '/SP-', '/SILENT', "/DIR=`"$appRoot`"" -Wait
+			$prog.Value = 100
+			& $setStatus "Update to $remote installed. Click Relaunch now to finish."
+			$updateBtn.Visibility = 'Collapsed'; $relaunchBtn.Visibility = 'Visible'
+		} catch { & $setStatus "Update failed: $($_.Exception.Message)"; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true }
+	}.GetNewClosure())
+
+	$relaunchBtn.Add_Click({ Restart-App; $win.Close(); $script:Window.Close() }.GetNewClosure())
+	[void]$win.ShowDialog()
+}
+$script:UI.SettingsBtn.Add_Click({ Show-Settings })
+
 # ---- shutdown (same disconnect behavior as before, guarded so a missing
 # ---- module can't block the window from closing) ---------------------------------
 $script:Window.Add_Closing({ param($s, $e)
@@ -1256,6 +1330,7 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
+		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $w }
 		'dlg-ac-empty'           = {
 			$w = New-StyledDialog -Title 'Type a name OR an email' -Icon '&#xE721;' -BodyXaml @'
 <StackPanel Margin="16" Width="380">

@@ -862,6 +862,9 @@ $script:LicenseSkuMap = [ordered]@{
 	"Microsoft 365 E3"                = "05e9a617-0261-4cee-bb44-138d3ef5d965"
 	"Microsoft 365 E5"                = "06ebc4ee-1bb5-47dd-8120-11324bc54e06"
 }
+# Reverse lookup (SKU GUID -> friendly name) for showing a user's current licenses.
+$script:LicenseNameBySku = @{}
+foreach ($k in $script:LicenseSkuMap.Keys) { $script:LicenseNameBySku[$script:LicenseSkuMap[$k]] = $k }
 
 function New-ADAndEmailAccountsDialog {
 	param([string]$ForestName = '')
@@ -1323,7 +1326,8 @@ function New-SetLicenseDialog {
 				<TextBlock x:Name="ToLabel" Text="License to add" Style="{DynamicResource Dim}" Grid.Row="2" VerticalAlignment="Center" Margin="0,8,0,0"/>
 				<ComboBox x:Name="ToCombo" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0"/>
 			</Grid>
-			<Button x:Name="ApplyBtn" Style="{DynamicResource BtnPrimary}" Content="Apply" Margin="0,14,0,0"/>
+			<TextBlock x:Name="CurrentLicText" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+			<Button x:Name="ApplyBtn" Style="{DynamicResource BtnPrimary}" Content="Apply" Margin="0,10,0,0"/>
 		</StackPanel>
 	</Border>
 	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
@@ -1374,6 +1378,29 @@ function Set-License {
 		$toLabel.Text = switch ($mode) { 'Assign' { 'License to add' } 'Remove' { 'License to remove' } 'Swap' { 'License to add' } }
 		$applyButton.Content = "$mode"
 		$bulkButton.Content = "$mode for List"
+		Load-CurrentLicenses
+	}
+	# Read the user's current licenses, show them, and (in Swap mode) preselect the 'from' license.
+	function Load-CurrentLicenses {
+		$u = $userInput.Text.Trim()
+		if (-not $u) { $currentLicText.Text = ''; return }
+		try {
+			$det = @(Get-MgUserLicenseDetail -UserId $u -ErrorAction Stop)
+			if (-not $det.Count) { $currentLicText.Text = "Current licenses: none."; return }
+			$names = foreach ($d in $det) { $n = $script:LicenseNameBySku["$($d.SkuId)"]; if ($n) { $n } else { "$($d.SkuPartNumber)" } }
+			$currentLicText.Text = "Current licenses: " + ($names -join ', ')
+			if ((Get-Mode) -eq 'Swap') {
+				$known = $det | Where-Object { $script:LicenseNameBySku["$($_.SkuId)"] } | Select-Object -First 1
+				if ($known) { $fromCombo.SelectedItem = $script:LicenseNameBySku["$($known.SkuId)"] }
+			}
+		} catch { $currentLicText.Text = "Couldn't read current licenses for $u`: $($_.Exception.Message)" }
+	}
+	# Turn a raw Graph license error into a plain-language message; flags the "no seats" case.
+	function Format-LicenseError([string]$msg) {
+		if ($msg -match 'not enough|no available|available unit|available licen|enough unit|exceed|counterfeit|assign.*license.*because') {
+			return "There are no available seats for that license in the tenant.`n`nBuy more (month-to-month is fine) in the Microsoft 365 admin center - Billing > Purchase services - then run this again.`n`nNote: licenses can't be purchased from PowerShell, only assigned once you own them."
+		}
+		return $msg
 	}
 	function OnApplyButtonClick {
 		$u = $userInput.Text.Trim()
@@ -1381,8 +1408,8 @@ function Set-License {
 		$mode = Get-Mode; $skus = Resolve-Skus $mode
 		if ($mode -eq 'Swap' -and $skus.Add -eq $skus.Remove) { Show-Notice 'Nothing to do' 'The two licenses are the same - pick different ones to swap.' 'Warn'; return }
 		$progressBar1.Value = 40
-		try { Set-OneLicense $u $skus.Add $skus.Remove; Write-Host "$mode license for $u." -ForegroundColor Cyan; Show-Notice 'License updated' "$mode complete for `"$u`"." 'Info' }
-		catch { Show-Notice 'License change failed' "Couldn't update licenses for `"$u`":`n`n$($_.Exception.Message)" 'Error' }
+		try { Set-OneLicense $u $skus.Add $skus.Remove; Write-Host "$mode license for $u." -ForegroundColor Cyan; Show-Notice 'License updated' "$mode complete for `"$u`"." 'Info'; Load-CurrentLicenses }
+		catch { Show-Notice 'License change failed' "Couldn't update licenses for `"$u`":`n`n$(Format-LicenseError "$($_.Exception.Message)")" 'Error' }
 		$progressBar1.Value = 0
 	}
 	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Set-License.csv"; $progressBar1.Value = 0; CheckForErrors }
@@ -1397,7 +1424,7 @@ function Set-License {
 			if (-not $u) { return }
 			if ($preview) { $created.Add("$u ($mode)"); return }
 			try { Set-OneLicense $u $skus.Add $skus.Remove; $created.Add("$u ($mode)") }
-			catch { Write-Host "Failed on $u`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$u - $($_.Exception.Message)") }
+			catch { $fe = Format-LicenseError "$($_.Exception.Message)"; Write-Host "Failed on $u`: $fe" -ForegroundColor Red; $failed.Add("$u - $fe") }
 		}
 		Show-AccountResults "Set-License ($mode)" $created $failed -Preview:$preview -DoneWord 'Updated' -FailWord 'Failed'
 	}
@@ -1410,6 +1437,8 @@ function Set-License {
 	$toLabel = $form.FindName('ToLabel'); $toCombo = $form.FindName('ToCombo')
 	$applyButton = $form.FindName('ApplyBtn'); $bulkButton = $form.FindName('BulkBtn')
 	$previewCheck = $form.FindName('PreviewCheck')
+	$currentLicText = $form.FindName('CurrentLicText')
+	$userInput.Add_LostKeyboardFocus({ Load-CurrentLicenses })
 	$assignChip.Add_Checked({ OnModeChange }); $removeChip.Add_Checked({ OnModeChange }); $swapChip.Add_Checked({ OnModeChange })
 	$applyButton.Add_Click({ OnApplyButtonClick })
 	$form.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })

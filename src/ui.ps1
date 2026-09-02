@@ -333,6 +333,7 @@ function New-AcPreviewDialog([string]$Title, [string]$FieldLabel, [string]$Typed
 # floats the field's relevant kind to the top. Never throws - on any error the box stays plain.
 function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 	if (-not $TextBox) { return }
+	if ($script:Settings -and $script:Settings.recipientSearch -eq $false) { return }   # disabled in Settings
 	Set-FieldWatermark $TextBox 'Name or email address'
 	try {
 		$borderXaml = @'

@@ -231,33 +231,24 @@ function Get-RecipientBucket([string]$rtd) {
 	return 'Other'
 }
 
-# Find recipients matching $Term. Auto mode: on first use, preload up to ~2000 recipients and
-# filter locally (instant); if the tenant is bigger, fall back to a live ANR query per keystroke.
-# Cache is per-tenant and rebuilt when the tenant changes. $Prefer ('User'/'Mailbox'/'Group'/'Any')
-# only affects ordering - all types are always returned, the relevant kind just sorts first.
-$script:RecipientIndex = $null
-function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 12) {
+# Find recipients matching $Term for the type-ahead. Deliberately LIGHT so it never hangs the UI:
+# no bulk preload - each lookup is a single, bounded, server-side query. Uses the fast REST cmdlet
+# Get-EXORecipient (falls back to Get-Recipient -Anr). Needs >=3 characters. $Prefer
+# ('User'/'Mailbox'/'Group'/'Any') only affects ordering - all types are still returned.
+function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 10) {
 	$Term = "$Term".Trim()
-	if ($Term.Length -lt 2) { return @() }
+	if ($Term.Length -lt 3) { return @() }
 	try { if (-not (Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return @() } } catch { return @() }
-	$tid = ''
-	try { $tid = "$((Get-MgContext).TenantId)" } catch {}
-	if (-not $script:RecipientIndex -or $script:RecipientIndex.TenantId -ne $tid) {
-		$script:RecipientIndex = @{ TenantId = $tid; Mode = $null; Items = $null }
-	}
-	if ($null -eq $script:RecipientIndex.Mode) {
-		try {
-			$all = @(Get-Recipient -ResultSize 2001 -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails)
-			if ($all.Count -gt 2000) { $script:RecipientIndex.Mode = 'live'; $script:RecipientIndex.Items = $null }
-			else { $script:RecipientIndex.Mode = 'cache'; $script:RecipientIndex.Items = $all }
-		} catch { $script:RecipientIndex.Mode = 'live'; $script:RecipientIndex.Items = $null }
-	}
 	$raw = @()
-	if ($script:RecipientIndex.Mode -eq 'cache') {
-		$raw = @($script:RecipientIndex.Items | Where-Object { "$($_.DisplayName)" -like "*$Term*" -or "$($_.PrimarySmtpAddress)" -like "*$Term*" })
-	} else {
-		try { $raw = @(Get-Recipient -Anr $Term -ResultSize 40 -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails) } catch { $raw = @() }
-	}
+	try {
+		if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
+			$safe = $Term -replace "'", "''"
+			$filter = "Name -like '$safe*' -or Alias -like '$safe*' -or PrimarySmtpAddress -like '$safe*'"
+			$raw = @(Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, RecipientTypeDetails -ResultSize $Max -ErrorAction Stop)
+		} else {
+			$raw = @(Get-Recipient -Anr $Term -ResultSize $Max -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails)
+		}
+	} catch { $raw = @() }
 	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
 	$out = foreach ($r in $raw) {
 		$rtd = "$($r.RecipientTypeDetails)"
@@ -385,7 +376,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 
 		$state = [pscustomobject]@{ Suppress = $false }
 		$timer = New-Object System.Windows.Threading.DispatcherTimer
-		$timer.Interval = [TimeSpan]::FromMilliseconds(350)
+		$timer.Interval = [TimeSpan]::FromMilliseconds(500)
 
 		$choose = {
 			if ($list.SelectedItem) {
@@ -401,7 +392,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
-			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
+			if ($term.Length -lt 3) { $popup.IsOpen = $false; return }
 			$hits = @(Get-RecipientMatches $term $Prefer 12)
 			$list.Items.Clear()
 			if (-not $hits.Count) { $popup.IsOpen = $false; return }

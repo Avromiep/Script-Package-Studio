@@ -143,6 +143,9 @@ function New-StyledDialog {
 		[string]$Icon = '&#xE54E;',
 		[object]$Owner
 	)
+	# The title is plain text dropped into XAML attributes - escape &, <, >, " so a title like
+	# "Create AD & Email accounts" can't break the parse. ($Icon is a glyph entity - left as-is.)
+	$Title = [System.Security.SecurityElement]::Escape([string]$Title)
 	$xaml = @"
 <Window
 	xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -233,11 +236,11 @@ function Get-RecipientBucket([string]$rtd) {
 
 # Find recipients matching $Term for the type-ahead. Deliberately LIGHT so it never hangs the UI:
 # no bulk preload - each lookup is a single, bounded, server-side query. Uses the fast REST cmdlet
-# Get-EXORecipient (falls back to Get-Recipient -Anr). Needs >=3 characters. $Prefer
+# Get-EXORecipient (falls back to Get-Recipient -Anr). Needs >=2 characters. $Prefer
 # ('User'/'Mailbox'/'Group'/'Any') only affects ordering - all types are still returned.
 function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 10) {
 	$Term = "$Term".Trim()
-	if ($Term.Length -lt 3) { return @() }
+	if ($Term.Length -lt 2) { return @() }
 	try { if (-not (Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return @() } } catch { return @() }
 	$raw = @()
 	try {
@@ -297,7 +300,7 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	$g.ColumnDefinitions.Add($c1); $g.ColumnDefinitions.Add($c2)
 	$sp = New-Object System.Windows.Controls.StackPanel
 	$nm = New-Object System.Windows.Controls.TextBlock; $nm.Text = $Name; $nm.Foreground = $script:StyleDict['TextBrush']; $nm.FontSize = 13; $nm.TextTrimming = 'CharacterEllipsis'
-	$em = New-Object System.Windows.Controls.TextBlock; $em.Text = $Email; $em.Foreground = $script:StyleDict['TextDimBrush']; $em.FontSize = 11; $em.TextTrimming = 'CharacterEllipsis'
+	$em = New-Object System.Windows.Controls.TextBlock; $em.Text = $Email; $em.Foreground = $script:StyleDict['TextDimBrush']; $em.FontSize = 11
 	[void]$sp.Children.Add($nm); [void]$sp.Children.Add($em)
 	[System.Windows.Controls.Grid]::SetColumn($sp, 0); [void]$g.Children.Add($sp)
 	if ($Label) {
@@ -340,7 +343,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}"
-        BorderThickness="1" CornerRadius="8" Padding="3">
+        BorderThickness="1" CornerRadius="8" Padding="3" MaxWidth="660">
   <ListBox x:Name="AcList" Background="Transparent" BorderThickness="0" MaxHeight="264"
            ScrollViewer.HorizontalScrollBarVisibility="Disabled">
     <ListBox.ItemContainerStyle>
@@ -393,7 +396,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
-			if ($term.Length -lt 3) { $popup.IsOpen = $false; return }
+			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
 			$hits = @(Get-RecipientMatches $term $Prefer 12)
 			$list.Items.Clear()
 			if (-not $hits.Count) { $popup.IsOpen = $false; return }
@@ -404,7 +407,9 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 				$it.Add_MouseLeftButtonUp($choose)
 				[void]$list.Items.Add($it)
 			}
-			try { $popup.Width = [Math]::Max(240, $TextBox.ActualWidth) } catch {}
+			# Size the dropdown to at least the field width, but let it grow (up to MaxWidth) so
+			# long email addresses show in full instead of being clipped.
+			try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {}
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 

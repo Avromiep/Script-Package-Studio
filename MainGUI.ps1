@@ -1,4 +1,4 @@
-$version = "v3.1.53"
+$version = "v3.1.54"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1354,7 +1354,7 @@ if ($env:SP_SHOT) {
 			$w
 		}
 		'dlg-ac-mixed'           = { New-AcPreviewDialog 'Type-ahead - mixed results' 'Mailbox / user (start typing a name)' 'sa' @(
-			@('Sara Adler', 'sadler@contoso.com', ''),
+			@('Sara Adler', 'sara.adler.longname@contoso-corporation.com', ''),
 			@('Sales', 'sales@contoso.com', 'shared mailbox'),
 			@('All Staff', 'allstaff@contoso.com', 'distribution list'),
 			@('Marketing Team', 'marketing@contoso.com', 'Teams / Microsoft 365 group'),

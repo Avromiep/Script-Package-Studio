@@ -1,4 +1,4 @@
-$version = "v3.1.54"
+$version = "v3.1.55"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1195,6 +1195,12 @@ function Show-Settings {
 	$status = $win.FindName('UpdateStatus'); $prog = $win.FindName('UpdateProg')
 	$updateBtn = $win.FindName('UpdateBtn'); $relaunchBtn = $win.FindName('RelaunchBtn')
 	$status.Text = "You're on $version."
+	# GetNewClosure() gives the click handler its own module scope, where $script:*
+	# and inherited script vars read as $null. Snapshot them into locals first so the
+	# closure captures real values (otherwise Split-Path $script:SrcDir got $null).
+	$curVersion = $version
+	$appRoot = Split-Path $script:SrcDir -Parent
+	if (-not $appRoot) { $appRoot = $PSScriptRoot }
 	$setStatus = { param($t) $status.Text = $t; try { $status.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {} }.GetNewClosure()
 
 	$updateBtn.Add_Click({
@@ -1208,14 +1214,13 @@ function Show-Settings {
 			$remote = if ($tag) { ($tag -split 'tag/')[1] } else { '' }
 			$prog.Value = 30
 			if (-not $remote) { & $setStatus "Couldn't check for updates - try again later."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
-			if ($remote -eq $version) { & $setStatus "You're on the latest version ($version)."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; $updateBtn.Content = 'Check for updates'; return }
+			if ($remote -eq $curVersion) { & $setStatus "You're on the latest version ($curVersion)."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; $updateBtn.Content = 'Check for updates'; return }
 			& $setStatus "Downloading $remote..."; $prog.Value = 50
 			$tmp = "$env:TEMP\Script-Package-Studio-Setup.exe"
 			Remove-Item -Path $tmp -Force -ErrorAction Ignore
 			Invoke-WebRequest -Uri 'https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio-Setup.exe' -OutFile $tmp -UseBasicParsing
 			if (-not (Test-Path $tmp)) { & $setStatus 'Download failed - opening the releases page.'; Start-Process 'https://github.com/Avromiep/Script-Package-Studio/releases/latest'; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
 			$prog.Value = 70; & $setStatus "Installing $remote..."
-			$appRoot = Split-Path $script:SrcDir -Parent
 			Start-Process $tmp -ArgumentList '/SP-', '/SILENT', "/DIR=`"$appRoot`"" -Wait
 			$prog.Value = 100
 			& $setStatus "Update to $remote installed. Click Relaunch now to finish."

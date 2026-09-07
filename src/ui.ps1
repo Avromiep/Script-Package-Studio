@@ -238,31 +238,71 @@ function Get-RecipientBucket([string]$rtd) {
 # no bulk preload - each lookup is a single, bounded, server-side query. Uses the fast REST cmdlet
 # Get-EXORecipient (falls back to Get-Recipient -Anr). Needs >=2 characters. $Prefer
 # ('User'/'Mailbox'/'Group'/'Any') only affects ordering - all types are still returned.
+# Session cache so NARROWING a search (typing more letters, or backspacing within a prefix we
+# already fetched) filters locally instead of calling Exchange again. The server filter is
+# Name/Alias/PrimarySmtp -like 'term*', so every match for a longer term is a strict subset of
+# the anchor term's matches - filtering the cached rows is exact, not an approximation. Only a
+# COMPLETE result set (server returned fewer than the cap) becomes an anchor, so we never narrow
+# from a truncated list and miss someone. Reset when the tenant changes.
+$script:AcAnchorTerm = ''
+$script:AcAnchorRows = @()
+$script:AcAnchorTenant = ''
+
 function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 10) {
 	$Term = "$Term".Trim()
 	if ($Term.Length -lt 2) { return @() }
-	try { if (-not (Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return @() } } catch { return @() }
-	$raw = @()
-	try {
-		if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
-			$safe = $Term -replace "'", "''"
-			$filter = "Name -like '$safe*' -or Alias -like '$safe*' -or PrimarySmtpAddress -like '$safe*'"
-			$raw = @(Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, RecipientTypeDetails -ResultSize $Max -ErrorAction Stop)
+	$conn = $null
+	try { $conn = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0] } catch { return @() }
+	if (-not $conn) { return @() }
+	$tid = "$($conn.TenantId)"
+
+	$rows = $null
+	$ic = [System.StringComparison]::OrdinalIgnoreCase
+	if ($script:AcAnchorTenant -eq $tid -and $script:AcAnchorTerm -and $Term.StartsWith($script:AcAnchorTerm, $ic)) {
+		# Instant: narrow the cached rows locally, no network round-trip.
+		$rows = @($script:AcAnchorRows | Where-Object {
+			$_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic)
+		})
+	} else {
+		$raw = @()
+		try {
+			if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
+				$safe = $Term -replace "'", "''"
+				$filter = "Name -like '$safe*' -or Alias -like '$safe*' -or PrimarySmtpAddress -like '$safe*'"
+				$raw = @(Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails -ResultSize $Max -ErrorAction Stop)
+			} else {
+				$raw = @(Get-Recipient -Anr $Term -ResultSize $Max -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails)
+			}
+		} catch { $raw = @() }
+		$rows = @(foreach ($r in $raw) {
+			[pscustomobject]@{
+				Name  = "$($r.DisplayName)"
+				Email = "$($r.PrimarySmtpAddress)"
+				Alias = "$($r.Alias)"
+				Rtd   = "$($r.RecipientTypeDetails)"
+				Label = Get-RecipientTypeLabel "$($r.RecipientTypeDetails)"
+			}
+		}) | Where-Object { $_.Email }
+		$rows = @($rows)
+		# Cache as an anchor only when the fetch was COMPLETE (fewer rows than the cap) so we can
+		# safely narrow from it; otherwise clear the cache so we re-query next keystroke.
+		if ($raw.Count -lt $Max) {
+			$script:AcAnchorTerm = $Term; $script:AcAnchorRows = $rows; $script:AcAnchorTenant = $tid
 		} else {
-			$raw = @(Get-Recipient -Anr $Term -ResultSize $Max -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails)
-		}
-	} catch { $raw = @() }
-	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
-	$out = foreach ($r in $raw) {
-		$rtd = "$($r.RecipientTypeDetails)"
-		[pscustomobject]@{
-			Name  = "$($r.DisplayName)"
-			Email = "$($r.PrimarySmtpAddress)"
-			Label = Get-RecipientTypeLabel $rtd
-			Rank  = if ($target -and (Get-RecipientBucket $rtd) -eq $target) { 0 } else { 1 }
+			$script:AcAnchorTerm = ''; $script:AcAnchorRows = @(); $script:AcAnchorTenant = ''
 		}
 	}
-	return @($out | Where-Object { $_.Email } | Sort-Object Rank, Name | Select-Object -First $Max)
+
+	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
+	$out = foreach ($r in $rows) {
+		[pscustomobject]@{
+			Name  = $r.Name
+			Email = $r.Email
+			Label = $r.Label
+			Rank  = if ($target -and (Get-RecipientBucket $r.Rtd) -eq $target) { 0 } else { 1 }
+		}
+	}
+	return @($out | Sort-Object Rank, Name | Select-Object -First $Max)
 }
 
 # Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
@@ -380,7 +420,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 
 		$state = [pscustomobject]@{ Suppress = $false }
 		$timer = New-Object System.Windows.Threading.DispatcherTimer
-		$timer.Interval = [TimeSpan]::FromMilliseconds(500)
+		$timer.Interval = [TimeSpan]::FromMilliseconds(250)
 
 		$choose = {
 			if ($list.SelectedItem) {

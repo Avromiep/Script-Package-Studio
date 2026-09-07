@@ -305,6 +305,18 @@ function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max 
 	return @($out | Sort-Object Rank, Name | Select-Object -First $Max)
 }
 
+# Would the NEXT lookup for $Term hit the network, or can it be served instantly from the prefix
+# cache? Lets the dropdown skip the debounce for instant local narrowing, and only show the
+# "Searching..." indicator when a real Exchange round-trip is coming. (Tenant isn't re-checked
+# here - if it changed, Get-RecipientMatches re-fetches anyway; worst case we skip one indicator.)
+# Defined as a top-level function so it reads the real $script: cache vars, not a closure's scope.
+function Test-AcWouldQueryNetwork([string]$Term) {
+	$Term = "$Term".Trim()
+	if ($Term.Length -lt 2) { return $false }
+	if (-not $script:AcAnchorTerm) { return $true }
+	return -not $Term.StartsWith($script:AcAnchorTerm, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 # Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
 # clear you can type either. Overlays a non-clickable TextBlock in the field's Grid cell and
 # hides it once you type. Only applies when the field lives in a Grid (which the recipient
@@ -420,7 +432,9 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 
 		$state = [pscustomobject]@{ Suppress = $false }
 		$timer = New-Object System.Windows.Threading.DispatcherTimer
-		$timer.Interval = [TimeSpan]::FromMilliseconds(250)
+		# Short debounce - only applied before a NETWORK fetch. Local (cached) narrowing runs with
+		# no delay at all, straight from TextChanged.
+		$timer.Interval = [TimeSpan]::FromMilliseconds(120)
 
 		$choose = {
 			if ($list.SelectedItem) {
@@ -433,10 +447,29 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			}
 		}.GetNewClosure()
 
+		# Size the dropdown to at least the field width, but let it grow (up to MaxWidth) so long
+		# email addresses show in full instead of being clipped.
+		$sizePopup = { try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {} }.GetNewClosure()
+
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
 			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
+			# If a real Exchange lookup is coming, show the dropdown immediately with a "Searching..."
+			# row and force a paint BEFORE the blocking call - so the first lookup feels instant
+			# instead of a dead pause. Cache hits skip this and just fill in (already instant).
+			if (Test-AcWouldQueryNetwork $term) {
+				$list.Items.Clear()
+				$si = New-Object System.Windows.Controls.ListBoxItem
+				$si.IsHitTestVisible = $false
+				$tb = New-Object System.Windows.Controls.TextBlock
+				$tb.Text = 'Searching...'; $tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
+				$si.Content = $tb
+				[void]$list.Items.Add($si)
+				& $sizePopup
+				$popup.IsOpen = $true
+				try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
+			}
 			$hits = @(Get-RecipientMatches $term $Prefer 12)
 			$list.Items.Clear()
 			if (-not $hits.Count) { $popup.IsOpen = $false; return }
@@ -447,14 +480,17 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 				$it.Add_MouseLeftButtonUp($choose)
 				[void]$list.Items.Add($it)
 			}
-			# Size the dropdown to at least the field width, but let it grow (up to MaxWidth) so
-			# long email addresses show in full instead of being clipped.
-			try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {}
+			& $sizePopup
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 
 		$timer.Add_Tick($runQuery)
-		$TextBox.Add_TextChanged({ if (-not $state.Suppress) { $timer.Stop(); $timer.Start() } }.GetNewClosure())
+		# Local narrowing (cache hit) runs with no delay; a network fetch is debounced.
+		$TextBox.Add_TextChanged({
+			if ($state.Suppress) { return }
+			$timer.Stop()
+			if (Test-AcWouldQueryNetwork $TextBox.Text) { $timer.Start() } else { & $runQuery }
+		}.GetNewClosure())
 		$TextBox.Add_PreviewKeyDown({
 			param($s, $e)
 			if (-not $popup.IsOpen) { return }

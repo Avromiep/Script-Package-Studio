@@ -1,4 +1,4 @@
-$version = "v3.1.57"
+$version = "v3.1.58"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1336,6 +1336,7 @@ if ($env:SP_SHOT) {
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
 		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $w }
+		'dlg-notice-blur'        = { New-NoticeDialog 'Add complete' "allstaff@contoso.com (distribution list):`n  added (2): john@contoso.com, jane@contoso.com`n  already there (1): bob@contoso.com" 'Info' }
 		'dlg-ac-empty'           = {
 			$w = New-StyledDialog -Title 'Type a name OR an email' -Icon '&#xE721;' -BodyXaml @'
 <StackPanel Margin="16" Width="380">

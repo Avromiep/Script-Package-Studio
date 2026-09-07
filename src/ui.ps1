@@ -317,6 +317,13 @@ function Test-AcWouldQueryNetwork([string]$Term) {
 	return -not $Term.StartsWith($script:AcAnchorTerm, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+# The field already holds a COMPLETE email address (e.g. the user pasted or finished typing one)?
+# Then there's nothing to look up - suppress the dropdown so we don't pop it up just to show back
+# the address that's already in the box (needs a dot in the domain, so "john@contoso" still searches).
+function Test-AcIsCompleteEmail([string]$s) {
+	return ("$s".Trim() -match '^[^@\s]+@[^@\s]+\.[^@\s]+$')
+}
+
 # Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
 # clear you can type either. Overlays a non-clickable TextBlock in the field's Grid cell and
 # hides it once you type. Only applies when the field lives in a Grid (which the recipient
@@ -454,17 +461,26 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
-			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
-			# If a real Exchange lookup is coming, show the dropdown immediately with a "Searching..."
-			# row and force a paint BEFORE the blocking call - so the first lookup feels instant
-			# instead of a dead pause. Cache hits skip this and just fill in (already instant).
+			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
+			# If a real Exchange lookup is coming, show the dropdown immediately with an animated
+			# "Preparing to search..." row and force a paint BEFORE the blocking call - so the first
+			# lookup feels responsive instead of a dead pause. The indeterminate ProgressBar keeps
+			# animating on WPF's render thread even while the UI thread is busy fetching. Cache hits
+			# skip this and just fill in (already instant); the bar vanishes when results replace it.
 			if (Test-AcWouldQueryNetwork $term) {
 				$list.Items.Clear()
 				$si = New-Object System.Windows.Controls.ListBoxItem
 				$si.IsHitTestVisible = $false
+				$sp = New-Object System.Windows.Controls.StackPanel
+				$pb = New-Object System.Windows.Controls.ProgressBar
+				$pb.IsIndeterminate = $true; $pb.Height = 3
+				$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
+				$pb.BorderThickness = New-Object System.Windows.Thickness 0
 				$tb = New-Object System.Windows.Controls.TextBlock
-				$tb.Text = 'Searching...'; $tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-				$si.Content = $tb
+				$tb.Text = "Preparing to search$([char]0x2026)"; $tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
+				$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
+				[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
+				$si.Content = $sp
 				[void]$list.Items.Add($si)
 				& $sizePopup
 				$popup.IsOpen = $true
@@ -489,7 +505,10 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$TextBox.Add_TextChanged({
 			if ($state.Suppress) { return }
 			$timer.Stop()
-			if (Test-AcWouldQueryNetwork $TextBox.Text) { $timer.Start() } else { & $runQuery }
+			$t = "$($TextBox.Text)".Trim()
+			# A complete pasted/typed email has nothing to look up - don't pop the dropdown.
+			if ($t.Length -lt 2 -or (Test-AcIsCompleteEmail $t)) { $popup.IsOpen = $false; return }
+			if (Test-AcWouldQueryNetwork $t) { $timer.Start() } else { & $runQuery }
 		}.GetNewClosure())
 		$TextBox.Add_PreviewKeyDown({
 			param($s, $e)
@@ -646,19 +665,44 @@ function New-NoticeDialog([string]$Title, [string]$Message, [string]$Kind = 'Inf
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
-			<StackPanel Orientation="Horizontal">
-				<TextBlock Text="$glyph" Style="{DynamicResource Icon}" Foreground="{DynamicResource $brush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
-				<ScrollViewer MaxHeight="380" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="10,0,0,0">
-					<TextBlock x:Name="NoticeText" Style="{DynamicResource Body}" MaxWidth="290" TextWrapping="Wrap"/>
+			<Grid>
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+				</Grid.ColumnDefinitions>
+				<TextBlock Grid.Column="0" Text="$glyph" Style="{DynamicResource Icon}" Foreground="{DynamicResource $brush}" VerticalAlignment="Top" Margin="0,2,0,0"/>
+				<ScrollViewer Grid.Column="1" MaxHeight="380" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="10,0,0,0">
+					<TextBlock x:Name="NoticeText" Style="{DynamicResource Body}" TextWrapping="Wrap"/>
 				</ScrollViewer>
-			</StackPanel>
+				<Button Grid.Column="2" x:Name="EmailBlurBtn" Style="{DynamicResource IconBtn}" Width="26" Height="26" VerticalAlignment="Top" Margin="8,0,0,0" Visibility="Collapsed"
+						ToolTip="Hide email addresses for a screenshot (cycles: off / domain only / whole address)">
+					<TextBlock x:Name="EmailBlurIcon" Text="&#xE883;" FontFamily="{DynamicResource IconFont}" FontSize="14"/>
+				</Button>
+			</Grid>
 			<Button x:Name="NoticeOkBtn" Style="{DynamicResource BtnPrimary}" Content="OK" HorizontalAlignment="Right" MinWidth="90" Margin="0,16,0,0" IsDefault="True"/>
 		</StackPanel>
 	</Border>
 </StackPanel>
 "@
-	$win.FindName('NoticeText').Text = $Message
+	$notice = $win.FindName('NoticeText')
+	$notice.Text = $Message
 	$win.FindName('NoticeOkBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+
+	# Blur/redact emails for screenshots - same cycle as the Errors dialog. Only offered when the
+	# message actually contains an address.
+	if ($script:EmailRx.IsMatch($Message)) {
+		$blurBtn = $win.FindName('EmailBlurBtn'); $blurBtn.Visibility = 'Visible'
+		$icon = $win.FindName('EmailBlurIcon')
+		$raw  = $Message
+		$st   = [pscustomobject]@{ Mode = 0 }   # 0 = shown, 1 = domain hidden, 2 = whole email hidden
+		$blurBtn.Add_Click({
+			$st.Mode = ($st.Mode + 1) % 3
+			switch ($st.Mode) {
+				0 { $notice.Text = $raw;                   $icon.Text = [string][char]0xE883 }
+				1 { $notice.Text = Hide-EmailDomains $raw;  $icon.Text = [string][char]0xE889 }
+				2 { $notice.Text = Hide-EmailsFull $raw;    $icon.Text = [string][char]0xE889 }
+			}
+		}.GetNewClosure())
+	}
 	return $win
 }
 function Show-Notice([string]$Title, [string]$Message, [string]$Kind = 'Info') {

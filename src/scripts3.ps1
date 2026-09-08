@@ -383,6 +383,12 @@ function Revoke-AllSignInSessions {
 # Launch a detached helper that waits for THIS instance to fully exit (so the
 # updated files are unlocked and settings are saved), then starts the new app.
 function Restart-App {
+	# Tell the main window's Closing handler to SKIP the (slow, UI-thread) Disconnect-* calls -
+	# the process is about to die anyway and the relaunched app reconnects fresh. Without this the
+	# close froze for seconds, so "Relaunch now" looked dead and users clicked it again = extra
+	# windows. Set from this top-level function so it lands in the real script scope (a $script:
+	# write inside the button's GetNewClosure would not).
+	$script:Relaunching = $true
 	$appRoot = Split-Path $script:SrcDir -Parent
 	$bat     = Join-Path $appRoot 'Script-Package-Studio.bat'
 	$mainPs1 = Join-Path $appRoot 'MainGUI.ps1'

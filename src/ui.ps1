@@ -369,6 +369,27 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	return $g
 }
 
+# One non-selectable dropdown row shown WHILE a live lookup runs: a thin indeterminate progress
+# bar over "Preparing to search...". Must be a top-level function (not inlined in the runQuery
+# closure) - inside a .GetNewClosure() $script:StyleDict reads as null, and indexing it threw
+# "Cannot index into a null array" on every keystroke. See the same trap in the sign-in notes.
+function New-AcLoadingRow {
+	$si = New-Object System.Windows.Controls.ListBoxItem
+	$si.IsHitTestVisible = $false
+	$sp = New-Object System.Windows.Controls.StackPanel
+	$pb = New-Object System.Windows.Controls.ProgressBar
+	$pb.IsIndeterminate = $true; $pb.Height = 3
+	$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
+	$pb.BorderThickness = New-Object System.Windows.Thickness 0
+	$tb = New-Object System.Windows.Controls.TextBlock
+	$tb.Text = "Preparing to search$([char]0x2026)"
+	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
+	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
+	[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
+	$si.Content = $sp
+	return $si
+}
+
 # Screenshot-only: a dialog showing a field with an open suggestion dropdown of sample rows.
 function New-AcPreviewDialog([string]$Title, [string]$FieldLabel, [string]$Typed, $Rows) {
 	$w = New-StyledDialog -Title $Title -Icon '&#xE721;' -BodyXaml @"
@@ -469,19 +490,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			# skip this and just fill in (already instant); the bar vanishes when results replace it.
 			if (Test-AcWouldQueryNetwork $term) {
 				$list.Items.Clear()
-				$si = New-Object System.Windows.Controls.ListBoxItem
-				$si.IsHitTestVisible = $false
-				$sp = New-Object System.Windows.Controls.StackPanel
-				$pb = New-Object System.Windows.Controls.ProgressBar
-				$pb.IsIndeterminate = $true; $pb.Height = 3
-				$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
-				$pb.BorderThickness = New-Object System.Windows.Thickness 0
-				$tb = New-Object System.Windows.Controls.TextBlock
-				$tb.Text = "Preparing to search$([char]0x2026)"; $tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-				$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-				[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
-				$si.Content = $sp
-				[void]$list.Items.Add($si)
+				[void]$list.Items.Add((New-AcLoadingRow))
 				& $sizePopup
 				$popup.IsOpen = $true
 				try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}

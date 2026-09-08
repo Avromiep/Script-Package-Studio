@@ -324,6 +324,12 @@ function Test-AcIsCompleteEmail([string]$s) {
 	return ("$s".Trim() -match '^[^@\s]+@[^@\s]+\.[^@\s]+$')
 }
 
+# Connected to a tenant right now? Used to decide whether to show the "Preparing to search..."
+# hint (no point showing it when there's nothing to search). Top-level so it reads real scope.
+function Test-AcConnected {
+	try { return [bool](@(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0]) } catch { return $false }
+}
+
 # Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
 # clear you can type either. Overlays a non-clickable TextBlock in the field's Grid cell and
 # hides it once you type. Only applies when the field lives in a Grid (which the recipient
@@ -479,6 +485,18 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		# email addresses show in full instead of being clipped.
 		$sizePopup = { try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {} }.GetNewClosure()
 
+		# Show the "Preparing to search..." bar on its own (field focused but not enough typed yet,
+		# or the first slow lookup after sign-in). Only when connected - otherwise there's nothing
+		# to prepare. Returns $true if it opened the hint.
+		$showPreparing = {
+			if (-not (Test-AcConnected)) { $popup.IsOpen = $false; return $false }
+			$list.Items.Clear()
+			[void]$list.Items.Add((New-AcLoadingRow))
+			& $sizePopup
+			$popup.IsOpen = $true
+			return $true
+		}.GetNewClosure()
+
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
@@ -510,13 +528,23 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		}.GetNewClosure()
 
 		$timer.Add_Tick($runQuery)
+		# The moment the field gets focus, show "Preparing to search..." so it's clear the lookup is
+		# ready (and visible during the slow first search right after signing in). Typing replaces it
+		# with results; a field already holding a complete address shows nothing.
+		$TextBox.Add_GotKeyboardFocus({
+			$t = "$($TextBox.Text)".Trim()
+			if ($t.Length -ge 2 -or (Test-AcIsCompleteEmail $t)) { return }
+			[void](& $showPreparing)
+		}.GetNewClosure())
 		# Local narrowing (cache hit) runs with no delay; a network fetch is debounced.
 		$TextBox.Add_TextChanged({
 			if ($state.Suppress) { return }
 			$timer.Stop()
 			$t = "$($TextBox.Text)".Trim()
-			# A complete pasted/typed email has nothing to look up - don't pop the dropdown.
-			if ($t.Length -lt 2 -or (Test-AcIsCompleteEmail $t)) { $popup.IsOpen = $false; return }
+			# A complete pasted/typed email has nothing to look up - close the dropdown.
+			if (Test-AcIsCompleteEmail $t) { $popup.IsOpen = $false; return }
+			# Not enough typed to search yet - keep the "Preparing to search..." hint up.
+			if ($t.Length -lt 2) { [void](& $showPreparing); return }
 			if (Test-AcWouldQueryNetwork $t) { $timer.Start() } else { & $runQuery }
 		}.GetNewClosure())
 		$TextBox.Add_PreviewKeyDown({

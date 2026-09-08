@@ -1,4 +1,4 @@
-$version = "v3.1.59"
+$version = "v3.1.60"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1228,21 +1228,30 @@ function Show-Settings {
 		} catch { & $setStatus "Update failed: $($_.Exception.Message)"; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true }
 	}.GetNewClosure())
 
-	$relaunchBtn.Add_Click({ Restart-App; $win.Close(); $script:Window.Close() }.GetNewClosure())
+	$relaunchBtn.Add_Click({
+		if (-not $relaunchBtn.IsEnabled) { return }   # ignore repeat clicks - one relaunch only
+		$relaunchBtn.IsEnabled = $false; $relaunchBtn.Content = "Relaunching$([char]0x2026)"
+		Restart-App; $win.Close(); $script:Window.Close()
+	}.GetNewClosure())
 	[void]$win.ShowDialog()
 }
 $script:UI.SettingsBtn.Add_Click({ Show-Settings })
 
 # ---- shutdown (same disconnect behavior as before, guarded so a missing
 # ---- module can't block the window from closing) ---------------------------------
+$script:Relaunching = $false
 $script:Window.Add_Closing({ param($s, $e)
 	if ($env:SP_SHOT) { return }
 	$script:Settings.winWidth = [int]$script:Window.Width
 	$script:Settings.winHeight = [int]$script:Window.Height
 	$script:Settings.winMaximized = $script:Window.WindowState -eq 'Maximized'
 	Save-AppSettings
-	try { Disconnect-ExchangeOnline -Confirm:$false } catch {}
-	try { Disconnect-Graph } catch {}
+	# On a relaunch, skip the slow disconnect so the window closes instantly and the updated app
+	# starts right away (the dying process's sessions expire on their own).
+	if (-not $script:Relaunching) {
+		try { Disconnect-ExchangeOnline -Confirm:$false } catch {}
+		try { Disconnect-Graph } catch {}
+	}
 })
 
 # ---- startup ----------------------------------------------------------------------

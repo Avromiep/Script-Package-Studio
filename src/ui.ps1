@@ -511,22 +511,49 @@ function Step-AcSearch {
 # The real animated bar returns with the background/async search (which frees the UI thread).
 # Must be a top-level function (not inlined in the runQuery closure) - inside a .GetNewClosure()
 # $script:StyleDict reads as null, and indexing it threw "Cannot index into a null array".
-function New-AcLoadingRow([bool]$Animated = $false) {
+function New-AcLoadingRow {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
 	$tb = New-Object System.Windows.Controls.TextBlock
 	$tb.Text = "Preparing to search$([char]0x2026)"
 	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-	if (-not $Animated) { $si.Content = $tb; return $si }
-	# Background path: the UI thread is free, so an indeterminate bar actually animates.
+	$si.Content = $tb
+	return $si
+}
+
+# Animated "Preparing to search..." row shown ONCE while the background worker connects (the UI
+# thread is free then, so it animates). A hand-rolled sliding accent segment - the app's themed
+# ProgressBar template is determinate-only and won't animate an indeterminate bar. The Loaded
+# closure is created inside this function, so it can drive the captured transform safely.
+function New-AcConnectingRow {
+	$si = New-Object System.Windows.Controls.ListBoxItem
+	$si.IsHitTestVisible = $false
 	$sp = New-Object System.Windows.Controls.StackPanel
-	$pb = New-Object System.Windows.Controls.ProgressBar
-	$pb.IsIndeterminate = $true; $pb.Height = 3
-	$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
-	$pb.BorderThickness = New-Object System.Windows.Thickness 0
+	$track = New-Object System.Windows.Controls.Border
+	$track.Height = 3; $track.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$track.Background = $script:StyleDict['StrokeBrush']; $track.ClipToBounds = $true
+	$seg = New-Object System.Windows.Controls.Border
+	$seg.Height = 3; $seg.Width = 90; $seg.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$seg.Background = $script:StyleDict['AccentBrush']; $seg.HorizontalAlignment = 'Left'
+	$tt = New-Object System.Windows.Media.TranslateTransform
+	$seg.RenderTransform = $tt
+	$track.Child = $seg
+	$tb = New-Object System.Windows.Controls.TextBlock
+	$tb.Text = "Preparing to search$([char]0x2026)"
+	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
 	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-	[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
+	[void]$sp.Children.Add($track); [void]$sp.Children.Add($tb)
 	$si.Content = $sp
+	$track.Add_Loaded({
+		try {
+			$w = [Math]::Max(240, $track.ActualWidth)
+			$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+			$anim.From = -90; $anim.To = $w
+			$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.1))
+			$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+			$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
+		} catch {}
+	}.GetNewClosure())
 	return $si
 }
 
@@ -635,30 +662,39 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 
-		# Background path plumbing: a term waiting for the worker to finish connecting, and an ~80ms
-		# poll that advances the worker connect + renders finished queries, self-stopping when idle.
-		$pending = [pscustomobject]@{ Term = '' }
+		# Background path plumbing. $pending.Term = a search queued while the worker is still
+		# connecting; $pending.Indicator = the animated "Preparing to search..." row is on screen (we
+		# show it ONCE, during the connect - not per keystroke). An ~80ms poll advances the connect
+		# and renders finished queries, self-stopping when idle.
+		$pending = [pscustomobject]@{ Term = ''; Indicator = $false }
+		# Show the one-time animated connecting indicator (only if it isn't already up).
+		$showConnecting = {
+			if (-not $pending.Indicator) { $list.Items.Clear(); [void]$list.Items.Add((New-AcConnectingRow)); & $sizePopup; $popup.IsOpen = $true; $pending.Indicator = $true }
+		}.GetNewClosure()
 		$poll = New-Object System.Windows.Threading.DispatcherTimer
 		$poll.Interval = [TimeSpan]::FromMilliseconds(80)
 		$poll.Add_Tick({
 			try {
 				$st = Step-AcWorker
-				if ($st -eq 'off') { $poll.Stop(); return }
-				if ($pending.Term -and $st -eq 'ready') { $t = $pending.Term; $pending.Term = ''; Request-AcSearch $t $Prefer 12 $renderMatches }
-				Step-AcSearch
-				if ($st -eq 'ready' -and -not $script:AcQ -and -not $pending.Term) { $poll.Stop() }
+				if ($st -eq 'off') { if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }; $poll.Stop(); return }
+				if ($st -eq 'connecting') { return }                       # still connecting: keep animating
+				# Worker is ready:
+				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; $pending.Indicator = $false; Request-AcSearch $t $Prefer 12 $renderMatches; return }
+				if ($script:AcQ) { Step-AcSearch; return }                 # a query is finishing - render it
+				if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }  # connect done, nothing typed
+				$poll.Stop()
 			} catch { try { $poll.Stop() } catch {} }
 		}.GetNewClosure())
 
-		# Kick off a background lookup: show the animated bar, dispatch to the worker (or queue it if
-		# the worker is still connecting). Returns $false if background search isn't available so the
-		# caller falls back to the synchronous path.
+		# Kick off a background lookup. If the worker is ready, dispatch quietly (no per-search
+		# indicator - results just appear). If it's still doing its one-time connect, show the
+		# animated indicator once and queue the term. Returns $false if background search is off.
 		$startAsync = {
 			param($term)
 			$st = Step-AcWorker
 			if ($st -eq 'off') { return $false }
-			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow $true)); & $sizePopup; $popup.IsOpen = $true
-			if ($st -eq 'ready') { Request-AcSearch $term $Prefer 12 $renderMatches } else { $pending.Term = $term }
+			if ($st -eq 'ready') { Request-AcSearch $term $Prefer 12 $renderMatches }
+			else { & $showConnecting; $pending.Term = $term }
 			$poll.Start()
 			return $true
 		}.GetNewClosure()
@@ -684,10 +720,10 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$TextBox.Add_GotKeyboardFocus({
 			$t = "$($TextBox.Text)".Trim()
 			if ($t.Length -ge 2 -or (Test-AcIsCompleteEmail $t)) { return }
-			# Background mode: start the worker connecting NOW (non-blocking) so the first search is
-			# instant; no bar, no freeze. Sync mode: the old one-time blocking warm-up.
+			# Background mode: start the worker connecting NOW. While it connects (the one time per
+			# tenant), show the animated indicator; once ready it disappears and stays quiet.
 			if ($script:Settings -and $script:Settings.bgSearch) {
-				if ((Step-AcWorker) -eq 'connecting') { $poll.Start() }
+				if ((Step-AcWorker) -eq 'connecting') { & $showConnecting; $poll.Start() }
 				return
 			}
 			if (-not (Test-AcNeedsWarmup)) { return }

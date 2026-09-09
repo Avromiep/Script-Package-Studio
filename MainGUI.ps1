@@ -1,4 +1,4 @@
-$version = "v3.1.62"
+$version = "v3.1.63"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1185,6 +1185,20 @@ function New-SettingsDialog {
 </StackPanel>
 '@
 }
+# Finish a relaunch instantly: save window state + settings, then hard-exit so the helper that
+# Restart-App spawned (it waits for THIS process to exit) starts the new copy right away. We
+# force-exit instead of a graceful close because letting Exchange/Graph background threads wind
+# down kept the process alive ~a minute, delaying the relaunch. Server sessions expire on their
+# own and the fresh instance reconnects. Top-level fn so $script:Window/$script:Settings resolve.
+function Complete-Relaunch {
+	try {
+		$script:Settings.winWidth = [int]$script:Window.Width
+		$script:Settings.winHeight = [int]$script:Window.Height
+		$script:Settings.winMaximized = $script:Window.WindowState -eq 'Maximized'
+		Save-AppSettings
+	} catch {}
+	[System.Environment]::Exit(0)
+}
 function Show-Settings {
 	$win = New-SettingsDialog
 	$rc = $win.FindName('RecipientSearchCheck')
@@ -1231,7 +1245,8 @@ function Show-Settings {
 	$relaunchBtn.Add_Click({
 		if (-not $relaunchBtn.IsEnabled) { return }   # ignore repeat clicks - one relaunch only
 		$relaunchBtn.IsEnabled = $false; $relaunchBtn.Content = "Relaunching$([char]0x2026)"
-		Restart-App; $win.Close(); $script:Window.Close()
+		Restart-App          # spawn the helper that waits for us to exit, then starts the new copy
+		Complete-Relaunch    # save + hard-exit now so the relaunch happens immediately
 	}.GetNewClosure())
 	[void]$win.ShowDialog()
 }

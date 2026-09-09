@@ -324,6 +324,35 @@ function Test-AcIsCompleteEmail([string]$s) {
 	return ("$s".Trim() -match '^[^@\s]+@[^@\s]+\.[^@\s]+$')
 }
 
+# One-time-per-tenant warm-up. The FIRST recipient lookup after signing in is slow (cold Exchange
+# connection); a tiny priming query absorbs that cost once, so the user's first real search is
+# fast. Tracked per tenant so it re-warms after a tenant switch. Top-level fns so they read the
+# real $script scope (not a closure's).
+$script:AcWarmedTenant = ''
+function Test-AcNeedsWarmup {
+	$conn = $null
+	try { $conn = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0] } catch { return $false }
+	if (-not $conn) { return $false }
+	return ("$($conn.TenantId)" -ne $script:AcWarmedTenant)
+}
+function Invoke-AcWarmup {
+	$conn = $null
+	try { $conn = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0] } catch { return }
+	if (-not $conn) { return }
+	$tid = "$($conn.TenantId)"
+	if ($script:AcWarmedTenant -eq $tid) { return }
+	# Minimal query just to warm the connection - results are discarded, and we bypass the prefix
+	# cache so it isn't polluted with this throwaway term.
+	try {
+		if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
+			[void](Get-EXORecipient -Filter "Name -like 'a*'" -Properties PrimarySmtpAddress -ResultSize 1 -ErrorAction Stop)
+		} else {
+			[void](Get-Recipient -Anr 'a' -ResultSize 1 -ErrorAction Stop)
+		}
+	} catch {}
+	$script:AcWarmedTenant = $tid
+}
+
 # Faint placeholder text shown inside an empty field (e.g. "Name or email address") to make it
 # clear you can type either. Overlays a non-clickable TextBlock in the field's Grid cell and
 # hides it once you type. Only applies when the field lives in a Grid (which the recipient
@@ -369,24 +398,19 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	return $g
 }
 
-# One non-selectable dropdown row shown WHILE a live lookup runs: a thin indeterminate progress
-# bar over "Preparing to search...". Must be a top-level function (not inlined in the runQuery
-# closure) - inside a .GetNewClosure() $script:StyleDict reads as null, and indexing it threw
-# "Cannot index into a null array" on every keystroke. See the same trap in the sign-in notes.
+# One non-selectable dropdown row shown WHILE a live lookup runs. INTERIM: plain text only - an
+# animated progress bar can't actually animate here because the lookup blocks the UI thread (the
+# animation clock ticks on that same thread), so a bar just freezes on one frame and looks broken.
+# The real animated bar returns with the background/async search (which frees the UI thread).
+# Must be a top-level function (not inlined in the runQuery closure) - inside a .GetNewClosure()
+# $script:StyleDict reads as null, and indexing it threw "Cannot index into a null array".
 function New-AcLoadingRow {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
-	$sp = New-Object System.Windows.Controls.StackPanel
-	$pb = New-Object System.Windows.Controls.ProgressBar
-	$pb.IsIndeterminate = $true; $pb.Height = 3
-	$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
-	$pb.BorderThickness = New-Object System.Windows.Thickness 0
 	$tb = New-Object System.Windows.Controls.TextBlock
 	$tb.Text = "Preparing to search$([char]0x2026)"
 	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-	[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
-	$si.Content = $sp
+	$si.Content = $tb
 	return $si
 }
 
@@ -510,6 +534,18 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		}.GetNewClosure()
 
 		$timer.Add_Tick($runQuery)
+		# The first time a recipient field is focused for a given tenant, run a one-time warm-up so
+		# the first real search isn't cold. Show the "Preparing to search..." hint during it, then
+		# clear it (nothing typed yet). After that, focusing does nothing until the tenant changes.
+		$TextBox.Add_GotKeyboardFocus({
+			$t = "$($TextBox.Text)".Trim()
+			if ($t.Length -ge 2 -or (Test-AcIsCompleteEmail $t)) { return }
+			if (-not (Test-AcNeedsWarmup)) { return }
+			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow)); & $sizePopup; $popup.IsOpen = $true
+			try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
+			Invoke-AcWarmup
+			$popup.IsOpen = $false
+		}.GetNewClosure())
 		# Local narrowing (cache hit) runs with no delay; a network fetch is debounced. The
 		# "Preparing to search..." bar only shows during an actual live lookup (in runQuery) and is
 		# replaced the moment results are ready.

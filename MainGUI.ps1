@@ -1,4 +1,4 @@
-$version = "v3.1.64"
+$version = "v3.1.65"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -45,6 +45,7 @@ $script:Settings = @{
 	logExpanded     = $false
 	blurTenant      = $false
 	recipientSearch = $true
+	bgSearch        = $true
 }
 
 function Read-AppSettings {
@@ -57,6 +58,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*LogExpanded\s*=\s*(0|1)\s*$') { $script:Settings.logExpanded = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*BlurTenant\s*=\s*(0|1)\s*$') { $script:Settings.blurTenant = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*RecipientSearch\s*=\s*(0|1)\s*$') { $script:Settings.recipientSearch = $Matches[1] -eq '1' }
+		elseif ($line -match '^\s*BackgroundSearch\s*=\s*(0|1)\s*$') { $script:Settings.bgSearch = $Matches[1] -eq '1' }
 	}
 }
 
@@ -70,6 +72,7 @@ function Save-AppSettings {
 			LogExpanded  = if ($script:Settings.logExpanded) { '1' } else { '0' }
 			BlurTenant   = if ($script:Settings.blurTenant) { '1' } else { '0' }
 			RecipientSearch = if ($script:Settings.recipientSearch) { '1' } else { '0' }
+			BackgroundSearch = if ($script:Settings.bgSearch) { '1' } else { '0' }
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -1166,9 +1169,11 @@ function New-SettingsDialog {
 <StackPanel Margin="16" Width="380">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
-			<TextBlock Text="General" Style="{DynamicResource H3}"/>
+			<TextBlock Text="Recipient search" Style="{DynamicResource H3}"/>
 			<CheckBox x:Name="RecipientSearchCheck" Content="Search recipients by name (type-ahead)" Margin="0,10,0,0"/>
 			<TextBlock Text="Type a name in any email field to look up users, groups and mailboxes. If it ever causes trouble, turn this off and let us know so we can fix it." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="24,4,0,0"/>
+			<CheckBox x:Name="BgSearchCheck" Content="Search in the background (smoother, animated)" Margin="0,12,0,0"/>
+			<TextBlock Text="Runs the lookup off the main thread so the window never freezes and results load with an animated indicator. If searches misbehave, turn this off to use the classic lookup." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="24,4,0,0"/>
 		</StackPanel>
 	</Border>
 	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
@@ -1205,6 +1210,10 @@ function Show-Settings {
 	$rc.IsChecked = [bool]$script:Settings.recipientSearch
 	$rc.Add_Checked({ $script:Settings.recipientSearch = $true; Save-AppSettings })
 	$rc.Add_Unchecked({ $script:Settings.recipientSearch = $false; Save-AppSettings })
+	$bg = $win.FindName('BgSearchCheck')
+	$bg.IsChecked = [bool]$script:Settings.bgSearch
+	$bg.Add_Checked({ $script:Settings.bgSearch = $true; Save-AppSettings })
+	$bg.Add_Unchecked({ $script:Settings.bgSearch = $false; Save-AppSettings })
 
 	$status = $win.FindName('UpdateStatus'); $prog = $win.FindName('UpdateProg')
 	$updateBtn = $win.FindName('UpdateBtn'); $relaunchBtn = $win.FindName('RelaunchBtn')
@@ -1261,6 +1270,7 @@ $script:Window.Add_Closing({ param($s, $e)
 	$script:Settings.winHeight = [int]$script:Window.Height
 	$script:Settings.winMaximized = $script:Window.WindowState -eq 'Maximized'
 	Save-AppSettings
+	try { Reset-AcWorker } catch {}   # dispose the background-search runspace + its connection
 	# On a relaunch, skip the slow disconnect so the window closes instantly and the updated app
 	# starts right away (the dying process's sessions expire on their own).
 	if (-not $script:Relaunching) {
@@ -1359,7 +1369,7 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
-		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $w }
+		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('BgSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $w }
 		'dlg-notice-blur'        = { New-NoticeDialog 'Add complete' "allstaff@contoso.com (distribution list):`n  added (2): john@contoso.com, jane@contoso.com`n  already there (1): bob@contoso.com" 'Info' }
 		'dlg-ac-empty'           = {
 			$w = New-StyledDialog -Title 'Type a name OR an email' -Icon '&#xE721;' -BodyXaml @'

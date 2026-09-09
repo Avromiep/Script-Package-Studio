@@ -248,6 +248,48 @@ $script:AcAnchorTerm = ''
 $script:AcAnchorRows = @()
 $script:AcAnchorTenant = ''
 
+# Prefix-cache narrow: if $Term extends a previously-cached COMPLETE result for the same tenant,
+# return those rows filtered locally (instant, no network). Otherwise $null (caller must fetch).
+# Shared by the sync path and the background (async) path so both benefit from the cache.
+function Get-AcCacheNarrow([string]$Term, [string]$Tid) {
+	$ic = [System.StringComparison]::OrdinalIgnoreCase
+	if ($script:AcAnchorTenant -eq $Tid -and $script:AcAnchorTerm -and $Term.StartsWith($script:AcAnchorTerm, $ic)) {
+		return @($script:AcAnchorRows | Where-Object {
+			$_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic)
+		})
+	}
+	return $null
+}
+
+# Project raw Get-EXORecipient/Get-Recipient objects into cache rows and update the prefix anchor
+# (cache only a COMPLETE fetch - fewer rows than the cap - so later narrowing can't miss anyone).
+function ConvertTo-AcRows($Raw, [string]$Term, [string]$Tid, [int]$Max) {
+	$rows = @(foreach ($r in $Raw) {
+		[pscustomobject]@{
+			Name = "$($r.DisplayName)"; Email = "$($r.PrimarySmtpAddress)"; Alias = "$($r.Alias)"
+			Rtd  = "$($r.RecipientTypeDetails)"; Label = Get-RecipientTypeLabel "$($r.RecipientTypeDetails)"
+		}
+	}) | Where-Object { $_.Email }
+	$rows = @($rows)
+	if (@($Raw).Count -lt $Max) { $script:AcAnchorTerm = $Term; $script:AcAnchorRows = $rows; $script:AcAnchorTenant = $Tid }
+	else { $script:AcAnchorTerm = ''; $script:AcAnchorRows = @(); $script:AcAnchorTenant = '' }
+	return $rows
+}
+
+# Rank (float the field's preferred kind up) + sort + trim cache rows into the final suggestion list.
+function Format-AcMatches($Rows, [string]$Prefer, [int]$Max) {
+	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
+	$out = foreach ($r in $Rows) {
+		[pscustomobject]@{
+			Name = $r.Name; Email = $r.Email; Label = $r.Label
+			Rank = if ($target -and (Get-RecipientBucket $r.Rtd) -eq $target) { 0 } else { 1 }
+		}
+	}
+	return @($out | Sort-Object Rank, Name | Select-Object -First $Max)
+}
+
+# The SYNCHRONOUS lookup (default path). Cache-narrow if possible, else one bounded server query
+# on the UI thread. The background path (below) runs the same query on a worker runspace instead.
 function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max = 10) {
 	$Term = "$Term".Trim()
 	if ($Term.Length -lt 2) { return @() }
@@ -255,15 +297,8 @@ function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max 
 	try { $conn = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0] } catch { return @() }
 	if (-not $conn) { return @() }
 	$tid = "$($conn.TenantId)"
-
-	$rows = $null
-	$ic = [System.StringComparison]::OrdinalIgnoreCase
-	if ($script:AcAnchorTenant -eq $tid -and $script:AcAnchorTerm -and $Term.StartsWith($script:AcAnchorTerm, $ic)) {
-		# Instant: narrow the cached rows locally, no network round-trip.
-		$rows = @($script:AcAnchorRows | Where-Object {
-			$_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic)
-		})
-	} else {
+	$rows = Get-AcCacheNarrow $Term $tid
+	if ($null -eq $rows) {
 		$raw = @()
 		try {
 			if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
@@ -274,35 +309,9 @@ function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max 
 				$raw = @(Get-Recipient -Anr $Term -ResultSize $Max -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails)
 			}
 		} catch { $raw = @() }
-		$rows = @(foreach ($r in $raw) {
-			[pscustomobject]@{
-				Name  = "$($r.DisplayName)"
-				Email = "$($r.PrimarySmtpAddress)"
-				Alias = "$($r.Alias)"
-				Rtd   = "$($r.RecipientTypeDetails)"
-				Label = Get-RecipientTypeLabel "$($r.RecipientTypeDetails)"
-			}
-		}) | Where-Object { $_.Email }
-		$rows = @($rows)
-		# Cache as an anchor only when the fetch was COMPLETE (fewer rows than the cap) so we can
-		# safely narrow from it; otherwise clear the cache so we re-query next keystroke.
-		if ($raw.Count -lt $Max) {
-			$script:AcAnchorTerm = $Term; $script:AcAnchorRows = $rows; $script:AcAnchorTenant = $tid
-		} else {
-			$script:AcAnchorTerm = ''; $script:AcAnchorRows = @(); $script:AcAnchorTenant = ''
-		}
+		$rows = ConvertTo-AcRows $raw $Term $tid $Max
 	}
-
-	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
-	$out = foreach ($r in $rows) {
-		[pscustomobject]@{
-			Name  = $r.Name
-			Email = $r.Email
-			Label = $r.Label
-			Rank  = if ($target -and (Get-RecipientBucket $r.Rtd) -eq $target) { 0 } else { 1 }
-		}
-	}
-	return @($out | Sort-Object Rank, Name | Select-Object -First $Max)
+	return Format-AcMatches $rows $Prefer $Max
 }
 
 # Would the NEXT lookup for $Term hit the network, or can it be served instantly from the prefix
@@ -398,19 +407,126 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 	return $g
 }
 
+# ============================ Background (async) search engine ================================
+# Runs Get-EXORecipient on a dedicated worker RUNSPACE so the UI thread stays free - the progress
+# bar animates and the window never freezes. One worker per tenant, shared by every recipient
+# field, connected silently (reuses the app's sign-in). Gated by $script:Settings.bgSearch, and
+# EVERY failure path falls back to the synchronous Get-RecipientMatches, so search always works.
+$script:AcWorker = $null   # @{ RS; Key; ConnPS; ConnAsync; Ready }
+$script:AcQ      = $null   # in-flight query: @{ PS; Async; Gen; Render; Term; Prefer; Max }
+$script:AcQGen   = 0
+
+# Identity string for the current connection - "tenantId|org|upn". Changing it means a switch.
+function Get-AcTenantKey {
+	try { $c = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0]; if ($c) { return "$($c.TenantId)|$($c.Organization)|$($c.UserPrincipalName)" } } catch {}
+	return ''
+}
+function Reset-AcWorker {
+	if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null }
+	if ($script:AcWorker) {
+		try { if ($script:AcWorker.ConnPS) { $script:AcWorker.ConnPS.Dispose() } } catch {}
+		try { $script:AcWorker.RS.Close(); $script:AcWorker.RS.Dispose() } catch {}
+	}
+	$script:AcWorker = $null
+}
+# Ensure a worker exists + is connecting/connected for the CURRENT tenant. Never blocks. Returns
+# 'ready' | 'connecting' | 'off' (flag off / not connected / EXO cmdlet missing / setup failed).
+function Step-AcWorker {
+	if (-not ($script:Settings -and $script:Settings.bgSearch)) { return 'off' }
+	if (-not (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue)) { return 'off' }
+	$key = Get-AcTenantKey
+	if (-not $key) { return 'off' }
+	if ($script:AcWorker -and $script:AcWorker.Key -ne $key) { Reset-AcWorker }   # tenant switched
+	if (-not $script:AcWorker) {
+		try {
+			$rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+			$parts = $key -split '\|'; $org = $parts[1]; $upn = $parts[2]
+			$ps = [PowerShell]::Create(); $ps.Runspace = $rs
+			[void]$ps.AddScript({
+				param($org, $upn)
+				Import-Module ExchangeOnlineManagement
+				$cp = @{ ShowBanner = $false; ErrorAction = 'Stop' }
+				if ($org) { $cp.Organization = $org }; if ($upn) { $cp.UserPrincipalName = $upn }
+				$k = (Get-Command Connect-ExchangeOnline).Parameters
+				if ($k.ContainsKey('DisableWAM'))            { $cp.DisableWAM = $true }
+				if ($k.ContainsKey('SkipLoadingCmdletHelp')) { $cp.SkipLoadingCmdletHelp = $true }
+				Connect-ExchangeOnline @cp; 'ok'
+			}).AddParameters(@{ org = $org; upn = $upn }) | Out-Null
+			$script:AcWorker = @{ RS = $rs; Key = $key; ConnPS = $ps; ConnAsync = $ps.BeginInvoke(); Ready = $false }
+		} catch { Reset-AcWorker; return 'off' }
+	}
+	if ($script:AcWorker.Ready) { return 'ready' }
+	if ($script:AcWorker.ConnAsync.IsCompleted) {
+		try {
+			[void]$script:AcWorker.ConnPS.EndInvoke($script:AcWorker.ConnAsync)
+			try { $script:AcWorker.ConnPS.Dispose() } catch {}
+			$script:AcWorker.ConnPS = $null; $script:AcWorker.ConnAsync = $null; $script:AcWorker.Ready = $true
+			return 'ready'
+		} catch { Reset-AcWorker; return 'off' }
+	}
+	return 'connecting'
+}
+# Start an async query on the worker (superseding any in-flight one). $Render is a UI scriptblock
+# called by Step-AcSearch with the finished matches. No-op unless the worker is ready.
+function Request-AcSearch([string]$Term, [string]$Prefer, [int]$Max, [scriptblock]$Render) {
+	if (-not ($script:AcWorker -and $script:AcWorker.Ready)) { return }
+	if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null }
+	$script:AcQGen++
+	$safe = $Term -replace "'", "''"
+	$filter = "Name -like '$safe*' -or Alias -like '$safe*' -or PrimarySmtpAddress -like '$safe*'"
+	try {
+		$ps = [PowerShell]::Create(); $ps.Runspace = $script:AcWorker.RS
+		[void]$ps.AddScript({
+			param($filter, $max)
+			Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails -ResultSize $max -ErrorAction Stop |
+				Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails
+		}).AddParameters(@{ filter = $filter; max = $Max }) | Out-Null
+		$script:AcQ = @{ PS = $ps; Async = $ps.BeginInvoke(); Gen = $script:AcQGen; Render = $Render; Term = $Term; Prefer = $Prefer; Max = $Max }
+	} catch { $script:AcQ = $null }
+}
+# Poll hook (called from a UI DispatcherTimer): if the in-flight query finished, project+cache its
+# rows and invoke its Render on the UI thread. On a worker error, rebuild the worker and fall back
+# to a one-off synchronous lookup so the user still gets results.
+function Step-AcSearch {
+	if (-not $script:AcQ) { return }
+	if (-not $script:AcQ.Async.IsCompleted) { return }
+	$q = $script:AcQ; $script:AcQ = $null
+	$failed = $false; $raw = @()
+	try { $raw = @($q.PS.EndInvoke($q.Async)) } catch { $failed = $true }
+	try { $q.PS.Dispose() } catch {}
+	if ($failed) {
+		Reset-AcWorker
+		$matches = @(Get-RecipientMatches $q.Term $q.Prefer $q.Max)   # sync fallback for this term
+	} else {
+		$tid = ((Get-AcTenantKey) -split '\|')[0]   # tenantId segment, for the prefix cache
+		$rows = ConvertTo-AcRows $raw $q.Term $tid $q.Max
+		$matches = Format-AcMatches $rows $q.Prefer $q.Max
+	}
+	try { & $q.Render $matches } catch {}
+}
+
 # One non-selectable dropdown row shown WHILE a live lookup runs. INTERIM: plain text only - an
 # animated progress bar can't actually animate here because the lookup blocks the UI thread (the
 # animation clock ticks on that same thread), so a bar just freezes on one frame and looks broken.
 # The real animated bar returns with the background/async search (which frees the UI thread).
 # Must be a top-level function (not inlined in the runQuery closure) - inside a .GetNewClosure()
 # $script:StyleDict reads as null, and indexing it threw "Cannot index into a null array".
-function New-AcLoadingRow {
+function New-AcLoadingRow([bool]$Animated = $false) {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
 	$tb = New-Object System.Windows.Controls.TextBlock
 	$tb.Text = "Preparing to search$([char]0x2026)"
 	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-	$si.Content = $tb
+	if (-not $Animated) { $si.Content = $tb; return $si }
+	# Background path: the UI thread is free, so an indeterminate bar actually animates.
+	$sp = New-Object System.Windows.Controls.StackPanel
+	$pb = New-Object System.Windows.Controls.ProgressBar
+	$pb.IsIndeterminate = $true; $pb.Height = 3
+	$pb.Foreground = $script:StyleDict['AccentBrush']; $pb.Background = $script:StyleDict['StrokeBrush']
+	$pb.BorderThickness = New-Object System.Windows.Thickness 0
+	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
+	[void]$sp.Children.Add($pb); [void]$sp.Children.Add($tb)
+	$si.Content = $sp
 	return $si
 }
 
@@ -503,26 +619,12 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		# email addresses show in full instead of being clipped.
 		$sizePopup = { try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {} }.GetNewClosure()
 
-		$runQuery = {
-			$timer.Stop()
-			$term = "$($TextBox.Text)".Trim()
-			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
-			# If a real Exchange lookup is coming, show the dropdown immediately with an animated
-			# "Preparing to search..." row and force a paint BEFORE the blocking call - so the first
-			# lookup feels responsive instead of a dead pause. The indeterminate ProgressBar keeps
-			# animating on WPF's render thread even while the UI thread is busy fetching. Cache hits
-			# skip this and just fill in (already instant); the bar vanishes when results replace it.
-			if (Test-AcWouldQueryNetwork $term) {
-				$list.Items.Clear()
-				[void]$list.Items.Add((New-AcLoadingRow))
-				& $sizePopup
-				$popup.IsOpen = $true
-				try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
-			}
-			$hits = @(Get-RecipientMatches $term $Prefer 12)
+		# Fill the dropdown from a finished matches array (used by both the sync and background paths).
+		$renderMatches = {
+			param($matches)
 			$list.Items.Clear()
-			if (-not $hits.Count) { $popup.IsOpen = $false; return }
-			foreach ($m in $hits) {
+			if (-not @($matches).Count) { $popup.IsOpen = $false; return }
+			foreach ($m in $matches) {
 				$it = New-Object System.Windows.Controls.ListBoxItem
 				$it.Content = New-RecipientRow $m.Name $m.Email $m.Label
 				$it.Tag = $m.Email
@@ -533,6 +635,48 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 
+		# Background path plumbing: a term waiting for the worker to finish connecting, and an ~80ms
+		# poll that advances the worker connect + renders finished queries, self-stopping when idle.
+		$pending = [pscustomobject]@{ Term = '' }
+		$poll = New-Object System.Windows.Threading.DispatcherTimer
+		$poll.Interval = [TimeSpan]::FromMilliseconds(80)
+		$poll.Add_Tick({
+			try {
+				$st = Step-AcWorker
+				if ($st -eq 'off') { $poll.Stop(); return }
+				if ($pending.Term -and $st -eq 'ready') { $t = $pending.Term; $pending.Term = ''; Request-AcSearch $t $Prefer 12 $renderMatches }
+				Step-AcSearch
+				if ($st -eq 'ready' -and -not $script:AcQ -and -not $pending.Term) { $poll.Stop() }
+			} catch { try { $poll.Stop() } catch {} }
+		}.GetNewClosure())
+
+		# Kick off a background lookup: show the animated bar, dispatch to the worker (or queue it if
+		# the worker is still connecting). Returns $false if background search isn't available so the
+		# caller falls back to the synchronous path.
+		$startAsync = {
+			param($term)
+			$st = Step-AcWorker
+			if ($st -eq 'off') { return $false }
+			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow $true)); & $sizePopup; $popup.IsOpen = $true
+			if ($st -eq 'ready') { Request-AcSearch $term $Prefer 12 $renderMatches } else { $pending.Term = $term }
+			$poll.Start()
+			return $true
+		}.GetNewClosure()
+
+		$runQuery = {
+			$timer.Stop()
+			$term = "$($TextBox.Text)".Trim()
+			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
+			# Cache hit -> instant, no network round-trip (same in both modes).
+			if (-not (Test-AcWouldQueryNetwork $term)) { & $renderMatches (@(Get-RecipientMatches $term $Prefer 12)); return }
+			# Background mode: run the lookup off the UI thread (animated bar, no freeze).
+			if ($script:Settings -and $script:Settings.bgSearch) { if (& $startAsync $term) { return } }
+			# Synchronous fallback (original behavior): text hint, then a blocking lookup.
+			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow)); & $sizePopup; $popup.IsOpen = $true
+			try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
+			& $renderMatches (@(Get-RecipientMatches $term $Prefer 12))
+		}.GetNewClosure()
+
 		$timer.Add_Tick($runQuery)
 		# The first time a recipient field is focused for a given tenant, run a one-time warm-up so
 		# the first real search isn't cold. Show the "Preparing to search..." hint during it, then
@@ -540,6 +684,12 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$TextBox.Add_GotKeyboardFocus({
 			$t = "$($TextBox.Text)".Trim()
 			if ($t.Length -ge 2 -or (Test-AcIsCompleteEmail $t)) { return }
+			# Background mode: start the worker connecting NOW (non-blocking) so the first search is
+			# instant; no bar, no freeze. Sync mode: the old one-time blocking warm-up.
+			if ($script:Settings -and $script:Settings.bgSearch) {
+				if ((Step-AcWorker) -eq 'connecting') { $poll.Start() }
+				return
+			}
 			if (-not (Test-AcNeedsWarmup)) { return }
 			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow)); & $sizePopup; $popup.IsOpen = $true
 			try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
@@ -571,7 +721,14 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			if ($e.Key -eq 'Enter') { & $choose; $e.Handled = $true }
 			elseif ($e.Key -eq 'Escape') { $popup.IsOpen = $false; $TextBox.Focus(); $e.Handled = $true }
 		}.GetNewClosure())
-		$TextBox.Add_LostKeyboardFocus({ if ($popup.IsOpen -and -not $popup.IsKeyboardFocusWithin) { $popup.IsOpen = $false } }.GetNewClosure())
+		$TextBox.Add_LostKeyboardFocus({
+			# Leaving the field: stop this field's poll and drop any in-flight background query so a
+			# late result can't re-open the dropdown after it's closed.
+			$pending.Term = ''
+			try { $poll.Stop() } catch {}
+			if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null }
+			if ($popup.IsOpen -and -not $popup.IsKeyboardFocusWithin) { $popup.IsOpen = $false }
+		}.GetNewClosure())
 	} catch { }
 }
 

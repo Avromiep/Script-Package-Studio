@@ -440,6 +440,7 @@ function Get-AcTenantKey {
 }
 function Reset-AcWorker {
 	if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null }
+	try { Clear-AcIndex } catch {}
 	if ($script:AcWorker) {
 		try { if ($script:AcWorker.ConnPS) { $script:AcWorker.ConnPS.Dispose() } } catch {}
 		try { $script:AcWorker.RS.Close(); $script:AcWorker.RS.Dispose() } catch {}
@@ -535,6 +536,90 @@ function Step-AcSearch {
 		$matches = Format-AcMatches $rows $q.Prefer $q.Max
 	}
 	try { & $q.Render $matches } catch {}
+}
+
+# ---- Background INDEX ---------------------------------------------------------------------------
+# Load the tenant's recipients ONCE (in the worker) right after sign-in, so every search is then
+# INSTANT (local filtering, no per-name network round-trip). Small/medium tenants only: a result at
+# the cap means the tenant is bigger than we index, so we keep the live per-name search for it.
+$script:AcIndex      = $null   # array of {Name;Email;Alias;Rtd;Label} or $null
+$script:AcIndexKey   = ''      # tenant key the index (or in-flight load) belongs to
+$script:AcIndexPS    = $null
+$script:AcIndexAsync = $null
+$script:AcIndexCap   = 5000
+
+function Clear-AcIndex {
+	if ($script:AcIndexPS) { try { $script:AcIndexPS.Stop() } catch {}; try { $script:AcIndexPS.Dispose() } catch {} }
+	$script:AcIndexPS = $null; $script:AcIndexAsync = $null; $script:AcIndex = $null; $script:AcIndexKey = ''
+}
+function Test-AcIndexSettled { return [bool](-not $script:AcIndexAsync) }
+# Kick off the background bulk load (once per tenant) on the connected worker.
+function Start-AcIndex {
+	if (-not ($script:AcWorker -and $script:AcWorker.Ready)) { return }
+	$key = $script:AcWorker.Key
+	if ($script:AcIndexKey -eq $key) { return }   # already loaded or loading for this tenant
+	try {
+		$ps = [PowerShell]::Create(); $ps.Runspace = $script:AcWorker.RS
+		[void]$ps.AddScript({
+			param($cap)
+			if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) {
+				Get-EXORecipient -ResultSize $cap -Properties DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails
+			} else {
+				Get-Recipient -ResultSize $cap -ErrorAction Stop | Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails
+			}
+		}).AddParameters(@{ cap = $script:AcIndexCap }) | Out-Null
+		$script:AcIndexPS = $ps; $script:AcIndexAsync = $ps.BeginInvoke(); $script:AcIndexKey = $key
+		Write-BgLog "indexing recipients in the background (up to $($script:AcIndexCap))..."
+	} catch { Clear-AcIndex }
+}
+# Poll: finish the load and build the local index (only if COMPLETE - a result AT the cap means the
+# tenant is bigger than we index, so stay on live search).
+function Step-AcIndex {
+	if (-not $script:AcIndexAsync) { return }
+	if (-not $script:AcIndexAsync.IsCompleted) { return }
+	$raw = @(); $ok = $true
+	try { $raw = @($script:AcIndexPS.EndInvoke($script:AcIndexAsync)) } catch { $ok = $false }
+	try { $script:AcIndexPS.Dispose() } catch {}
+	$script:AcIndexPS = $null; $script:AcIndexAsync = $null
+	if ($ok -and $raw.Count -gt 0 -and $raw.Count -lt $script:AcIndexCap) {
+		$rows = @(foreach ($r in $raw) {
+			[pscustomobject]@{ Name = "$($r.DisplayName)"; Email = "$($r.PrimarySmtpAddress)"; Alias = "$($r.Alias)"; Rtd = "$($r.RecipientTypeDetails)"; Label = Get-RecipientTypeLabel "$($r.RecipientTypeDetails)" }
+		}) | Where-Object { $_.Email }
+		$script:AcIndex = @($rows)
+		Write-BgLog "indexed $($script:AcIndex.Count) recipients - searches are now instant."
+	} else {
+		$script:AcIndex = $null
+		Write-BgLog "not indexing (rows=$($raw.Count) ok=$ok) - staying on live search."
+	}
+}
+# Instant local search over the index, or $null if there's no usable index for the current tenant.
+function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
+	if (-not $script:AcIndex) { return $null }
+	if (-not ($script:AcWorker -and $script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key)) { return $null }
+	$ic = [System.StringComparison]::OrdinalIgnoreCase
+	$hits = @($script:AcIndex | Where-Object { $_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic) })
+	return Format-AcMatches $hits $Prefer $Max
+}
+# App-level driver: after sign-in, connect the worker + build the index in the background so later
+# searches are instant - independent of any field. Idempotent per tenant.
+$script:AcWarmupTimer = $null
+function Start-AcWarmup {
+	if (-not (Test-AcBgEnabled)) { return }
+	if ($script:AcWarmupTimer) { try { $script:AcWarmupTimer.Stop() } catch {} }
+	$t = New-Object System.Windows.Threading.DispatcherTimer
+	$t.Interval = [TimeSpan]::FromMilliseconds(250)
+	$t.Add_Tick({
+		try {
+			$st = Step-AcWorker
+			if ($st -eq 'off') { $t.Stop(); return }
+			if ($st -ne 'ready') { return }
+			Start-AcIndex
+			Step-AcIndex
+			if (Test-AcIndexSettled) { $t.Stop() }
+		} catch { try { $t.Stop() } catch {} }
+	}.GetNewClosure())
+	$script:AcWarmupTimer = $t
+	$t.Start()
 }
 
 # One non-selectable dropdown row shown WHILE a live lookup runs. INTERIM: plain text only - an
@@ -730,6 +815,10 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
 			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
+			# INSTANT: if the tenant's recipients were indexed on sign-in, filter that locally - no
+			# network, no wait, no indicator. This is the common case once the background index loads.
+			$idx = Get-AcIndexMatches $term $Prefer 12
+			if ($null -ne $idx) { & $renderMatches (@($idx)); return }
 			# Cache hit -> instant, no network round-trip (same in both modes).
 			if (-not (Test-AcWouldQueryNetwork $term)) { & $renderMatches (@(Get-RecipientMatches $term $Prefer 12)); return }
 			# Background mode: run the lookup off the UI thread (animated bar, no freeze). startAsync
@@ -751,7 +840,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			# Background mode: start the worker connecting NOW. While it connects (the one time per
 			# tenant), show the animated indicator; once ready it disappears and stays quiet.
 			if (Test-AcBgEnabled) {
-				if ((Step-AcWorker) -eq 'connecting') { & $showConnecting; $poll.Start() }
+				Start-AcWarmup
 				return
 			}
 			if (-not (Test-AcNeedsWarmup)) { return }

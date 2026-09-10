@@ -1,4 +1,4 @@
-$version = "v3.1.70"
+$version = "v3.1.71"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -628,9 +628,9 @@ function Connect-Tenant($Tenant) {
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
-	# Start the background-search worker connecting NOW (non-blocking) so its ~2s connect happens
-	# here, before the user opens a search box - then the first search is instant, no indicator.
-	try { [void](Step-AcWorker) } catch {}
+	# Connect the background-search worker + build the recipient index NOW (non-blocking), so by the
+	# time the user opens a search box the index is loaded and searches are instant.
+	try { Start-AcWarmup } catch {}
 
 	$script:ActiveTenant = $Tenant
 	$Tenant.lastUsed = (Get-Date).ToString('o')
@@ -684,7 +684,7 @@ function Add-TenantSignIn {
 	$progressBar1.Value = 80
 	CheckForErrors
 	Write-Host "Connected to Exchange"
-	try { [void](Step-AcWorker) } catch {}   # start the background-search worker connecting early
+	try { Start-AcWarmup } catch {}   # connect the bg worker + build the recipient index early
 
 	$tenantProfile = $script:Tenants | Where-Object {
 		[string]$_.tenantId -eq [string]$currentMgContext.TenantId -and [string]$_.account -eq [string]$currentMgContext.Account

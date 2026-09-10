@@ -426,6 +426,13 @@ function Write-BgLog([string]$msg) {
 $script:AcOffMsg = ''
 function Write-BgOnce([string]$m) { if ($script:AcOffMsg -ne $m) { $script:AcOffMsg = $m; Write-BgLog $m } }
 
+# Closure-safe accessors. Event-handler closures are .GetNewClosure(), where $script:Foo reads as
+# null - so the bg-enabled and in-flight-query checks MUST go through these top-level functions
+# (they read the REAL $script scope). This is the trap that made bg search never run.
+function Test-AcBgEnabled { return [bool]($script:Settings -and $script:Settings.bgSearch) }
+function Test-AcBusy      { return [bool]$script:AcQ }
+function Clear-AcQuery    { if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null } }
+
 # Identity string for the current connection - "tenantId|org|upn". Changing it means a switch.
 function Get-AcTenantKey {
 	try { $c = @(Get-ConnectionInformation -ErrorAction SilentlyContinue)[0]; if ($c) { return "$($c.TenantId)|$($c.Organization)|$($c.UserPrincipalName)" } } catch {}
@@ -705,7 +712,8 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 				if ($st -eq 'connecting') { return }                       # still connecting: keep animating
 				# Worker is ready:
 				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; $pending.Indicator = $false; Request-AcSearch $t $Prefer 12 $renderMatches; return }
-				if ($script:AcQ) { Step-AcSearch; return }                 # a query is finishing - render it
+				Step-AcSearch                                              # renders a finished query (reads real $script:AcQ)
+				if (Test-AcBusy) { return }                                # a query is still running - keep polling
 				if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }  # connect done, nothing typed
 				$poll.Stop()
 			} catch { try { $poll.Stop() } catch {} }
@@ -730,8 +738,9 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
 			# Cache hit -> instant, no network round-trip (same in both modes).
 			if (-not (Test-AcWouldQueryNetwork $term)) { & $renderMatches (@(Get-RecipientMatches $term $Prefer 12)); return }
-			# Background mode: run the lookup off the UI thread (animated bar, no freeze).
-			if ($script:Settings -and $script:Settings.bgSearch) { if (& $startAsync $term) { return } }
+			# Background mode: run the lookup off the UI thread (animated bar, no freeze). startAsync
+			# self-gates (returns $false when bg is off / not connected), then we fall back to sync.
+			if (& $startAsync $term) { return }
 			# Synchronous fallback (original behavior): text hint, then a blocking lookup.
 			$list.Items.Clear(); [void]$list.Items.Add((New-AcLoadingRow)); & $sizePopup; $popup.IsOpen = $true
 			try { $border.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
@@ -747,7 +756,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			if ($t.Length -ge 2 -or (Test-AcIsCompleteEmail $t)) { return }
 			# Background mode: start the worker connecting NOW. While it connects (the one time per
 			# tenant), show the animated indicator; once ready it disappears and stays quiet.
-			if ($script:Settings -and $script:Settings.bgSearch) {
+			if (Test-AcBgEnabled) {
 				if ((Step-AcWorker) -eq 'connecting') { & $showConnecting; $poll.Start() }
 				return
 			}
@@ -787,7 +796,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			# late result can't re-open the dropdown after it's closed.
 			$pending.Term = ''
 			try { $poll.Stop() } catch {}
-			if ($script:AcQ) { try { $script:AcQ.PS.Stop() } catch {}; try { $script:AcQ.PS.Dispose() } catch {}; $script:AcQ = $null }
+			Clear-AcQuery
 			if ($popup.IsOpen -and -not $popup.IsKeyboardFocusWithin) { $popup.IsOpen = $false }
 		}.GetNewClosure())
 	} catch { }

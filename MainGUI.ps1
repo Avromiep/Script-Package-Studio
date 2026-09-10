@@ -1,4 +1,4 @@
-$version = "v3.1.73"
+$version = "v3.1.74"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -261,6 +261,13 @@ $mainXaml = @"
 											   Foreground="{DynamicResource TextFaintBrush}" VerticalAlignment="Center"/>
 									<TextBlock x:Name="SearchStatusLabel" Text="Preparing search" Style="{DynamicResource Small}"
 											   Margin="5,0,0,0" VerticalAlignment="Center"/>
+									<Border x:Name="SearchStatusBar" Width="64" Height="4" Margin="9,0,2,0" VerticalAlignment="Center"
+											CornerRadius="2" ClipToBounds="True" Background="{DynamicResource StrokeSoftBrush}" Visibility="Collapsed">
+										<Border x:Name="SearchStatusBarSeg" Width="26" Height="4" CornerRadius="2" HorizontalAlignment="Left"
+												Background="{DynamicResource AccentBrush}">
+											<Border.RenderTransform><TranslateTransform x:Name="SearchStatusBarTT"/></Border.RenderTransform>
+										</Border>
+									</Border>
 								</StackPanel>
 							</StackPanel>
 						</Grid>
@@ -358,11 +365,22 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','MainProgress')) {
+		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el
 }
+
+# Start the search-status loading bar sliding (indeterminate). It runs forever on the render/
+# composition side; we just show/hide the bar in Update-AcStatus. Visible only while preparing,
+# when the main thread is free (background index), so it actually animates.
+try {
+	$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+	$anim.From = -26; $anim.To = 64
+	$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.95))
+	$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+	$script:UI.SearchStatusBarTT.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
+} catch {}
 
 # load the largest frame from the multi-size .ico so the taskbar / Alt-Tab icon
 # is crisp (BitmapImage alone would grab the 16px frame and upscale it)
@@ -543,8 +561,8 @@ function Update-TenantCombo {
 		$script:UI.ForgetTenantBtn.IsEnabled = $script:Tenants.Count -gt 0
 		$script:UI.ConnectBtn.IsEnabled = $true
 		if ($script:ActiveTenant) {
-			$script:UI.ConnectBtn.Content = 'Connected'
-			$script:UI.ConnectBtn.ToolTip = 'Connected - click to disconnect'
+			$script:UI.ConnectBtn.Content = 'Disconnect'
+			$script:UI.ConnectBtn.ToolTip = 'Disconnect from this tenant (the green dot and text above show you are connected; you can reconnect anytime)'
 		} elseif ($script:Tenants.Count -gt 0) {
 			$script:UI.ConnectBtn.Content = 'Connect'
 			$script:UI.ConnectBtn.ToolTip = $null
@@ -739,6 +757,7 @@ function Disconnect-Tenant {
 	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
 	$Error.Clear()
 	Write-Host "Disconnected from Graph and Exchange"
+	try { Reset-AcWorker } catch {}   # drop the background search worker + recipient index
 	$script:ActiveTenant = $null
 	Set-SignState $false 'Currently not signed in.'
 	Update-TenantCombo

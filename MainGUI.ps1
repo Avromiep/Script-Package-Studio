@@ -1,4 +1,4 @@
-$version = "v3.1.66"
+$version = "v3.1.67"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1212,8 +1212,8 @@ function Show-Settings {
 	$rc.Add_Unchecked({ $script:Settings.recipientSearch = $false; Save-AppSettings })
 	$bg = $win.FindName('BgSearchCheck')
 	$bg.IsChecked = [bool]$script:Settings.bgSearch
-	$bg.Add_Checked({ $script:Settings.bgSearch = $true; Save-AppSettings })
-	$bg.Add_Unchecked({ $script:Settings.bgSearch = $false; Save-AppSettings })
+	$bg.Add_Checked({ $script:Settings.bgSearch = $true; $script:AcWorkerFail = ''; try { Reset-AcWorker } catch {}; Save-AppSettings })
+	$bg.Add_Unchecked({ $script:Settings.bgSearch = $false; try { Reset-AcWorker } catch {}; Save-AppSettings })
 
 	$status = $win.FindName('UpdateStatus'); $prog = $win.FindName('UpdateProg')
 	$updateBtn = $win.FindName('UpdateBtn'); $relaunchBtn = $win.FindName('RelaunchBtn')

@@ -412,9 +412,17 @@ function New-RecipientRow([string]$Name, [string]$Email, [string]$Label) {
 # bar animates and the window never freezes. One worker per tenant, shared by every recipient
 # field, connected silently (reuses the app's sign-in). Gated by $script:Settings.bgSearch, and
 # EVERY failure path falls back to the synchronous Get-RecipientMatches, so search always works.
-$script:AcWorker = $null   # @{ RS; Key; ConnPS; ConnAsync; Ready }
-$script:AcQ      = $null   # in-flight query: @{ PS; Async; Gen; Render; Term; Prefer; Max }
-$script:AcQGen   = 0
+$script:AcWorker     = $null   # @{ RS; Key; ConnPS; ConnAsync; Ready; Started }
+$script:AcQ          = $null   # in-flight query: @{ PS; Async; Gen; Render; Term; Prefer; Max }
+$script:AcQGen       = 0
+$script:AcWorkerFail = ''      # tenant key whose bg connect failed - fall back to sync, don't retry
+
+# Diagnostic log for the background worker (Activity log + Logs\bg-search.txt) so a failed silent
+# connect is visible instead of silently falling back.
+function Write-BgLog([string]$msg) {
+	try { Write-Host "bg: $msg" } catch {}
+	try { $p = Join-Path (Split-Path $script:SrcDir -Parent) 'Logs\bg-search.txt'; "[$([datetime]::Now.ToString('s'))] $msg" | Out-File -LiteralPath $p -Append -Encoding utf8 } catch {}
+}
 
 # Identity string for the current connection - "tenantId|org|upn". Changing it means a switch.
 function Get-AcTenantKey {
@@ -436,6 +444,8 @@ function Step-AcWorker {
 	if (-not (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue)) { return 'off' }
 	$key = Get-AcTenantKey
 	if (-not $key) { return 'off' }
+	if ($script:AcWorkerFail -and $script:AcWorkerFail -ne $key) { $script:AcWorkerFail = '' }  # new tenant, retry
+	if ($script:AcWorkerFail -eq $key) { return 'off' }   # already failed this tenant - use sync, no thrash
 	if ($script:AcWorker -and $script:AcWorker.Key -ne $key) { Reset-AcWorker }   # tenant switched
 	if (-not $script:AcWorker) {
 		try {
@@ -452,17 +462,25 @@ function Step-AcWorker {
 				if ($k.ContainsKey('SkipLoadingCmdletHelp')) { $cp.SkipLoadingCmdletHelp = $true }
 				Connect-ExchangeOnline @cp; 'ok'
 			}).AddParameters(@{ org = $org; upn = $upn }) | Out-Null
-			$script:AcWorker = @{ RS = $rs; Key = $key; ConnPS = $ps; ConnAsync = $ps.BeginInvoke(); Ready = $false }
-		} catch { Reset-AcWorker; return 'off' }
+			$script:AcWorker = @{ RS = $rs; Key = $key; ConnPS = $ps; ConnAsync = $ps.BeginInvoke(); Ready = $false; Started = [datetime]::Now }
+			Write-BgLog "connecting worker (upn=$upn org=$org module=$((Get-Module ExchangeOnlineManagement | Select-Object -First 1).Version))..."
+		} catch { Write-BgLog "worker SETUP failed: $($_.Exception.Message)"; Reset-AcWorker; $script:AcWorkerFail = $key; return 'off' }
 	}
 	if ($script:AcWorker.Ready) { return 'ready' }
 	if ($script:AcWorker.ConnAsync.IsCompleted) {
 		try {
 			[void]$script:AcWorker.ConnPS.EndInvoke($script:AcWorker.ConnAsync)
+			$ms = [int]([datetime]::Now - $script:AcWorker.Started).TotalMilliseconds
+			Write-BgLog "worker READY in ${ms}ms."
 			try { $script:AcWorker.ConnPS.Dispose() } catch {}
 			$script:AcWorker.ConnPS = $null; $script:AcWorker.ConnAsync = $null; $script:AcWorker.Ready = $true
 			return 'ready'
-		} catch { Reset-AcWorker; return 'off' }
+		} catch {
+			$err = "$($_.Exception.Message)"
+			try { $se = @($script:AcWorker.ConnPS.Streams.Error | ForEach-Object { "$_" }); if ($se.Count) { $err += ' ;; ' + ($se -join ' ;; ') } } catch {}
+			Write-BgLog "worker CONNECT FAILED: $err"
+			Reset-AcWorker; $script:AcWorkerFail = $key; return 'off'
+		}
 	}
 	return 'connecting'
 }

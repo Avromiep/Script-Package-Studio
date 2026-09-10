@@ -619,23 +619,26 @@ function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
 # button): grey "Preparing search..." while it loads, green "Search ready" once instant search is
 # available, amber "Live search" for a tenant too large to index. At-a-glance, no log needed.
 function Update-AcStatus {
-	$panel = $null; $icon = $null; $label = $null
-	try { $panel = $script:UI.SearchStatusPanel; $icon = $script:UI.SearchStatusIcon; $label = $script:UI.SearchStatusLabel } catch {}
+	$panel = $null; $icon = $null; $label = $null; $bar = $null
+	try { $panel = $script:UI.SearchStatusPanel; $icon = $script:UI.SearchStatusIcon; $label = $script:UI.SearchStatusLabel; $bar = $script:UI.SearchStatusBar } catch {}
 	if (-not ($panel -and $icon -and $label)) { return }
-	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $panel.Visibility = 'Collapsed'; return }
+	$preparing = $false
+	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $panel.Visibility = 'Collapsed'; if ($bar) { $bar.Visibility = 'Collapsed' }; return }
 	if (Test-AcHasIndex) {
-		$label.Text = 'Search ready'; $panel.ToolTip = "Name/email search is ready - instant ($(@($script:AcIndex).Count) recipients loaded)"
+		$label.Text = 'Tenant search ready'; $panel.ToolTip = "Tenant recipient search is ready - instant ($(@($script:AcIndex).Count) loaded). This is separate from the script search box above."
 		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
 	} elseif ($script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key -and (-not $script:AcIndexAsync) -and (-not $script:AcIndex)) {
-		$label.Text = 'Live search'; $panel.ToolTip = 'This tenant is too large to pre-load; name/email search runs live (slightly slower)'
+		$label.Text = 'Live tenant search'; $panel.ToolTip = 'This tenant is too large to pre-load; recipient search runs live (slightly slower).'
 		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	} else {
-		$label.Text = "Preparing search$([char]0x2026)"; $panel.ToolTip = 'Loading this tenant''s recipients so name/email search will be instant...'
+		$preparing = $true
+		$label.Text = "Preparing tenant search$([char]0x2026)"; $panel.ToolTip = "Loading this tenant's recipients so name/email lookups are instant. (This is not the script search.)"
 		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextFaintBrush')
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	}
+	if ($bar) { $bar.Visibility = if ($preparing) { 'Visible' } else { 'Collapsed' } }
 	$panel.Visibility = 'Visible'
 }
 

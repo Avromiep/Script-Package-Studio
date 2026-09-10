@@ -287,7 +287,7 @@ function New-PasteMembersDialog {
 	$verbLow  = if ($isRemove) { 'remove' } else { 'add' }
 	$prep     = if ($isRemove) { 'from' } else { 'to' }
 	$topLabel = "Paste text with the people to $verbLow (emails are pulled out automatically):"
-	$tgtLabel = "$verb them $prep these - distribution lists, shared mailboxes, or Teams / M365 groups, one per line:"
+	$tgtLabel = "$verb them $prep these - paste names + emails of distribution lists, shared mailboxes, or Teams / M365 groups; the addresses are pulled out automatically:"
 	$win = New-StyledDialog -Title "$verb members (paste)" -Icon '&#xED75;' -BodyXaml @"
 <StackPanel Margin="16" Width="480">
 	<Border Style="{DynamicResource Card}">
@@ -301,7 +301,12 @@ function New-PasteMembersDialog {
 			<TextBox x:Name="PastePreview" Style="{DynamicResource TextArea}" Height="90" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
 			<Border Style="{DynamicResource Divider}"/>
 			<TextBlock Text="$tgtLabel" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,0,0,4"/>
-			<TextBox x:Name="PasteTargets" Style="{DynamicResource TextArea}" Height="70" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<TextBox x:Name="PasteTargetsInput" Style="{DynamicResource TextArea}" Height="60" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<Grid Margin="0,8,0,4">
+				<TextBlock Text="Targets - edit if needed:" Style="{DynamicResource Dim}" HorizontalAlignment="Left"/>
+				<TextBlock x:Name="PasteTargetsCount" Style="{DynamicResource Small}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+			</Grid>
+			<TextBox x:Name="PasteTargetsPreview" Style="{DynamicResource TextArea}" Height="60" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
 			<Grid Margin="0,14,0,0">
 				<Button x:Name="PasteCancelBtn" Style="{DynamicResource BtnGhost}" Content="Cancel" HorizontalAlignment="Left" MinWidth="90"/>
 				<Button x:Name="PasteAddBtn" Style="{DynamicResource BtnPrimary}" Content="$verb All" HorizontalAlignment="Right" MinWidth="140"/>
@@ -313,7 +318,9 @@ function New-PasteMembersDialog {
 	$pasteBox   = $win.FindName('PasteInput')
 	$previewBox = $win.FindName('PastePreview')
 	$countText  = $win.FindName('PasteCount')
-	$targetsBox = $win.FindName('PasteTargets'); $targetsBox.Text = $TargetPrefill
+	$targetsInput   = $win.FindName('PasteTargetsInput')
+	$targetsPreview = $win.FindName('PasteTargetsPreview')
+	$targetsCount   = $win.FindName('PasteTargetsCount')
 	$result = @{ Counts = $null; Lines = $null; AnyFailed = $false; TargetCount = 0; Action = $Action }
 	$win.Tag = $result
 
@@ -324,13 +331,32 @@ function New-PasteMembersDialog {
 		$countText.Text = "$($emails.Count) unique"
 	}.GetNewClosure())
 
+	# Live: pull each target out of the pasted text (email in the line if present, else the whole
+	# line so a plain name/alias still works), de-duped - so pasting "Sales sales@x.com" lists just
+	# the address. Same paste-and-extract behavior as the members box.
+	$refreshTargets = {
+		$out = [System.Collections.Generic.List[string]]::new()
+		$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+		foreach ($line in ($targetsInput.Text -split "\r?\n")) {
+			$line = $line.Trim(); if (-not $line) { continue }
+			$em = @(Get-EmailsFromText $line)
+			$val = if ($em.Count) { $em[0] } else { $line }
+			if ($seen.Add($val)) { [void]$out.Add($val) }
+		}
+		$targetsPreview.Text = ($out -join "`r`n")
+		$targetsCount.Text = "$($out.Count) target(s)"
+	}.GetNewClosure()
+	$targetsInput.Add_TextChanged($refreshTargets)
+	$targetsInput.Text = $TargetPrefill
+	& $refreshTargets
+
 	$win.FindName('PasteCancelBtn').Add_Click({ $win.Close() }.GetNewClosure())
 
 	$win.FindName('PasteAddBtn').Add_Click({
 		$members = @(Get-EmailsFromText $previewBox.Text)
-		# targets: one per line; use the email in the line if present, else the whole line
+		# targets: read the extracted preview (email pulled per line, else the name/alias kept)
 		$targets = @()
-		foreach ($line in ($targetsBox.Text -split "\r?\n")) {
+		foreach ($line in ($targetsPreview.Text -split "\r?\n")) {
 			$line = $line.Trim(); if (-not $line) { continue }
 			$em = @(Get-EmailsFromText $line)
 			$targets += if ($em.Count) { $em[0] } else { $line }

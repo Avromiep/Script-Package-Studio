@@ -607,6 +607,16 @@ function Step-AcIndex {
 function Test-AcHasIndex {
 	return [bool]($script:AcIndex -and $script:AcWorker -and $script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key)
 }
+# Still warming up (connecting or indexing) - NOT yet ready and NOT decided-as-live. Used to show
+# the same "Preparing tenant search..." loading indicator inside a recipient dialog's dropdown, so
+# the state is visible even when a script window covers the home-screen status.
+function Test-AcPreparing {
+	if (-not (Test-AcBgEnabled)) { return $false }
+	if (-not $script:AcWorker) { return $false }
+	if (Test-AcHasIndex) { return $false }
+	if ($script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key -and (-not $script:AcIndexAsync) -and (-not $script:AcIndex)) { return $false }  # live (large tenant)
+	return $true
+}
 # Instant local search over the index, or $null if there's no usable index for the current tenant.
 function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
 	if ("$Term".Length -lt 1) { return $null }
@@ -688,24 +698,30 @@ function New-AcConnectingRow {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
 	$sp = New-Object System.Windows.Controls.StackPanel
-	# A full-width accent bar that PULSES its opacity - width-independent and started immediately,
-	# so it animates reliably inside the popup (no dependency on ActualWidth or a Loaded event).
-	$bar = New-Object System.Windows.Controls.Border
-	$bar.Height = 3; $bar.CornerRadius = New-Object System.Windows.CornerRadius 2
-	$bar.Background = $script:StyleDict['AccentBrush']
+	# A sliding indeterminate bar (a segment moving across a track) - the same loading bar as the
+	# home-screen status, so the dialog reflects the same state. Started inline so it animates
+	# (the UI thread is free while the background index loads); the track clips the overflow.
+	$track = New-Object System.Windows.Controls.Border
+	$track.Height = 3; $track.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$track.Background = $script:StyleDict['StrokeSoftBrush']; $track.ClipToBounds = $true
+	$seg = New-Object System.Windows.Controls.Border
+	$seg.Height = 3; $seg.Width = 70; $seg.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$seg.Background = $script:StyleDict['AccentBrush']; $seg.HorizontalAlignment = 'Left'
+	$tt = New-Object System.Windows.Media.TranslateTransform
+	$seg.RenderTransform = $tt
+	$track.Child = $seg
 	$tb = New-Object System.Windows.Controls.TextBlock
-	$tb.Text = "Preparing to search$([char]0x2026)"
+	$tb.Text = "Preparing tenant search$([char]0x2026)"
 	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
 	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-	[void]$sp.Children.Add($bar); [void]$sp.Children.Add($tb)
+	[void]$sp.Children.Add($track); [void]$sp.Children.Add($tb)
 	$si.Content = $sp
 	try {
 		$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-		$anim.From = 0.3; $anim.To = 1.0
-		$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.7))
-		$anim.AutoReverse = $true
+		$anim.From = -70; $anim.To = 660
+		$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.2))
 		$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-		$bar.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $anim)
+		$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
 	} catch {}
 	return $si
 }
@@ -831,11 +847,15 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 				$st = Step-AcWorker
 				if ($st -eq 'off') { if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }; $poll.Stop(); return }
 				if ($st -eq 'connecting' -or $st -eq 'wait') { return }    # still connecting/waiting: keep polling
-				# Worker is ready:
+				# Worker connected - advance the index so "preparing" finishes + the status stays in sync.
+				Start-AcIndex; Step-AcIndex; Update-AcStatus
 				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; $pending.Indicator = $false; Request-AcSearch $t $Prefer 12 $renderMatches; return }
 				Step-AcSearch                                              # renders a finished query (reads real $script:AcQ)
 				if (Test-AcBusy) { return }                                # a query is still running - keep polling
-				if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }  # connect done, nothing typed
+				if ($pending.Indicator) {
+					if (Test-AcPreparing) { return }                    # still indexing - keep the loading bar up
+					$popup.IsOpen = $false; $pending.Indicator = $false  # preparing finished - hide it
+				}
 				$poll.Stop()
 			} catch { try { $poll.Stop() } catch {} }
 		}.GetNewClosure())
@@ -855,6 +875,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 
 		$runQuery = {
 			$timer.Stop()
+			$pending.Indicator = $false   # a real search supersedes the "preparing" loading bar
 			$term = "$($TextBox.Text)".Trim()
 			if (Test-AcIsCompleteEmail $term) { $popup.IsOpen = $false; return }
 			# INSTANT: if the tenant's recipients were indexed on sign-in, filter that locally - no
@@ -885,6 +906,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			# tenant), show the animated indicator; once ready it disappears and stays quiet.
 			if (Test-AcBgEnabled) {
 				Start-AcWarmup
+				if (Test-AcPreparing) { & $showConnecting; $poll.Start() }
 				return
 			}
 			if (-not (Test-AcNeedsWarmup)) { return }

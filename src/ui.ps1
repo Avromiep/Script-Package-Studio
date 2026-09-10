@@ -446,6 +446,7 @@ function Reset-AcWorker {
 		try { $script:AcWorker.RS.Close(); $script:AcWorker.RS.Dispose() } catch {}
 	}
 	$script:AcWorker = $null
+	try { Update-AcStatus } catch {}
 }
 # Ensure a worker exists + is connecting/connected for the CURRENT tenant. Never blocks. Returns
 # 'ready' | 'connecting' | 'off' (flag off / not connected / EXO cmdlet missing / setup failed).
@@ -458,6 +459,11 @@ function Step-AcWorker {
 	if (-not (Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue)) { Write-BgOnce 'ExchangeOnlineManagement not available - using classic search'; return 'off' }
 	$key = Get-AcTenantKey
 	if (-not $key) { Write-BgOnce 'not connected to a tenant yet - using classic search'; return 'off' }
+	# Wait for the sign-in identity to fully populate before connecting the worker. Right after a
+	# sign-in the UPN can be momentarily blank; connecting then, and reconnecting once it fills in,
+	# wastes a runspace + a few seconds. The key is "tenantId|org|upn" - require the upn segment.
+	# 'wait' keeps the warm-up polling but makes searches fall back to live (never a stuck queue).
+	if (-not (($key -split '\|')[2])) { return 'wait' }
 	if ($script:AcWorkerFail -and $script:AcWorkerFail -ne $key) { $script:AcWorkerFail = '' }  # new tenant, retry
 	if ($script:AcWorkerFail -eq $key) { return 'off' }   # already failed this tenant - use sync, no thrash
 	if ($script:AcWorker -and $script:AcWorker.Key -ne $key) { Reset-AcWorker }   # tenant switched
@@ -592,14 +598,37 @@ function Step-AcIndex {
 		Write-BgLog "not indexing (rows=$($raw.Count) ok=$ok) - staying on live search."
 	}
 }
+# Is a usable recipient index loaded for the CURRENT tenant? When true, searches are instant and
+# can start from a single character (no network cost); when false the live search needs >=2 chars.
+function Test-AcHasIndex {
+	return [bool]($script:AcIndex -and $script:AcWorker -and $script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key)
+}
 # Instant local search over the index, or $null if there's no usable index for the current tenant.
 function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
-	if (-not $script:AcIndex) { return $null }
-	if (-not ($script:AcWorker -and $script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key)) { return $null }
+	if ("$Term".Length -lt 1) { return $null }
+	if (-not (Test-AcHasIndex)) { return $null }
 	$ic = [System.StringComparison]::OrdinalIgnoreCase
 	$hits = @($script:AcIndex | Where-Object { $_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic) })
 	return Format-AcMatches $hits $Prefer $Max
 }
+# Show the search state in the status bar so it's visible at a glance (no need to open the log).
+function Update-AcStatus {
+	$el = $null; try { $el = $script:UI.SearchStatusText } catch {}
+	if (-not $el) { return }
+	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $el.Visibility = 'Collapsed'; return }
+	if (Test-AcHasIndex) {
+		$el.Text = "Instant search ready ($(@($script:AcIndex).Count))"
+		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
+	} elseif ($script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key -and (-not $script:AcIndexAsync) -and (-not $script:AcIndex)) {
+		$el.Text = 'Live search (large tenant)'
+		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+	} else {
+		$el.Text = "Preparing instant search$([char]0x2026)"
+		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+	}
+	$el.Visibility = 'Visible'
+}
+
 # App-level driver: after sign-in, connect the worker + build the index in the background so later
 # searches are instant - independent of any field. Idempotent per tenant.
 $script:AcWarmupTimer = $null
@@ -611,11 +640,11 @@ function Start-AcWarmup {
 	$t.Add_Tick({
 		try {
 			$st = Step-AcWorker
-			if ($st -eq 'off') { $t.Stop(); return }
-			if ($st -ne 'ready') { return }
+			if ($st -eq 'off') { Update-AcStatus; $t.Stop(); return }
+			Update-AcStatus; if ($st -ne 'ready') { return }
 			Start-AcIndex
 			Step-AcIndex
-			if (Test-AcIndexSettled) { $t.Stop() }
+			Update-AcStatus; if (Test-AcIndexSettled) { $t.Stop() }
 		} catch { try { $t.Stop() } catch {} }
 	}.GetNewClosure())
 	$script:AcWarmupTimer = $t
@@ -788,7 +817,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			try {
 				$st = Step-AcWorker
 				if ($st -eq 'off') { if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }; $poll.Stop(); return }
-				if ($st -eq 'connecting') { return }                       # still connecting: keep animating
+				if ($st -eq 'connecting' -or $st -eq 'wait') { return }    # still connecting/waiting: keep polling
 				# Worker is ready:
 				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; $pending.Indicator = $false; Request-AcSearch $t $Prefer 12 $renderMatches; return }
 				Step-AcSearch                                              # renders a finished query (reads real $script:AcQ)
@@ -804,7 +833,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$startAsync = {
 			param($term)
 			$st = Step-AcWorker
-			if ($st -eq 'off') { return $false }
+			if ($st -eq 'off' -or $st -eq 'wait') { return $false }   # fall back to live/sync search
 			if ($st -eq 'ready') { Request-AcSearch $term $Prefer 12 $renderMatches }
 			else { & $showConnecting; $pending.Term = $term }
 			$poll.Start()
@@ -814,11 +843,13 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$runQuery = {
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
-			if ($term.Length -lt 2 -or (Test-AcIsCompleteEmail $term)) { $popup.IsOpen = $false; return }
+			if (Test-AcIsCompleteEmail $term) { $popup.IsOpen = $false; return }
 			# INSTANT: if the tenant's recipients were indexed on sign-in, filter that locally - no
-			# network, no wait, no indicator. This is the common case once the background index loads.
+			# network, no wait. Works from ONE character (it's free). This is the common case.
 			$idx = Get-AcIndexMatches $term $Prefer 12
 			if ($null -ne $idx) { & $renderMatches (@($idx)); return }
+			# No index -> live/network search needs at least 2 characters.
+			if ($term.Length -lt 2) { $popup.IsOpen = $false; return }
 			# Cache hit -> instant, no network round-trip (same in both modes).
 			if (-not (Test-AcWouldQueryNetwork $term)) { & $renderMatches (@(Get-RecipientMatches $term $Prefer 12)); return }
 			# Background mode: run the lookup off the UI thread (animated bar, no freeze). startAsync
@@ -857,8 +888,12 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$timer.Stop()
 			$t = "$($TextBox.Text)".Trim()
 			# Nothing to search (too short, or a complete address already typed/pasted) - close it.
-			if ($t.Length -lt 2 -or (Test-AcIsCompleteEmail $t)) { $popup.IsOpen = $false; return }
-			if (Test-AcWouldQueryNetwork $t) { $timer.Start() } else { & $runQuery }
+			if (Test-AcIsCompleteEmail $t) { $popup.IsOpen = $false; return }
+			# Indexed tenant: search instantly from the FIRST character, no debounce.
+				if ((Test-AcHasIndex) -and $t.Length -ge 1) { & $runQuery; return }
+				# Live search needs >=2 chars; a network fetch is debounced, a cache narrow is instant.
+				if ($t.Length -lt 2) { $popup.IsOpen = $false; return }
+				if (Test-AcWouldQueryNetwork $t) { $timer.Start() } else { & $runQuery }
 		}.GetNewClosure())
 		$TextBox.Add_PreviewKeyDown({
 			param($s, $e)

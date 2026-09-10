@@ -561,31 +561,25 @@ function New-AcConnectingRow {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
 	$sp = New-Object System.Windows.Controls.StackPanel
-	$track = New-Object System.Windows.Controls.Border
-	$track.Height = 3; $track.CornerRadius = New-Object System.Windows.CornerRadius 2
-	$track.Background = $script:StyleDict['StrokeBrush']; $track.ClipToBounds = $true
-	$seg = New-Object System.Windows.Controls.Border
-	$seg.Height = 3; $seg.Width = 90; $seg.CornerRadius = New-Object System.Windows.CornerRadius 2
-	$seg.Background = $script:StyleDict['AccentBrush']; $seg.HorizontalAlignment = 'Left'
-	$tt = New-Object System.Windows.Media.TranslateTransform
-	$seg.RenderTransform = $tt
-	$track.Child = $seg
+	# A full-width accent bar that PULSES its opacity - width-independent and started immediately,
+	# so it animates reliably inside the popup (no dependency on ActualWidth or a Loaded event).
+	$bar = New-Object System.Windows.Controls.Border
+	$bar.Height = 3; $bar.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$bar.Background = $script:StyleDict['AccentBrush']
 	$tb = New-Object System.Windows.Controls.TextBlock
 	$tb.Text = "Preparing to search$([char]0x2026)"
 	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
 	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-	[void]$sp.Children.Add($track); [void]$sp.Children.Add($tb)
+	[void]$sp.Children.Add($bar); [void]$sp.Children.Add($tb)
 	$si.Content = $sp
-	$track.Add_Loaded({
-		try {
-			$w = [Math]::Max(240, $track.ActualWidth)
-			$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-			$anim.From = -90; $anim.To = $w
-			$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.1))
-			$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-			$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
-		} catch {}
-	}.GetNewClosure())
+	try {
+		$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+		$anim.From = 0.3; $anim.To = 1.0
+		$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.7))
+		$anim.AutoReverse = $true
+		$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+		$bar.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $anim)
+	} catch {}
 	return $si
 }
 

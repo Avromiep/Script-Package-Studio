@@ -1,4 +1,4 @@
-$version = "v3.1.72"
+$version = "v3.1.73"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -255,6 +255,13 @@ $mainXaml = @"
 								<TextBlock Text="Scripts" Style="{DynamicResource H2}"/>
 								<TextBlock x:Name="ScriptCountText" Style="{DynamicResource Small}"
 										   Margin="10,4,0,0" VerticalAlignment="Center"/>
+								<StackPanel x:Name="SearchStatusPanel" Orientation="Horizontal" VerticalAlignment="Center"
+											Margin="16,2,0,0" Visibility="Collapsed" ToolTip="Status of name/email search - not a button">
+									<TextBlock x:Name="SearchStatusIcon" Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="13"
+											   Foreground="{DynamicResource TextFaintBrush}" VerticalAlignment="Center"/>
+									<TextBlock x:Name="SearchStatusLabel" Text="Preparing search" Style="{DynamicResource Small}"
+											   Margin="5,0,0,0" VerticalAlignment="Center"/>
+								</StackPanel>
 							</StackPanel>
 						</Grid>
 						<Grid Grid.Row="1" Margin="0,10,0,0">
@@ -334,7 +341,6 @@ $mainXaml = @"
 						<TextBlock x:Name="StatusText" Text="Ready" Style="{DynamicResource Dim}"
 								   Margin="8,0,0,0" VerticalAlignment="Center"/>
 					</StackPanel>
-					<TextBlock x:Name="SearchStatusText" Style="{DynamicResource Small}" VerticalAlignment="Center" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="230" Visibility="Collapsed"/>
 						<ProgressBar x:Name="MainProgress" Width="180" Height="6" Maximum="100"
 								 HorizontalAlignment="Right" VerticalAlignment="Center"/>
 				</Grid>
@@ -352,7 +358,7 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','SearchStatusText','MainProgress')) {
+		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','MainProgress')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el
@@ -394,8 +400,23 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 	-Value { $script:UI.MainProgress.Value } `
 	-SecondValue {
 		param($v)
-		$script:UI.MainProgress.Value = [double]$v
-		try { $script:UI.MainProgress.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
+		$pb = $script:UI.MainProgress
+		$target = [double]$v
+		# Glide smoothly to the new value (ease-out) instead of snapping between milestones - looks
+		# cleaner and reads as steadier progress. Reset (0) snaps instantly so it doesn't slide down.
+		try {
+			if ($target -le 0) {
+				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
+				$pb.Value = 0
+			} else {
+				$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+				$anim.To = $target
+				$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(280))
+				$anim.EasingFunction = New-Object System.Windows.Media.Animation.CubicEase
+				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $anim)
+			}
+		} catch { try { $pb.Value = $target } catch {} }
+		try { $pb.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
 	}
 
 # ---- tenant profiles ------------------------------------------------------------

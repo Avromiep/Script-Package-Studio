@@ -277,15 +277,19 @@ function ConvertTo-AcRows($Raw, [string]$Term, [string]$Tid, [int]$Max) {
 }
 
 # Rank (float the field's preferred kind up) + sort + trim cache rows into the final suggestion list.
-function Format-AcMatches($Rows, [string]$Prefer, [int]$Max) {
+function Format-AcMatches($Rows, [string]$Prefer, [int]$Max, [string]$Term = '') {
 	$target = switch ($Prefer) { 'Group' { 'Group' } 'Mailbox' { 'Mailbox' } 'User' { 'Mailbox' } default { '' } }
+	$ic = [System.StringComparison]::OrdinalIgnoreCase
 	$out = foreach ($r in $Rows) {
 		[pscustomobject]@{
 			Name = $r.Name; Email = $r.Email; Label = $r.Label
+			# A match on the NAME the user typed ranks above one that only matched by alias/email, so
+			# the first result always starts with what was typed (not a stray alias/email match).
+			NameRank = if ($Term -and "$($r.Name)".StartsWith($Term, $ic)) { 0 } else { 1 }
 			Rank = if ($target -and (Get-RecipientBucket $r.Rtd) -eq $target) { 0 } else { 1 }
 		}
 	}
-	return @($out | Sort-Object Rank, Name | Select-Object -First $Max)
+	return @($out | Sort-Object NameRank, Rank, Name | Select-Object -First $Max)
 }
 
 # The SYNCHRONOUS lookup (default path). Cache-narrow if possible, else one bounded server query
@@ -311,7 +315,7 @@ function Get-RecipientMatches([string]$Term, [string]$Prefer = 'Any', [int]$Max 
 		} catch { $raw = @() }
 		$rows = ConvertTo-AcRows $raw $Term $tid $Max
 	}
-	return Format-AcMatches $rows $Prefer $Max
+	return Format-AcMatches $rows $Prefer $Max $Term
 }
 
 # Would the NEXT lookup for $Term hit the network, or can it be served instantly from the prefix
@@ -539,7 +543,7 @@ function Step-AcSearch {
 	} else {
 		$tid = ((Get-AcTenantKey) -split '\|')[0]   # tenantId segment, for the prefix cache
 		$rows = ConvertTo-AcRows $raw $q.Term $tid $q.Max
-		$matches = Format-AcMatches $rows $q.Prefer $q.Max
+		$matches = Format-AcMatches $rows $q.Prefer $q.Max $q.Term
 	}
 	try { & $q.Render $matches } catch {}
 }
@@ -609,24 +613,30 @@ function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
 	if (-not (Test-AcHasIndex)) { return $null }
 	$ic = [System.StringComparison]::OrdinalIgnoreCase
 	$hits = @($script:AcIndex | Where-Object { $_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic) })
-	return Format-AcMatches $hits $Prefer $Max
+	return Format-AcMatches $hits $Prefer $Max $Term
 }
-# Show the search state in the status bar so it's visible at a glance (no need to open the log).
+# Reflect the search state as a status LIGHT on the home screen (a search icon + short label, not a
+# button): grey "Preparing search..." while it loads, green "Search ready" once instant search is
+# available, amber "Live search" for a tenant too large to index. At-a-glance, no log needed.
 function Update-AcStatus {
-	$el = $null; try { $el = $script:UI.SearchStatusText } catch {}
-	if (-not $el) { return }
-	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $el.Visibility = 'Collapsed'; return }
+	$panel = $null; $icon = $null; $label = $null
+	try { $panel = $script:UI.SearchStatusPanel; $icon = $script:UI.SearchStatusIcon; $label = $script:UI.SearchStatusLabel } catch {}
+	if (-not ($panel -and $icon -and $label)) { return }
+	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $panel.Visibility = 'Collapsed'; return }
 	if (Test-AcHasIndex) {
-		$el.Text = "Instant search ready ($(@($script:AcIndex).Count))"
-		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
+		$label.Text = 'Search ready'; $panel.ToolTip = "Name/email search is ready - instant ($(@($script:AcIndex).Count) recipients loaded)"
+		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
+		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
 	} elseif ($script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key -and (-not $script:AcIndexAsync) -and (-not $script:AcIndex)) {
-		$el.Text = 'Live search (large tenant)'
-		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+		$label.Text = 'Live search'; $panel.ToolTip = 'This tenant is too large to pre-load; name/email search runs live (slightly slower)'
+		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	} else {
-		$el.Text = "Preparing instant search$([char]0x2026)"
-		$el.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+		$label.Text = "Preparing search$([char]0x2026)"; $panel.ToolTip = 'Loading this tenant''s recipients so name/email search will be instant...'
+		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextFaintBrush')
+		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	}
-	$el.Visibility = 'Visible'
+	$panel.Visibility = 'Visible'
 }
 
 # App-level driver: after sign-in, connect the worker + build the index in the background so later

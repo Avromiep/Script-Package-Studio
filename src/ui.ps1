@@ -423,6 +423,8 @@ function Write-BgLog([string]$msg) {
 	try { Write-Host "bg: $msg" } catch {}
 	try { $p = Join-Path (Split-Path $script:SrcDir -Parent) 'Logs\bg-search.txt'; "[$([datetime]::Now.ToString('s'))] $msg" | Out-File -LiteralPath $p -Append -Encoding utf8 } catch {}
 }
+$script:AcOffMsg = ''
+function Write-BgOnce([string]$m) { if ($script:AcOffMsg -ne $m) { $script:AcOffMsg = $m; Write-BgLog $m } }
 
 # Identity string for the current connection - "tenantId|org|upn". Changing it means a switch.
 function Get-AcTenantKey {
@@ -440,15 +442,20 @@ function Reset-AcWorker {
 # Ensure a worker exists + is connecting/connected for the CURRENT tenant. Never blocks. Returns
 # 'ready' | 'connecting' | 'off' (flag off / not connected / EXO cmdlet missing / setup failed).
 function Step-AcWorker {
+	if ($env:SP_TEST -or $env:SP_SHOT) { return 'off' }   # never spin a real worker in test/shot runs
 	if (-not ($script:Settings -and $script:Settings.bgSearch)) { return 'off' }
-	if (-not (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue)) { return 'off' }
+	# Gate on the MODULE being present (Connect-ExchangeOnline), NOT on Get-EXORecipient in THIS
+	# runspace - that cmdlet may not be loaded in the app's main runspace even though the worker
+	# (which imports its own module) has it. The worker query falls back to Get-Recipient anyway.
+	if (-not (Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue)) { Write-BgOnce 'ExchangeOnlineManagement not available - using classic search'; return 'off' }
 	$key = Get-AcTenantKey
-	if (-not $key) { return 'off' }
+	if (-not $key) { Write-BgOnce 'not connected to a tenant yet - using classic search'; return 'off' }
 	if ($script:AcWorkerFail -and $script:AcWorkerFail -ne $key) { $script:AcWorkerFail = '' }  # new tenant, retry
 	if ($script:AcWorkerFail -eq $key) { return 'off' }   # already failed this tenant - use sync, no thrash
 	if ($script:AcWorker -and $script:AcWorker.Key -ne $key) { Reset-AcWorker }   # tenant switched
 	if (-not $script:AcWorker) {
 		try {
+			$script:AcOffMsg = ''
 			$rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
 			$parts = $key -split '\|'; $org = $parts[1]; $upn = $parts[2]
 			$ps = [PowerShell]::Create(); $ps.Runspace = $rs
@@ -495,10 +502,10 @@ function Request-AcSearch([string]$Term, [string]$Prefer, [int]$Max, [scriptbloc
 	try {
 		$ps = [PowerShell]::Create(); $ps.Runspace = $script:AcWorker.RS
 		[void]$ps.AddScript({
-			param($filter, $max)
-			Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails -ResultSize $max -ErrorAction Stop |
+			param($filter, $term, $max)
+			$(if (Get-Command Get-EXORecipient -ErrorAction SilentlyContinue) { Get-EXORecipient -Filter $filter -Properties DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails -ResultSize $max -ErrorAction Stop } else { Get-Recipient -Anr $term -ResultSize $max -ErrorAction Stop }) |
 				Select-Object DisplayName, PrimarySmtpAddress, Alias, RecipientTypeDetails
-		}).AddParameters(@{ filter = $filter; max = $Max }) | Out-Null
+		}).AddParameters(@{ filter = $filter; term = $Term; max = $Max }) | Out-Null
 		$script:AcQ = @{ PS = $ps; Async = $ps.BeginInvoke(); Gen = $script:AcQGen; Render = $Render; Term = $Term; Prefer = $Prefer; Max = $Max }
 	} catch { $script:AcQ = $null }
 }

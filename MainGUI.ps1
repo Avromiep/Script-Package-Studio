@@ -1,4 +1,4 @@
-$version = "v3.1.71"
+$version = "v3.1.72"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -334,7 +334,8 @@ $mainXaml = @"
 						<TextBlock x:Name="StatusText" Text="Ready" Style="{DynamicResource Dim}"
 								   Margin="8,0,0,0" VerticalAlignment="Center"/>
 					</StackPanel>
-					<ProgressBar x:Name="MainProgress" Width="180" Height="6" Maximum="100"
+					<TextBlock x:Name="SearchStatusText" Style="{DynamicResource Small}" VerticalAlignment="Center" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="230" Visibility="Collapsed"/>
+						<ProgressBar x:Name="MainProgress" Width="180" Height="6" Maximum="100"
 								 HorizontalAlignment="Right" VerticalAlignment="Center"/>
 				</Grid>
 			</Border>
@@ -351,7 +352,7 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','MainProgress')) {
+		'StatusDot','StatusText','SearchStatusText','MainProgress')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el

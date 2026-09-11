@@ -1,4 +1,4 @@
-# Script-Package - shared UI framework (WPF, BatchAV Studio design system)
+﻿# Script-Package - shared UI framework (WPF, BatchAV Studio design system)
 
 # Styles.xaml is copied unchanged from BatchAV Studio; this small dictionary adds
 # the one control that project never used (DatePicker), themed to match. It gets
@@ -163,6 +163,7 @@ function New-StyledDialog {
 			<Grid.RowDefinitions>
 				<RowDefinition Height="42"/>
 				<RowDefinition Height="Auto"/>
+				<RowDefinition Height="Auto"/>
 			</Grid.RowDefinitions>
 			<Border Grid.Row="0" Background="{DynamicResource PanelBrush}"
 					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,0,0,1">
@@ -185,6 +186,20 @@ function New-StyledDialog {
 			<Grid Grid.Row="1">
 $BodyXaml
 			</Grid>
+			<Border Grid.Row="2" x:Name="DlgSearchStatusPanel" Background="{DynamicResource PanelBrush}"
+					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,1,0,0" Padding="16,7" Visibility="Collapsed">
+				<StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+					<TextBlock x:Name="DlgSearchStatusIcon" Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="13"
+							   Foreground="{DynamicResource TextFaintBrush}" VerticalAlignment="Center"/>
+					<TextBlock x:Name="DlgSearchStatusLabel" Style="{DynamicResource Small}" Margin="5,0,0,0" VerticalAlignment="Center"/>
+					<Border x:Name="DlgSearchStatusBar" Width="64" Height="3" Margin="9,1,0,0" CornerRadius="2" ClipToBounds="True"
+							Background="{DynamicResource StrokeSoftBrush}" VerticalAlignment="Center" Visibility="Collapsed">
+						<Border Width="26" Height="3" CornerRadius="2" HorizontalAlignment="Left" Background="{DynamicResource AccentBrush}">
+							<Border.RenderTransform><TranslateTransform x:Name="DlgSearchStatusBarTT"/></Border.RenderTransform>
+						</Border>
+					</Border>
+				</StackPanel>
+			</Border>
 		</Grid>
 	</Border>
 </Window>
@@ -421,6 +436,75 @@ $script:AcQ          = $null   # in-flight query: @{ PS; Async; Gen; Render; Ter
 $script:AcQGen       = 0
 $script:AcWorkerFail = ''      # tenant key whose bg connect failed - fall back to sync, don't retry
 
+# ITU E.164 country calling codes (1-3 digits). Used to split a "+CC national" number so we can
+# format MFA phone numbers the way Microsoft Graph wants them: "+<cc> <national digits>".
+$script:CallingCodes = [System.Collections.Generic.HashSet[string]]::new([string[]]@(
+	'1','7',
+	'20','27','30','31','32','33','34','36','39','40','41','43','44','45','46','47','48','49',
+	'51','52','53','54','55','56','57','58','60','61','62','63','64','65','66',
+	'81','82','84','86','90','91','92','93','94','95','98',
+	'211','212','213','216','218','220','221','222','223','224','225','226','227','228','229',
+	'230','231','232','233','234','235','236','237','238','239','240','241','242','243','244','245','246','247','248','249',
+	'250','251','252','253','254','255','256','257','258','260','261','262','263','264','265','266','267','268','269',
+	'290','291','297','298','299',
+	'350','351','352','353','354','355','356','357','358','359',
+	'370','371','372','373','374','375','376','377','378','379','380','381','382','383','385','386','387','389',
+	'420','421','423','500','501','502','503','504','505','506','507','508','509',
+	'590','591','592','593','594','595','596','597','598','599',
+	'670','672','673','674','675','676','677','678','679','680','681','682','683','685','686','687','688','689','690','691','692',
+	'800','808','850','852','853','855','856','870','878','880','881','882','883','886','888',
+	'960','961','962','963','964','965','966','967','968','970','971','972','973','974','975','976','977','979',
+	'992','993','994','995','996','998'
+))
+# Greedy longest-match (3 -> 2 -> 1 digits) of a valid calling code at the start of a digit string.
+function Get-AcCallingCode([string]$Digits) {
+	for ($n = [Math]::Min(3, $Digits.Length); $n -ge 1; $n--) {
+		$c = $Digits.Substring(0, $n)
+		if ($script:CallingCodes.Contains($c)) { return $c }
+	}
+	return ''
+}
+# Normalize a phone number to the format Microsoft Graph's MFA phone method expects: "+<cc> <number>"
+# (country code, one space, then the national number with no separators). The user no longer has to
+# type the "+1 " themselves. Rules:
+#   * already-correct input ("+1 2224446666") round-trips unchanged (idempotent).
+#   * a bare US/Canada number (10 digits, or 11 starting with 1) becomes "+1 <10 digits>".
+#   * an international number is recognized when it carries its country code, entered as "+CC ..."
+#     OR with the "00" international prefix (00CC...) - the "+" and spacing are then fixed for you.
+#   * anything we can't confidently parse (odd length, unknown code) is returned untouched so a
+#     hand-formatted value is never mangled and Graph can report its own error.
+function Format-PhoneForMfa([string]$Raw, [string]$DefaultCc = '1') {
+	if ([string]::IsNullOrWhiteSpace($Raw)) { return $Raw }
+	$s = $Raw.Trim()
+	$digits = ($s -replace '[^\d]', '')
+	if (-not $digits) { return $Raw }
+	$hasCc = $s.StartsWith('+')
+	if (-not $hasCc -and $digits.StartsWith('00')) { $hasCc = $true; $digits = $digits.Substring(2) }  # 00 = intl prefix -> has a country code
+	if ($hasCc) {
+		$cc = Get-AcCallingCode $digits
+		if (-not $cc) { return $Raw }                       # unknown code - don't guess/mangle
+		$nat = $digits.Substring($cc.Length)
+		if (-not $nat) { return $Raw }
+		return "+$cc $nat"
+	}
+	# No country code given -> assume the default region (US/Canada by default).
+	if ($DefaultCc -eq '1') {
+		if ($digits.Length -eq 11 -and $digits[0] -eq '1') { return '+1 ' + $digits.Substring(1) }
+		if ($digits.Length -eq 10) { return "+1 $digits" }
+		return $Raw                                          # not a recognizable NANP number - leave as typed
+	}
+	return "+$DefaultCc $digits"
+}
+# Friendly label for a Graph phone method type (mobile / alternateMobile / office).
+function Get-PhoneTypeLabel([string]$Type) {
+	switch ("$Type".ToLower()) {
+		'mobile'          { 'Mobile' }
+		'alternatemobile' { 'Alternate mobile' }
+		'office'          { 'Office' }
+		default           { if ($Type) { $Type } else { 'Mobile' } }
+	}
+}
+
 # Diagnostic log for the background worker (Activity log + Logs\bg-search.txt) so a failed silent
 # connect is visible instead of silently falling back.
 function Write-BgLog([string]$msg) {
@@ -625,17 +709,20 @@ function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
 	$hits = @($script:AcIndex | Where-Object { $_.Name.StartsWith($Term, $ic) -or $_.Alias.StartsWith($Term, $ic) -or $_.Email.StartsWith($Term, $ic) })
 	return Format-AcMatches $hits $Prefer $Max $Term
 }
-# Reflect the search state as a status LIGHT on the home screen (a search icon + short label, not a
-# button): grey "Preparing search..." while it loads, green "Search ready" once instant search is
-# available, amber "Live search" for a tenant too large to index. At-a-glance, no log needed.
-function Update-AcStatus {
-	$panel = $null; $icon = $null; $label = $null; $bar = $null
-	try { $panel = $script:UI.SearchStatusPanel; $icon = $script:UI.SearchStatusIcon; $label = $script:UI.SearchStatusLabel; $bar = $script:UI.SearchStatusBar } catch {}
+# The search state is shown as an identical status LIGHT (search icon + short label + sliding bar)
+# in several places at once: the home screen AND every open recipient dialog. Each place registers
+# a "target" (its set of elements); Update-AcStatus renders the current state to all of them so
+# they stay perfectly in sync. Grey "Preparing tenant search..." while it loads, green "Tenant
+# search ready" once instant, amber "Live tenant search" for a tenant too large to index.
+$script:AcStatusTargets = [System.Collections.Generic.List[object]]::new()
+
+function Set-AcStatusTarget($t) {
+	$panel = $t.Panel; $icon = $t.Icon; $label = $t.Label; $bar = $t.Bar
 	if (-not ($panel -and $icon -and $label)) { return }
 	$preparing = $false
 	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $panel.Visibility = 'Collapsed'; if ($bar) { $bar.Visibility = 'Collapsed' }; return }
 	if (Test-AcHasIndex) {
-		$label.Text = 'Tenant search ready'; $panel.ToolTip = "Tenant recipient search is ready - instant ($(@($script:AcIndex).Count) loaded). This is separate from the script search box above."
+		$label.Text = 'Tenant search ready'; $panel.ToolTip = "Tenant recipient search is ready - instant ($(@($script:AcIndex).Count) loaded)."
 		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'SuccessBrush')
 	} elseif ($script:AcWorker.Ready -and $script:AcIndexKey -eq $script:AcWorker.Key -and (-not $script:AcIndexAsync) -and (-not $script:AcIndex)) {
@@ -644,13 +731,35 @@ function Update-AcStatus {
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	} else {
 		$preparing = $true
-		$label.Text = "Preparing tenant search$([char]0x2026)"; $panel.ToolTip = "Loading this tenant's recipients so name/email lookups are instant. (This is not the script search.)"
+		$label.Text = "Preparing tenant search$([char]0x2026)"; $panel.ToolTip = "Loading this tenant's recipients so name/email lookups are instant."
 		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextFaintBrush')
 		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
 	}
 	if ($bar) { $bar.Visibility = if ($preparing) { 'Visible' } else { 'Collapsed' } }
 	$panel.Visibility = 'Visible'
 }
+function Update-AcStatus {
+	foreach ($t in @($script:AcStatusTargets)) { try { Set-AcStatusTarget $t } catch {} }
+}
+# Register a place to show the status (home screen or a dialog). Starts its sliding-bar animation
+# (Forever, on the render thread) and paints the current state. Returns the target to unregister.
+function Register-AcStatusTarget($Panel, $Icon, $Label, $Bar, $BarTT) {
+	if (-not ($Panel -and $Icon -and $Label)) { return $null }
+	$t = [pscustomobject]@{ Panel = $Panel; Icon = $Icon; Label = $Label; Bar = $Bar; BarTT = $BarTT }
+	if ($BarTT) {
+		try {
+			$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+			$anim.From = -26; $anim.To = 64
+			$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.95))
+			$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+			$BarTT.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
+		} catch {}
+	}
+	[void]$script:AcStatusTargets.Add($t)
+	Set-AcStatusTarget $t
+	return $t
+}
+function Unregister-AcStatusTarget($t) { if ($t) { try { [void]$script:AcStatusTargets.Remove($t) } catch {} } }
 
 # App-level driver: after sign-in, connect the worker + build the index in the background so later
 # searches are instant - independent of any field. Idempotent per tenant.
@@ -759,6 +868,20 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 	if (-not $TextBox) { return }
 	if ($script:Settings -and $script:Settings.recipientSearch -eq $false) { return }   # disabled in Settings
 	Set-FieldWatermark $TextBox 'Name or email address'
+	# When this field's dialog is shown, mirror the home-screen search-status light onto it (once per
+	# dialog) so the state is visible even though the dialog covers the home screen, and start the
+	# warm-up so it updates live. Registered on Loaded (the window is in the tree by then).
+	$TextBox.Add_Loaded({
+		try {
+			$w = [System.Windows.Window]::GetWindow($TextBox)
+			if ($w -and -not $w.Resources.Contains('AcReg')) {
+				$w.Resources['AcReg'] = $true
+				$tgt = Register-AcStatusTarget $w.FindName('DlgSearchStatusPanel') $w.FindName('DlgSearchStatusIcon') $w.FindName('DlgSearchStatusLabel') $w.FindName('DlgSearchStatusBar') $w.FindName('DlgSearchStatusBarTT')
+				if ($tgt) { $w.Add_Closed({ Unregister-AcStatusTarget $tgt }.GetNewClosure()) }
+				Start-AcWarmup
+			}
+		} catch {}
+	}.GetNewClosure())
 	try {
 		$borderXaml = @'
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -836,52 +959,41 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 
-		# Background path plumbing. $pending.Term = a search queued while the worker is still
-		# connecting; $pending.Indicator = the animated "Preparing to search..." row is on screen (we
-		# show it ONCE, during the connect - not per keystroke). An ~80ms poll advances the connect
-		# and renders finished queries, self-stopping when idle.
-		$pending = [pscustomobject]@{ Term = ''; Indicator = $false }
-		# Show the one-time animated connecting indicator (only if it isn't already up).
-		$showConnecting = {
-			if (-not $pending.Indicator) { $list.Items.Clear(); [void]$list.Items.Add((New-AcConnectingRow)); & $sizePopup; $popup.IsOpen = $true; $pending.Indicator = $true }
-		}.GetNewClosure()
+		# $pending.Term = a live search queued while the worker is still connecting. An ~80ms poll
+		# dispatches it once the worker is ready and renders finished queries, self-stopping when
+		# idle. The "preparing" state shows on the dialog/home-screen status light, NOT the dropdown.
+		$pending = [pscustomobject]@{ Term = '' }
 		$poll = New-Object System.Windows.Threading.DispatcherTimer
 		$poll.Interval = [TimeSpan]::FromMilliseconds(80)
 		$poll.Add_Tick({
 			try {
 				$st = Step-AcWorker
-				if ($st -eq 'off') { if ($pending.Indicator) { $popup.IsOpen = $false; $pending.Indicator = $false }; $poll.Stop(); return }
+				if ($st -eq 'off') { $poll.Stop(); return }
 				if ($st -eq 'connecting' -or $st -eq 'wait') { return }    # still connecting/waiting: keep polling
-				# Worker connected - advance the index so "preparing" finishes + the status stays in sync.
+				# Worker connected - advance the index so the status light stays in sync.
 				Start-AcIndex; Step-AcIndex; Update-AcStatus
-				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; $pending.Indicator = $false; Request-AcSearch $t $Prefer 12 $renderMatches; return }
+				if ($pending.Term) { $t = $pending.Term; $pending.Term = ''; Request-AcSearch $t $Prefer 12 $renderMatches; return }
 				Step-AcSearch                                              # renders a finished query (reads real $script:AcQ)
 				if (Test-AcBusy) { return }                                # a query is still running - keep polling
-				if ($pending.Indicator) {
-					if (Test-AcPreparing) { return }                    # still indexing - keep the loading bar up
-					$pending.Indicator = $false                         # ready now - run the typed search instantly
-					if ("$($TextBox.Text)".Trim().Length -ge 1) { & $runQuery } else { $popup.IsOpen = $false }
-				}
 				$poll.Stop()
 			} catch { try { $poll.Stop() } catch {} }
 		}.GetNewClosure())
 
-		# Kick off a background lookup. If the worker is ready, dispatch quietly (no per-search
-		# indicator - results just appear). If it's still doing its one-time connect, show the
-		# animated indicator once and queue the term. Returns $false if background search is off.
+		# Kick off a background lookup. If the worker is ready, dispatch quietly (results just
+		# appear). If it's still doing its one-time connect, queue the term - the status light shows
+		# "preparing" meanwhile. Returns $false if background search is off / not connected.
 		$startAsync = {
 			param($term)
 			$st = Step-AcWorker
 			if ($st -eq 'off' -or $st -eq 'wait') { return $false }   # fall back to live/sync search
 			if ($st -eq 'ready') { Request-AcSearch $term $Prefer 12 $renderMatches }
-			else { & $showConnecting; $pending.Term = $term }
+			else { $pending.Term = $term }
 			$poll.Start()
 			return $true
 		}.GetNewClosure()
 
 		$runQuery = {
 			$timer.Stop()
-			$pending.Indicator = $false   # a real search supersedes the "preparing" loading bar
 			$term = "$($TextBox.Text)".Trim()
 			if (Test-AcIsCompleteEmail $term) { $popup.IsOpen = $false; return }
 			# INSTANT: if the tenant's recipients were indexed on sign-in, filter that locally - no
@@ -912,7 +1024,6 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			# tenant), show the animated indicator; once ready it disappears and stays quiet.
 			if (Test-AcBgEnabled) {
 				Start-AcWarmup
-				if (Test-AcPreparing) { & $showConnecting; $poll.Start() }
 				return
 			}
 			if (-not (Test-AcNeedsWarmup)) { return }
@@ -930,10 +1041,6 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			$t = "$($TextBox.Text)".Trim()
 			# A complete pasted/typed address has nothing to look up - close it.
 			if (Test-AcIsCompleteEmail $t) { $popup.IsOpen = $false; return }
-			# Still preparing the index: keep the "Preparing tenant search..." bar up (even as you
-			# type) so it's clear the fast search isn't ready yet; the poll runs the search the
-			# moment it becomes ready.
-			if (Test-AcPreparing) { & $showConnecting; $poll.Start(); return }
 			# Indexed tenant: search instantly from the FIRST character, no debounce.
 				if ((Test-AcHasIndex) -and $t.Length -ge 1) { & $runQuery; return }
 				# Live search needs >=2 chars; a network fetch is debounced, a cache narrow is instant.

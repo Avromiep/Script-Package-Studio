@@ -22,7 +22,9 @@ What it looks like:
 
 A modern WPF interface with dark and light themes (toggle in the title bar; your choice is remembered).
 
-**Tenant switcher:** Sign in to multiple Microsoft tenants and switch between them from the dropdown at the top. Saved tenants are remembered in `tenants.json` (names, accounts and tenant ids only - credentials stay in the Microsoft token caches), so switching to a known tenant usually reconnects without any prompt. Use *+ Add a tenant...* in the dropdown to sign in to another tenant, the trash button to forget one, and Connect/Disconnect to control the session. See the [scripts](#scripts) section below for which scripts need a connected tenant.
+**Tenant switcher:** Sign in to multiple Microsoft tenants and switch between them from the dropdown at the top. Saved tenants are remembered in `tenants.json` (names, accounts and tenant ids only - credentials stay in the Microsoft token caches), so switching to a known tenant usually reconnects without any prompt. Use *+ Add a tenant...* in the dropdown to sign in to another tenant, the trash button to forget one, and Connect/Disconnect to control the session without relaunching (Disconnect asks for confirmation first, so you can't drop the session by accident). See the [scripts](#scripts) section below for which scripts need a connected tenant.
+
+**Recipient search:** Fields that take an email address (member, mailbox, group, user...) offer type-ahead search of the connected tenant - start typing a name or address and pick the recipient from the dropdown; non-user mailboxes (shared, distribution list, Teams/M365 group, room) are tagged so you can tell them apart. On sign-in the app indexes the tenant's recipients in the background so lookups are instant; a small status light on the home screen (and mirrored onto any script window that uses the search) shows *Preparing tenant search* while it loads and *Tenant search ready* once it's done. The whole feature can be turned off under *Recipient search* in Settings.
 
 **Script browser:** Search with `Ctrl+F`, filter by category (Microsoft 365 / Active Directory / System / App), then run a script with double-click, `Enter`, or the Run button.
 
@@ -70,8 +72,10 @@ Add a single or multiple members to a Unified/Office365 Group.
 ### Add-2FA
 
 *Requires sign in.*  
-Add a phone number to an email for 2FA.  
-Also has options for bulk. 
+Add a phone number to a user for 2FA.  
+You don't have to type the `+1 ` yourself - enter a US/Canada number as plain digits (any format, e.g. `(222) 444-6666`) and the `+1` is added for you. For other countries, include the country code (with or without a `+`, e.g. `+44 20 7946 0958` or `00441234...`) and it's formatted the way Microsoft expects; a value you've already formatted correctly is left untouched.  
+**Show current** loads the numbers already registered for that user so you can see what's there before adding another, with a colored banner making it clear whether you're viewing the current numbers or adding a new one. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
+Also has options for bulk (the same number formatting applies to the CSV).
 
 ### Block-User
 

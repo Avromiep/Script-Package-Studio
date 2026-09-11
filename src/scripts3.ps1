@@ -75,11 +75,13 @@ function Remove-EmailAlias {
 				$aliasName = $splitAlias[0]
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
-				for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
+				for ($i = 0; $i -le $numericUpDown1.Value; $i++) {
 					$progressBar1.Value = 10
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
-					Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias}
-					Write-Host "Removed $completeAlias from $mailbox."
+					try {
+						Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias} -ErrorAction Stop
+						Write-Host "Removed $completeAlias from $mailbox."
+					} catch { Write-Host "  $completeAlias wasn't present - skipped." -ForegroundColor DarkGray }
 					$progressBar1.Value = 90
 				}
 				$progressBar1.Value = 90

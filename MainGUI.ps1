@@ -1,4 +1,4 @@
-﻿$version = "v3.1.78"
+﻿$version = "v3.1.79"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -347,14 +347,14 @@ $mainXaml = @"
 			<!-- Status bar -->
 			<Border Grid.Row="3" Background="{DynamicResource PanelBrush}"
 					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,1,0,0">
-				<!-- Status text and the progress bar sit in SEPARATE columns so the bar is never drawn on
-				     top of the text; a long status message ellipsizes before it reaches the bar. -->
-				<Grid Margin="14,0">
-					<Grid.ColumnDefinitions>
-						<ColumnDefinition Width="*"/>
-						<ColumnDefinition Width="Auto"/>
-					</Grid.ColumnDefinitions>
-					<Grid Grid.Column="0" VerticalAlignment="Center">
+				<!-- Progress bar spans the FULL WIDTH along the bottom, UNDERNEATH the status text, so it can
+				     never overlap a long "<script> finished at ..." message no matter how long the text is. -->
+				<Grid>
+					<Grid.RowDefinitions>
+						<RowDefinition Height="*"/>
+						<RowDefinition Height="Auto"/>
+					</Grid.RowDefinitions>
+					<Grid Grid.Row="0" Margin="14,0" VerticalAlignment="Center">
 						<Grid.ColumnDefinitions>
 							<ColumnDefinition Width="Auto"/>
 							<ColumnDefinition Width="*"/>
@@ -362,10 +362,11 @@ $mainXaml = @"
 						<Ellipse x:Name="StatusDot" Grid.Column="0" Width="8" Height="8" Fill="{DynamicResource SuccessBrush}"
 								 VerticalAlignment="Center"/>
 						<TextBlock x:Name="StatusText" Grid.Column="1" Text="Ready" Style="{DynamicResource Dim}"
-								   Margin="8,0,12,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+								   Margin="8,0,14,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
 					</Grid>
-					<ProgressBar x:Name="MainProgress" Grid.Column="1" Width="180" Height="6" Maximum="100"
-							 HorizontalAlignment="Right" VerticalAlignment="Center"/>
+					<ProgressBar x:Name="MainProgress" Grid.Row="1" Height="4" Maximum="100"
+							 Margin="14,0,14,6" HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
+							 Background="{DynamicResource StrokeSoftBrush}" BorderThickness="0"/>
 				</Grid>
 			</Border>
 		</Grid>
@@ -1387,8 +1388,9 @@ if ($env:SP_SHOT) {
 			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
 			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
 			$w.FindName('ShowCurrentBtn').Content = 'Clear'
+			$pc = [pscustomobject]@{ Group=$w.FindName('PhoneCcGroup'); Img=$w.FindName('FlagImg'); Chip=$w.FindName('FlagChip'); Code=$w.FindName('PhoneCcText') }
 			$w.FindName('PhoneInput').Text = '+44 20 7946 0958'
-			try { Update-AcFlagHost ([pscustomobject]@{ Panel=$w.FindName('FlagPanel'); Img=$w.FindName('FlagImg'); Chip=$w.FindName('FlagChip') }) '+44 20 7946 0958' } catch {}
+			try { Update-AcPhoneField $pc $w.FindName('PhoneInput') } catch {}
 			$w
 		}
 		'dlg-add-autoreply'      = {

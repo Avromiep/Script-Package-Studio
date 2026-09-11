@@ -697,29 +697,34 @@ function New-AcLoadingRow {
 function New-AcConnectingRow {
 	$si = New-Object System.Windows.Controls.ListBoxItem
 	$si.IsHitTestVisible = $false
-	$sp = New-Object System.Windows.Controls.StackPanel
-	# A sliding indeterminate bar (a segment moving across a track) - the same loading bar as the
-	# home-screen status, so the dialog reflects the same state. Started inline so it animates
-	# (the UI thread is free while the background index loads); the track clips the overflow.
+	# EXACTLY the home-screen status: search icon + "Preparing tenant search..." + a sliding bar,
+	# laid out horizontally. Started inline so the segment animates (the UI thread is free while the
+	# background index loads); the track clips the overflow.
+	$row = New-Object System.Windows.Controls.StackPanel
+	$row.Orientation = 'Horizontal'; $row.VerticalAlignment = 'Center'
+	$icon = New-Object System.Windows.Controls.TextBlock
+	$icon.Text = [string][char]0xEFD7; $icon.FontFamily = $script:StyleDict['IconFont']; $icon.FontSize = 13
+	$icon.Foreground = $script:StyleDict['TextFaintBrush']; $icon.VerticalAlignment = 'Center'
+	$label = New-Object System.Windows.Controls.TextBlock
+	$label.Text = "Preparing tenant search$([char]0x2026)"; $label.Foreground = $script:StyleDict['TextDimBrush']
+	$label.FontSize = 12; $label.FontStyle = 'Italic'; $label.VerticalAlignment = 'Center'
+	$label.Margin = New-Object System.Windows.Thickness (5, 0, 0, 0)
 	$track = New-Object System.Windows.Controls.Border
-	$track.Height = 3; $track.CornerRadius = New-Object System.Windows.CornerRadius 2
-	$track.Background = $script:StyleDict['StrokeSoftBrush']; $track.ClipToBounds = $true
+	$track.Width = 64; $track.Height = 3; $track.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$track.Background = $script:StyleDict['StrokeSoftBrush']; $track.ClipToBounds = $true; $track.VerticalAlignment = 'Center'
+	$track.Margin = New-Object System.Windows.Thickness (9, 1, 0, 0)
 	$seg = New-Object System.Windows.Controls.Border
-	$seg.Height = 3; $seg.Width = 70; $seg.CornerRadius = New-Object System.Windows.CornerRadius 2
+	$seg.Height = 3; $seg.Width = 26; $seg.CornerRadius = New-Object System.Windows.CornerRadius 2
 	$seg.Background = $script:StyleDict['AccentBrush']; $seg.HorizontalAlignment = 'Left'
 	$tt = New-Object System.Windows.Media.TranslateTransform
 	$seg.RenderTransform = $tt
 	$track.Child = $seg
-	$tb = New-Object System.Windows.Controls.TextBlock
-	$tb.Text = "Preparing tenant search$([char]0x2026)"
-	$tb.Foreground = $script:StyleDict['TextDimBrush']; $tb.FontSize = 12; $tb.FontStyle = 'Italic'
-	$tb.Margin = New-Object System.Windows.Thickness (0, 8, 0, 0)
-	[void]$sp.Children.Add($track); [void]$sp.Children.Add($tb)
-	$si.Content = $sp
+	[void]$row.Children.Add($icon); [void]$row.Children.Add($label); [void]$row.Children.Add($track)
+	$si.Content = $row
 	try {
 		$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-		$anim.From = -70; $anim.To = 660
-		$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.2))
+		$anim.From = -26; $anim.To = 64
+		$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.95))
 		$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
 		$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
 	} catch {}
@@ -854,7 +859,8 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 				if (Test-AcBusy) { return }                                # a query is still running - keep polling
 				if ($pending.Indicator) {
 					if (Test-AcPreparing) { return }                    # still indexing - keep the loading bar up
-					$popup.IsOpen = $false; $pending.Indicator = $false  # preparing finished - hide it
+					$pending.Indicator = $false                         # ready now - run the typed search instantly
+					if ("$($TextBox.Text)".Trim().Length -ge 1) { & $runQuery } else { $popup.IsOpen = $false }
 				}
 				$poll.Stop()
 			} catch { try { $poll.Stop() } catch {} }
@@ -922,8 +928,12 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 			if ($state.Suppress) { return }
 			$timer.Stop()
 			$t = "$($TextBox.Text)".Trim()
-			# Nothing to search (too short, or a complete address already typed/pasted) - close it.
+			# A complete pasted/typed address has nothing to look up - close it.
 			if (Test-AcIsCompleteEmail $t) { $popup.IsOpen = $false; return }
+			# Still preparing the index: keep the "Preparing tenant search..." bar up (even as you
+			# type) so it's clear the fast search isn't ready yet; the poll runs the search the
+			# moment it becomes ready.
+			if (Test-AcPreparing) { & $showConnecting; $poll.Start(); return }
 			# Indexed tenant: search instantly from the FIRST character, no debounce.
 				if ((Test-AcHasIndex) -and $t.Length -ge 1) { & $runQuery; return }
 				# Live search needs >=2 chars; a network fetch is debounced, a cache narrow is instant.

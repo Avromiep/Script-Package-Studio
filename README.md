@@ -26,7 +26,7 @@ A modern WPF interface with dark and light themes (toggle in the title bar; your
 
 **Recipient search:** Fields that take an email address (member, mailbox, group, user...) offer type-ahead search of the connected tenant - start typing a name or address and pick the recipient from the dropdown; non-user mailboxes (shared, distribution list, Teams/M365 group, room) are tagged so you can tell them apart. On sign-in the app indexes the tenant's recipients in the background so lookups are instant; a small status light on the home screen (and mirrored onto any script window that uses the search) shows *Preparing tenant search* while it loads and *Tenant search ready* once it's done. The whole feature can be turned off under *Recipient search* in Settings.
 
-**Script browser:** Search with `Ctrl+F`, filter by category (Microsoft 365 / Active Directory / System / App), then run a script with double-click, `Enter`, or the Run button.
+**Script browser:** Search with `Ctrl+F`, filter by category (Microsoft 365 / Active Directory / System / App), then run a script with double-click, `Enter`, or the Run button. Each script has a small **ⓘ** button (on its tile, and in the script's window) that opens a short, plain-language explanation of what it does and how to use it - written so a non-technical person can follow it.
 
 **Activity log:** Everything the scripts report is collected in the collapsible Activity drawer at the bottom (`Ctrl+L`), color-coded, with copy/clear buttons.
 

@@ -1,4 +1,4 @@
-$version = "v3.1.75"
+$version = "v3.1.76"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -233,8 +233,14 @@ $mainXaml = @"
 						<Button x:Name="ForgetTenantBtn" Grid.Column="3" Style="{DynamicResource IconBtn}"
 								Content="&#xE66D;" Margin="2,0,0,0"
 								ToolTip="Forget the selected tenant (removes it from this list)"/>
-						<Button x:Name="ConnectBtn" Grid.Column="4" Style="{DynamicResource BtnPrimary}"
-								Content="Sign In" MinWidth="96" Margin="8,0,0,0"/>
+						<Grid Grid.Column="4" Margin="8,0,0,0" VerticalAlignment="Center">
+							<Button x:Name="ConnectBtn" Style="{DynamicResource BtnPrimary}" Content="Sign In" MinWidth="96"/>
+							<StackPanel x:Name="ConnectedGroup" Visibility="Collapsed">
+								<TextBlock Text="Connected" Foreground="{DynamicResource SuccessBrush}" FontSize="11"
+										   HorizontalAlignment="Center" Margin="0,0,0,3"/>
+								<Button x:Name="DisconnectBtn" Style="{DynamicResource BtnSecondary}" Content="Disconnect" MinWidth="96"/>
+							</StackPanel>
+						</Grid>
 						<TextBlock x:Name="SignStatusText" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4"
 								   Text="Currently not signed in." Style="{DynamicResource Small}" Margin="1,7,0,0"/>
 					</Grid>
@@ -362,7 +368,7 @@ $script:Window = Read-XamlString $mainXaml
 
 $script:UI = @{}
 foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','ThemeIcon','MinBtn','MaxBtn','CloseBtn',
-		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn',
+		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn','ConnectedGroup','DisconnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
 		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
@@ -528,6 +534,8 @@ function Set-SignState([bool]$Connected, [string]$Text) {
 # connect so the user actually sees it; Update-TenantCombo resets it (to 'Connected' /
 # 'Connect') and re-enables the button when the sign-in finishes.
 function Set-ConnectingButton {
+	$script:UI.ConnectedGroup.Visibility = 'Collapsed'
+	$script:UI.ConnectBtn.Visibility = 'Visible'
 	$script:UI.ConnectBtn.Content = 'Connecting...'
 	$script:UI.ConnectBtn.IsEnabled = $false
 	$script:UI.ConnectBtn.ToolTip = $null
@@ -561,13 +569,13 @@ function Update-TenantCombo {
 		$script:UI.ForgetTenantBtn.IsEnabled = $script:Tenants.Count -gt 0
 		$script:UI.ConnectBtn.IsEnabled = $true
 		if ($script:ActiveTenant) {
-			$script:UI.ConnectBtn.Content = 'Disconnect'
-			$script:UI.ConnectBtn.ToolTip = 'Disconnect from this tenant (the green dot and text above show you are connected; you can reconnect anytime)'
-		} elseif ($script:Tenants.Count -gt 0) {
-			$script:UI.ConnectBtn.Content = 'Connect'
-			$script:UI.ConnectBtn.ToolTip = $null
+			# Connected: hide the Connect button; show the small "Connected" label + Disconnect button.
+			$script:UI.ConnectBtn.Visibility = 'Collapsed'
+			$script:UI.ConnectedGroup.Visibility = 'Visible'
 		} else {
-			$script:UI.ConnectBtn.Content = 'Sign In'
+			$script:UI.ConnectedGroup.Visibility = 'Collapsed'
+			$script:UI.ConnectBtn.Visibility = 'Visible'
+			$script:UI.ConnectBtn.Content = if ($script:Tenants.Count -gt 0) { 'Connect' } else { 'Sign In' }
 			$script:UI.ConnectBtn.ToolTip = $null
 		}
 	} finally {
@@ -1071,13 +1079,10 @@ $script:UI.TenantCombo.Add_SelectionChanged({ param($s, $e)
 })
 
 $script:UI.ConnectBtn.Add_Click({
-	if ($script:ActiveTenant) {
-		Disconnect-Tenant
-		return
-	}
 	$sel = Get-SelectedTenant
 	if ($sel) { Connect-Tenant $sel } else { Add-TenantSignIn }
 })
+$script:UI.DisconnectBtn.Add_Click({ Disconnect-Tenant })
 
 $script:UI.ForgetTenantBtn.Add_Click({
 	$sel = Get-SelectedTenant

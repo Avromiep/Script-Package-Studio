@@ -191,11 +191,11 @@ function New-StyledDialog {
 					</StackPanel>
 				</Grid>
 			</Border>
-			<Grid Grid.Row="1">
+			<Grid Grid.Row="2">
 $BodyXaml
 			</Grid>
-			<Border Grid.Row="2" x:Name="DlgSearchStatusPanel" Background="{DynamicResource PanelBrush}"
-					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,1,0,0" Padding="16,7" Visibility="Collapsed">
+			<Border Grid.Row="1" x:Name="DlgSearchStatusPanel" Background="{DynamicResource PanelBrush}"
+					BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="0,0,0,1" Padding="16,7" Visibility="Collapsed">
 				<StackPanel Orientation="Horizontal" VerticalAlignment="Center">
 					<TextBlock x:Name="DlgSearchStatusIcon" Text="&#xEFD7;" FontFamily="{DynamicResource IconFont}" FontSize="13"
 							   Foreground="{DynamicResource TextFaintBrush}" VerticalAlignment="Center"/>

@@ -1,4 +1,4 @@
-﻿$version = "v3.1.84"
+﻿$version = "v3.1.85"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -940,7 +940,7 @@ $script:ScriptHelp = @{
 	'New-ADAndEmailAccounts' = @{ What = 'Creates Active Directory accounts AND their licensed Microsoft 365 mailboxes in bulk.'; Steps = @('Enter the email domain, pick a license, fill in the template, and run.'); Tip = 'Buy enough licenses first, or the new mailboxes won''t get one assigned.' }
 	'New-EmailAccounts' = @{ What = 'Creates licensed Microsoft 365 accounts in bulk (mailboxes only, no Active Directory).'; Steps = @('Click Open Template, fill it in, pick a license, and run. Buy the licenses first.'); Tip = '' }
 	'Remove-DistributionListMember' = @{ What = 'Removes people from a distribution list.'; Steps = @('Type the list and the person to remove, then click Remove Member. Paste List handles many at once.'); Tip = '' }
-	'Remove-EmailAlias' = @{ What = 'Removes extra addresses (aliases) from a mailbox. The main address stays.'; Steps = @('Type the mailbox and the alias to remove, then click Remove. Bulk is available via the template.'); Tip = '' }
+	'Remove-EmailAlias' = @{ What = 'Removes extra addresses (aliases) from a mailbox. The main address stays.'; Steps = @('Type the mailbox and the alias to remove, then click Remove. Bulk is available via the template.'; 'To remove a batch of numbered aliases, tick Remove Incremental Aliases and set how many - it deletes name1, name2, and so on up to that number.'); Tip = 'It also clears an old name0 if one exists (left over from before numbering started at 1), so nothing is left behind. Any alias that is not there is just skipped.' }
 	'Remove-MailboxMember' = @{ What = 'Takes away someone''s access to another mailbox - Full Access, Send As, or Send on Behalf.'; Steps = @('Type the person and the mailbox, pick the permission to remove, and run. Paste List handles many at once.'); Tip = '' }
 	'Remove-UnifiedGroupMember' = @{ What = 'Removes people from a Teams / Microsoft 365 group.'; Steps = @('Type the group and the person, then click Remove Member. Paste List handles many at once.'); Tip = '' }
 	'Remove-UserFromAllGroups' = @{ What = 'Removes a person from all (or the ones you choose) of the tenant''s groups - distribution lists, Teams/M365 groups, and security groups. Handy when offboarding.'; Steps = @('Type the user, review the groups found, and remove them.'); Tip = '' }
@@ -1505,6 +1505,7 @@ if ($env:SP_SHOT) {
 			$w
 		}
 		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }
+		'dlg-help-removealias'   = { New-ScriptHelpDialog 'Remove-EmailAlias' }
 		'dlg-help-2fa'           = { New-ScriptHelpDialog 'Add-AuthenticationPhoneMethod' }
 		'dlg-add-autoreply'      = {
 			$w = New-AutoReplyDialog

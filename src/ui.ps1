@@ -184,7 +184,7 @@ function New-StyledDialog {
 					</StackPanel>
 					<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
 						<Button x:Name="DlgHelpBtn" Style="{DynamicResource TitleBtn}" Content="&#xEA88;"
-								Height="34" Visibility="Collapsed" ToolTip="What this does / how to use it"
+								Height="34" FontSize="17" Foreground="{DynamicResource AccentBrush}" Visibility="Collapsed" ToolTip="What this does / how to use it"
 								WindowChrome.IsHitTestVisibleInChrome="True"/>
 						<Button x:Name="DlgCloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE6D3;"
 								Height="34" WindowChrome.IsHitTestVisibleInChrome="True"/>
@@ -696,7 +696,9 @@ function Update-AcPhoneField($ctx, $TextBox) {
 	if ($t.StartsWith('+') -or $allDigits.StartsWith('00')) {
 		$d = if ($allDigits.StartsWith('00')) { $allDigits.Substring(2) } else { $allDigits }
 		$national = if ($d.StartsWith($info.Cc)) { $d.Substring($info.Cc.Length) } else { $d }
-		if ($national -ne $allDigits) {
+		# Lift the code out only once a national number follows it - so typing "+1" then the digits
+		# (e.g. "+1 8585555555") ends with 8585555555 in the box, no blanking flash while just "+1".
+		if ($national -and $national -ne $allDigits) {
 			$script:PhoneFmtBusy = $true
 			try { $TextBox.Text = $national; $TextBox.CaretIndex = $national.Length } finally { $script:PhoneFmtBusy = $false }
 		}

@@ -73,7 +73,7 @@ Add a single or multiple members to a Unified/Office365 Group.
 
 *Requires sign in.*  
 Add a phone number to a user for 2FA.  
-You don't have to type the `+1 ` yourself - enter a US/Canada number as plain digits (any format, e.g. `(222) 444-6666`) and the `+1` is added for you. For other countries, include the country code (with or without a `+`, e.g. `+44 20 7946 0958` or `00441234...`) and it's formatted the way Microsoft expects; a value you've already formatted correctly is left untouched.  
+You don't have to type the `+1 ` yourself - enter a US/Canada number as plain digits (any format, e.g. `(222) 444-6666`) and the `+1` is added for you. For other countries, include the country code (with or without a `+`, e.g. `+44 20 7946 0958` or `00441234...`) and it's formatted the way Microsoft expects; a value you've already formatted correctly is left untouched. A small country flag appears to the left of the box and updates as you type, so you can see which country the number is being read as.  
 **Show current** loads the numbers already registered for that user so you can see what's there before adding another, with a colored banner making it clear whether you're viewing the current numbers or adding a new one. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
 Also has options for bulk (the same number formatting applies to the CSV).
 

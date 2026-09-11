@@ -507,16 +507,25 @@ function New-AuthenticationPhoneDialog {
 			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
 			<Grid Margin="0,12,0,0">
 				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
 				</Grid.ColumnDefinitions>
 				<TextBlock Text="Email" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="EmailInput" Grid.Column="1"/>
-				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0" MinWidth="104"
-						ToolTip="Load this user's current 2FA phone numbers, then click again to clear"/>
 			</Grid>
+			<StackPanel Orientation="Horizontal" Margin="70,10,0,0">
+				<Button x:Name="ShowCurrentBtn" Style="{DynamicResource BtnSecondary}" Content="Show current" MinWidth="104"
+						ToolTip="Show this user's current 2FA methods; click again to hide"/>
+				<Button x:Name="RemoveMethodBtn" Style="{DynamicResource BtnSecondary}" Content="Remove a 2FA method" Margin="8,0,0,0"
+						ToolTip="Pick one of this user's 2FA methods to remove"/>
+			</StackPanel>
 			<Border x:Name="PhoneBanner" Margin="0,14,0,0" Padding="10,6" CornerRadius="6" BorderThickness="1">
 				<TextBlock x:Name="PhoneBannerText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
 			</Border>
+			<!-- Populated by "Show current" with a read-only row per registered 2FA method (any type).
+				 Removing is done from the "Remove a 2FA method" picker. Scrolls if there are many. -->
+			<ScrollViewer x:Name="MethodsScroller" MaxHeight="220" Margin="0,10,0,0" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+				<StackPanel x:Name="MethodsPanel"/>
+			</ScrollViewer>
 			<Grid Margin="0,12,0,0">
 				<Grid.ColumnDefinitions>
 					<ColumnDefinition Width="70"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
@@ -555,6 +564,70 @@ function New-AuthenticationPhoneDialog {
 	</Border>
 </StackPanel>
 '@
+}
+
+# Picker to remove ONE 2FA method: a single list you select from, instead of a Remove button on
+# every row. Builder (XAML only) + the show/remove logic are split so the dialog can be screenshotted.
+function New-RemoveMethodDialog {
+	New-StyledDialog -Title 'Remove a 2FA method' -Icon '&#xEE2F;' -BodyXaml @'
+<StackPanel Margin="16" Width="440">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="Remove a 2FA method" Style="{DynamicResource H3}"/>
+			<TextBlock x:Name="PickSub" Style="{DynamicResource Small}" Margin="0,4,0,0" TextWrapping="Wrap"
+					   Text="Select a method, then click Remove. This can't be undone."/>
+			<ListBox x:Name="PickList" Margin="0,12,0,0" MaxHeight="300" Background="Transparent" BorderThickness="0"
+					 ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+			<TextBlock x:Name="PickEmpty" Style="{DynamicResource Dim}" Margin="2,10,0,0" Visibility="Collapsed"
+					   Text="This user has no removable 2FA methods."/>
+			<Grid Margin="0,14,0,0">
+				<Button x:Name="PickCloseBtn" Style="{DynamicResource BtnSecondary}" Content="Close" HorizontalAlignment="Left" MinWidth="90"/>
+				<Button x:Name="PickRemoveBtn" Style="{DynamicResource BtnDanger}" Content="Remove" HorizontalAlignment="Right" MinWidth="110"/>
+			</Grid>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+}
+
+# Show the picker for $User's removable 2FA methods; remove the selected one(s). Returns $true if at
+# least one method was removed (so the caller can refresh its view). Reads live methods from Graph.
+function Show-RemoveMethodPicker([string]$User) {
+	$state = [pscustomobject]@{ Removed = $false }
+	$win = New-RemoveMethodDialog
+	$list = $win.FindName('PickList'); $empty = $win.FindName('PickEmpty')
+	$removeBtn = $win.FindName('PickRemoveBtn'); $closeBtn = $win.FindName('PickCloseBtn')
+
+	$reload = {
+		$list.Items.Clear()
+		$infos = @()
+		try { $infos = @(Get-MgUserAuthenticationMethod -UserId $User -ErrorAction Stop | ForEach-Object { Get-AuthMethodInfo $_ } | Where-Object { $_.Removable -and $_.Kind -ne 'Password' }) }
+		catch { Show-Notice 'Could not read methods' "Couldn't read $User's sign-in methods: $($_.Exception.Message)" 'Error'; return }
+		foreach ($info in ($infos | Sort-Object @{ Expression = { if ($_.Type -like '*phone*') { 0 } else { 5 } } }, Kind, Detail)) {
+			$it = New-Object System.Windows.Controls.ListBoxItem
+			$it.Content = (New-AuthMethodRow $info).Element
+			$it.Tag = $info
+			$it.Padding = '0'
+			[void]$list.Items.Add($it)
+		}
+		$empty.Visibility = if ($infos.Count) { 'Collapsed' } else { 'Visible' }
+		$removeBtn.IsEnabled = [bool]$infos.Count
+	}
+	& $reload
+
+	$removeBtn.Add_Click({
+		$sel = $list.SelectedItem
+		if (-not $sel) { Show-Notice 'Select a method' 'Pick which 2FA method to remove first.' 'Info'; return }
+		$info = $sel.Tag
+		$label = ("$($info.Kind) $($info.Detail)").Trim()
+		if (-not (Confirm-YesNo 'Remove 2FA method' "Remove `"$label`" from $User? They won't be able to use it for sign-in / MFA anymore.")) { return }
+		try { Remove-OneAuthMethod $User $info.Type $info.Id; Write-Host "Removed $label from $User." -ForegroundColor Green; $state.Removed = $true }
+		catch { Write-Host "Couldn't remove $label`: $($_.Exception.Message)" -ForegroundColor Red; Show-Notice 'Remove failed' "$($_.Exception.Message)" 'Error'; return }
+		& $reload
+	})
+	$closeBtn.Add_Click({ [System.Windows.Window]::GetWindow($closeBtn).Close() })
+	[void]$win.ShowDialog()
+	return $state.Removed
 }
 
 function Add-AuthenticationPhoneMethod {
@@ -639,29 +712,57 @@ function Add-AuthenticationPhoneMethod {
 		if (-not $script:PmSuppress -and $script:PmShowingCurrent) { Set-PhoneBannerNew }
 	})
 
-	# "Show current": read this user's registered 2FA phone numbers so you can see what's already
-	# there before adding another. Toggles: while a preview is shown, the button clears it.
+	$methodsScroller = $scriptForm8.FindName('MethodsScroller')
+	$methodsPanel = $scriptForm8.FindName('MethodsPanel')
+
+	# Build / refresh the READ-ONLY list of the user's current 2FA methods (any type, password
+	# excluded - it isn't 2FA). Removing is done from the "Remove a 2FA method" picker, so no
+	# per-row buttons. Returns $true if any exist, $false if none, $null on a read error / no user.
+	$refreshMethods = {
+		$u = $emailInput.Text.Trim()
+		$methodsPanel.Children.Clear()
+		if (-not $u) { return $null }
+		try { $all = @(Get-MgUserAuthenticationMethod -UserId $u -ErrorAction Stop) }
+		catch { Write-Host "Could not read sign-in methods for $u : $($_.Exception.Message)" -ForegroundColor Red; return $null }
+		$infos = @($all | ForEach-Object { Get-AuthMethodInfo $_ } | Where-Object { $_.Kind -ne 'Password' })
+		foreach ($info in ($infos | Sort-Object @{ Expression = { if ($_.Type -like '*phone*') { 0 } else { 5 } } }, Kind, Detail)) {
+			[void]$methodsPanel.Children.Add((New-AuthMethodRow $info).Element)
+		}
+		# default the new-number type to Alternate mobile if a primary mobile already exists
+		if ($typeAltChip -and ($infos | Where-Object { $_.Kind -eq 'Phone (Mobile)' })) { $typeAltChip.IsChecked = $true }
+		return [bool]$infos.Count
+	}
+
+	# "Show current": list this user's registered 2FA methods so you can see what they have before
+	# adding another. Read-only - use "Remove a 2FA method" to remove one. Toggles hide on re-click.
 	$showCurrentBtn.Add_Click({
-		if ($script:PmShowingCurrent) { Set-PhoneBannerNew; Write-Host 'Cleared the preview - the box adds a NEW number.' -ForegroundColor Cyan; return }
+		if ($script:PmShowingCurrent) { $methodsScroller.Visibility = 'Collapsed'; $methodsPanel.Children.Clear(); Set-PhoneBannerNew; Write-Host 'Closed the list - the box adds a NEW number.' -ForegroundColor Cyan; return }
 		$user = $emailInput.Text.Trim()
 		if (-not $user) { Write-Host 'Enter a user email address first.' -ForegroundColor Yellow; return }
-		Write-Host "Fetching current 2FA phone numbers for $user..."
+		Write-Host "Fetching current sign-in methods for $user..."
 		$progressBar1.Value = 20
-		try { $methods = @(Get-MgUserAuthenticationPhoneMethod -UserId $user -ErrorAction Stop) }
-		catch { Write-Host "Could not read phone methods for $user : $($_.Exception.Message)" -ForegroundColor Red; $progressBar1.Value = 0; return }
+		$any = & $refreshMethods
 		$progressBar1.Value = 60
-		if (-not $methods.Count) {
-			Set-PhoneBannerNew "No 2FA phone numbers are registered for $user yet - add one below."
-			Write-Host "No 2FA phone numbers on $user." -ForegroundColor Cyan
+		if ($null -eq $any) { $progressBar1.Value = 0; return }   # read failed / no user (already logged)
+		if (-not $any) {
+			$methodsScroller.Visibility = 'Collapsed'
+			Set-PhoneBannerNew "No 2FA methods are registered for $user yet - add a phone number below."
+			Write-Host "No 2FA methods on $user." -ForegroundColor Cyan
 		} else {
-			$lines = $methods | ForEach-Object { "$(Get-PhoneTypeLabel $_.PhoneType): $($_.PhoneNumber)" }
-			Set-PhoneBannerCurrent ("CURRENT 2FA numbers for ${user}:`n  " + ($lines -join "`n  ") + "`n`nType another number below to add it (pick Mobile or Alternate mobile).")
-			# offer Alternate mobile if a primary mobile already exists, so a second number doesn't collide
-			if ($methods.PhoneType -contains 'mobile' -and $typeAltChip) { $typeAltChip.IsChecked = $true }
-			Write-Host "Loaded $($methods.Count) current 2FA number(s) for $user." -ForegroundColor Green
+			$methodsScroller.Visibility = 'Visible'
+			Set-PhoneBannerCurrent "CURRENT 2FA methods for ${user}. Use ""Remove a 2FA method"" to remove one, or add a new phone number below."
+			Write-Host "Loaded current sign-in methods for $user." -ForegroundColor Green
 		}
 		CheckForErrors
 		$progressBar1.Value = 0
+	})
+
+	# "Remove a 2FA method": open the picker to choose one of the user's methods to remove.
+	$scriptForm8.FindName('RemoveMethodBtn').Add_Click({
+		$user = $emailInput.Text.Trim()
+		if (-not $user) { Write-Host 'Enter a user email address first.' -ForegroundColor Yellow; return }
+		$changed = Show-RemoveMethodPicker $user
+		if ($changed -and $script:PmShowingCurrent) { & $refreshMethods | Out-Null }   # refresh the visible list
 	})
 
 	$scriptForm8.FindName('AddPhoneBtn').Add_Click({ OnAddPhoneButtonClick })

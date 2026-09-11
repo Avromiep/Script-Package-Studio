@@ -1,4 +1,4 @@
-﻿$version = "v3.1.79"
+﻿$version = "v3.1.80"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1380,6 +1380,15 @@ if ($env:SP_SHOT) {
 		$fs.Close()
 	}
 
+	# Sample 2FA methods for the Show-current / Remove-method screenshots (password excluded - it isn't 2FA).
+	$script:SampleAuthMethods = @(
+		[pscustomobject]@{ Id='p1'; Type='#microsoft.graph.phoneAuthenticationMethod'; Kind='Phone (Mobile)'; Detail='+1 2125550192'; Removable=$true },
+		[pscustomobject]@{ Id='p2'; Type='#microsoft.graph.phoneAuthenticationMethod'; Kind='Phone (Alternate mobile)'; Detail='+972 541234567'; Removable=$true },
+		[pscustomobject]@{ Id='a1'; Type='#microsoft.graph.microsoftAuthenticatorAuthenticationMethod'; Kind='Microsoft Authenticator app'; Detail="Sara's iPhone"; Removable=$true },
+		[pscustomobject]@{ Id='o1'; Type='#microsoft.graph.softwareOathAuthenticationMethod'; Kind='Authenticator app (verification code)'; Detail='Authy'; Removable=$true },
+		[pscustomobject]@{ Id='f1'; Type='#microsoft.graph.fido2AuthenticationMethod'; Kind='Security key (FIDO2)'; Detail='YubiKey 5C'; Removable=$true },
+		[pscustomobject]@{ Id='e1'; Type='#microsoft.graph.emailAuthenticationMethod'; Kind='Email'; Detail='sara.personal@gmail.com'; Removable=$true }
+	)
 	$script:ShotBuilders = [ordered]@{
 		'dlg-add-2fa'            = {
 			$w = New-AuthenticationPhoneDialog
@@ -1391,6 +1400,31 @@ if ($env:SP_SHOT) {
 			$pc = [pscustomobject]@{ Group=$w.FindName('PhoneCcGroup'); Img=$w.FindName('FlagImg'); Chip=$w.FindName('FlagChip'); Code=$w.FindName('PhoneCcText') }
 			$w.FindName('PhoneInput').Text = '+44 20 7946 0958'
 			try { Update-AcPhoneField $pc $w.FindName('PhoneInput') } catch {}
+			$w
+		}
+		'dlg-2fa-methods'        = {
+			# Add-2FA "Show current" showing the read-only list of a user's registered 2FA methods.
+			$w = New-AuthenticationPhoneDialog
+			$b = $w.FindName('PhoneBanner'); $t = $w.FindName('PhoneBannerText')
+			$t.Text = 'CURRENT 2FA methods for user@contoso.com. Use "Remove a 2FA method" to remove one, or add a new phone number below.'
+			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
+			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+			$panel = $w.FindName('MethodsPanel')
+			foreach ($info in $script:SampleAuthMethods) { [void]$panel.Children.Add((New-AuthMethodRow $info).Element) }
+			$w.FindName('MethodsScroller').Visibility = 'Visible'
+			$w.FindName('MethodsScroller').MaxHeight = 320
+			$w
+		}
+		'dlg-remove-2fa'         = {
+			# The "Remove a 2FA method" picker, populated with sample removable methods.
+			$w = New-RemoveMethodDialog
+			$list = $w.FindName('PickList')
+			foreach ($info in $script:SampleAuthMethods) {
+				$it = New-Object System.Windows.Controls.ListBoxItem
+				$it.Content = (New-AuthMethodRow $info).Element; $it.Tag = $info; $it.Padding = '0'
+				[void]$list.Items.Add($it)
+			}
+			$list.SelectedIndex = 1
 			$w
 		}
 		'dlg-add-autoreply'      = {

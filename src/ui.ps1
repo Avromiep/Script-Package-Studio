@@ -619,6 +619,49 @@ function Get-AcPhoneValue($ctx, $TextBox) {
 	}
 	return Format-PhoneForMfa "$($TextBox.Text)"
 }
+# Describe a Graph authentication method (from Get-MgUserAuthenticationMethod) for the "Show current"
+# list: @{ Id; Kind (friendly type); Detail (number/email/device); Type (@odata.type); Removable }.
+function Get-AuthMethodInfo($m) {
+	$ap = $m.AdditionalProperties; if (-not $ap) { $ap = @{} }
+	$type = "$($ap['@odata.type'])"
+	$kind = ''; $detail = ''; $removable = $true
+	switch -Wildcard ($type) {
+		'*phoneAuthenticationMethod'                              { $kind = "Phone ($(Get-PhoneTypeLabel "$($ap['phoneType'])"))"; $detail = "$($ap['phoneNumber'])" }
+		'*microsoftAuthenticatorAuthenticationMethod'            { $kind = 'Microsoft Authenticator app'; $detail = "$($ap['displayName'])" }
+		'*passwordlessMicrosoftAuthenticatorAuthenticationMethod' { $kind = 'Passwordless sign-in (Authenticator)'; $detail = "$($ap['displayName'])" }
+		'*softwareOathAuthenticationMethod'                      { $kind = 'Authenticator app (verification code)'; $detail = "$($ap['displayName'])" }
+		'*fido2AuthenticationMethod'                             { $kind = 'Security key (FIDO2)'; $detail = "$($ap['model'])" }
+		'*windowsHelloForBusinessAuthenticationMethod'           { $kind = 'Windows Hello for Business'; $detail = "$($ap['displayName'])" }
+		'*emailAuthenticationMethod'                             { $kind = 'Email'; $detail = "$($ap['emailAddress'])" }
+		'*temporaryAccessPassAuthenticationMethod'               { $kind = 'Temporary Access Pass'; $detail = '' }
+		'*platformCredentialAuthenticationMethod'                { $kind = 'Platform credential'; $detail = "$($ap['displayName'])" }
+		'*passwordAuthenticationMethod'                          { $kind = 'Password'; $removable = $false }
+		default { $kind = (("$type" -replace '.*\.', '') -replace 'AuthenticationMethod$', ''); if (-not $kind) { $kind = 'Authentication method' } }
+	}
+	return [pscustomobject]@{ Id = "$($m.Id)"; Kind = $kind; Detail = $detail; Type = $type; Removable = $removable }
+}
+# Build one READ-ONLY row for the current-2FA-methods list: the method's kind + detail. Removing is
+# done from a separate picker (New-RemoveMethodDialog), so these rows carry no buttons. Styles
+# resolve via the merged dict. Pass -Selectable to render it as a ListBoxItem for the picker.
+function New-AuthMethodRow($info) {
+	$row = Read-XamlString @'
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource StrokeSoftBrush}"
+        BorderThickness="1" CornerRadius="6" Padding="11,7" Margin="0,0,0,6">
+  <StackPanel VerticalAlignment="Center">
+    <TextBlock x:Name="MKind" FontFamily="{DynamicResource UiFont}" FontSize="12.5" FontWeight="SemiBold"
+               Foreground="{DynamicResource TextBrush}" TextTrimming="CharacterEllipsis"/>
+    <TextBlock x:Name="MDetail" Style="{DynamicResource Small}" Margin="0,1,0,0" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
+  </StackPanel>
+</Border>
+'@
+	[void]$row.Resources.MergedDictionaries.Add($script:StyleDict)
+	$row.FindName('MKind').Text = "$($info.Kind)"
+	$det = "$($info.Detail)".Trim()
+	if ($det) { $d = $row.FindName('MDetail'); $d.Text = $det; $d.Visibility = 'Visible' }
+	return [pscustomobject]@{ Element = $row }
+}
 # Friendly label for a Graph phone method type (mobile / alternateMobile / office).
 function Get-PhoneTypeLabel([string]$Type) {
 	switch ("$Type".ToLower()) {

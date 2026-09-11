@@ -74,7 +74,7 @@ Add a single or multiple members to a Unified/Office365 Group.
 *Requires sign in.*  
 Add a phone number to a user for 2FA.  
 You don't have to type the `+1 ` yourself - enter a US/Canada number as plain digits (any format, e.g. `(222) 444-6666`). For other countries, type the country code (e.g. `+44` or `00441234...`) and it's lifted out of the box up next to the flag. A country flag and the `+code` show just to the left of the box (outside it) and update live as you type, while the box keeps just the national number - so you can see which country the number is being read as. It's submitted to Microsoft in the `+CC national` format it expects.  
-**Show current** loads the numbers already registered for that user so you can see what's there before adding another, with a colored banner making it clear whether you're viewing the current numbers or adding a new one. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
+**Show current** lists the 2FA methods already registered for that user - phone, alternate phone, Microsoft Authenticator, other authenticator apps, security keys, email, and so on (only the ones they actually have). **Remove a 2FA method** opens a picker where you select one of those methods and remove it (with a yes/no confirm) - useful when someone lost a phone or key. A colored banner makes it clear whether you're viewing current methods or adding a new one. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
 Also has options for bulk (the same number formatting applies to the CSV).
 
 ### Block-User

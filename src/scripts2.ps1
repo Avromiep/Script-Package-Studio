@@ -54,6 +54,22 @@ function Remove-UserLicenses([string]$User) {
 # per-method failure is logged and skipped rather than stopping the rest. Returns the count
 # removed; throws only if the user's method list can't be read at all. Shared by Reset-MFA and
 # the termination script. Needs the Graph scope UserAuthenticationMethod.ReadWrite.All.
+# Remove ONE authentication method (any type) by its @odata.type + id. Used by the Add-2FA
+# "Show current" list so the user can remove any single 2FA method (phone, alternate phone,
+# Microsoft Authenticator, security key, email, TAP, etc.). Throws for the password / unknown types.
+function Remove-OneAuthMethod([string]$User, [string]$Type, [string]$Id) {
+	switch -Wildcard ($Type) {
+		'*phoneAuthenticationMethod'                  { Remove-MgUserAuthenticationPhoneMethod -UserId $User -PhoneAuthenticationMethodId $Id -ErrorAction Stop }
+		'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $User -MicrosoftAuthenticatorAuthenticationMethodId $Id -ErrorAction Stop }
+		'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $User -SoftwareOathAuthenticationMethodId $Id -ErrorAction Stop }
+		'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $User -Fido2AuthenticationMethodId $Id -ErrorAction Stop }
+		'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop }
+		'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $User -EmailAuthenticationMethodId $Id -ErrorAction Stop }
+		'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $User -TemporaryAccessPassAuthenticationMethodId $Id -ErrorAction Stop }
+		'*platformCredentialAuthenticationMethod'     { Remove-MgUserAuthenticationPlatformCredentialMethod -UserId $User -PlatformCredentialAuthenticationMethodId $Id -ErrorAction Stop }
+		default { throw "this kind of sign-in method can't be removed here." }
+	}
+}
 function Clear-UserAuthMethods([string]$User) {
 	$methods = Get-MgUserAuthenticationMethod -UserId $User -ErrorAction Stop
 	$removed = 0

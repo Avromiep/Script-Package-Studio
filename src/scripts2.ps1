@@ -1,4 +1,4 @@
-# Script-Package - script dialogs (Block-User .. New-*)
+﻿# Script-Package - script dialogs (Block-User .. New-*)
 
 # Assign one license SKU to a just-created user, retrying ONLY on the transient
 # "user doesn't exist yet / not replicated" error that can follow New-MgUser. Real errors
@@ -748,6 +748,7 @@ function New-ADAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
+			Step-Progress   # keep the bar climbing per item
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -823,6 +824,7 @@ function New-ADAccounts {
 			# Copy security group memberships
 			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
+				Step-Progress
 				# Check if the new user is already a member of the group
 				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {
@@ -960,6 +962,7 @@ function New-ADAndEmailAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
+			Step-Progress   # keep the bar climbing per item
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -1037,6 +1040,7 @@ function New-ADAndEmailAccounts {
 			# Copy security group memberships
 			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
+				Step-Progress
 				# Check if the new user is already a member of the group
 				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {
@@ -1160,6 +1164,7 @@ function New-EmailAccounts {
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$preview = ($previewCheck.IsChecked -eq $true)
 		Import-Csv ".\Templates\New-EmailAccounts.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
 			try {
 			$progressBar1.Value = 10
@@ -1299,6 +1304,7 @@ function Reset-MFA {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Reset-MFA.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$u = "$($_.Email)".Trim()
 			if (-not $u) { return }
 			try { $n = Clear-MfaFor $u; $created.Add("$u ($n cleared)") }
@@ -1436,6 +1442,7 @@ function Set-License {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Set-License.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$u = "$($_.Email)".Trim()
 			if (-not $u) { return }
 			if ($preview) { $created.Add("$u ($mode)"); return }
@@ -1647,6 +1654,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $rows) {
+			Step-Progress   # keep the bar climbing per item
 			$u = "$($row.Username)".Trim(); $e = "$($row.Email)".Trim()
 			$who = if ($e) { $e } elseif ($u) { $u } else { '(blank row)' }
 			Write-Host "Processing $who..."

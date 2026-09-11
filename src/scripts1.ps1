@@ -385,6 +385,8 @@ function New-PasteMembersDialog {
 				}
 			}
 		$progressBar1.Value = 10
+		$totalOps = [Math]::Max(1, $targets.Count * $members.Count)   # members across every target
+		$opN = 0
 		foreach ($target in $targets) {
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
@@ -428,6 +430,7 @@ function New-PasteMembersDialog {
 						elseif (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $counts.noop++; $noopM.Add($m) }
 					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $counts.failed++; $anyFailed = $true; $failM.Add($m) }
 				}
+				$opN++; Set-LoopProgress $opN $totalOps   # advance the bar per member so it climbs as it works
 			}
 			# Name the actual addresses under each target (not just counts) so it's clear WHAT
 			# was added/removed where. Indented one level under the target header.
@@ -457,6 +460,7 @@ function Show-PasteMembersDialog {
 		$body = $r.Lines -join "`n"
 		$kind = if ($r.AnyFailed) { 'Warn' } else { 'Info' }
 		$title = if ($Action -eq 'remove') { 'Remove complete' } else { 'Add complete' }
+		$progressBar1.Value = 100   # finished - fill the bar before the summary pops up
 		Show-Notice $title $body $kind
 		$progressBar1.Value = 0
 	}
@@ -658,6 +662,7 @@ function Add-AuthenticationPhoneMethod {
 		Write-Host "AddBulkPhone button clicked."
 		$progressBar1.Value = 10
 		Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 20
 			$user = $_.Email
 			$phoneNumber = Format-PhoneForMfa $_.Phone   # same normalization as the single add
@@ -1060,6 +1065,7 @@ function Add-Contacts {
 		$progressBar1.Value = 5
 		if ($addContactsMode.Value -eq 0) {
 			Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
+				Step-Progress   # keep the bar climbing per item
 				$displayName = $_.DisplayName
 				$splitName = $displayName -Split ' '
 				$firstName = $splitName[0]
@@ -1150,6 +1156,7 @@ function Add-DistributionListMember {
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-DistributionListMember.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
@@ -1279,6 +1286,7 @@ function Add-EmailAlias {
 			$created = [System.Collections.Generic.List[string]]::new()
 			$failed  = [System.Collections.Generic.List[string]]::new()
 			for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
+				Step-Progress
 				$completeAlias = "$aliasName$i@$aliasDomain"
 				$r = Add-OneAlias $mailbox $completeAlias $false $accepted
 				if ($r.Status -eq 'done') { $created.Add($completeAlias) }
@@ -1313,6 +1321,7 @@ function Add-EmailAlias {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Add-EmailAlias.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 40
 			$mailbox = "$($_.Mailbox)".Trim(); $alias = "$($_.Alias)".Trim()
 			$label = "$alias -> $mailbox"
@@ -1505,6 +1514,7 @@ function Add-MailboxMember {
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
 		$csv = if ($mailboxMemberMode -eq 0) { ".\Templates\Add-MailboxMember.csv" } else { ".\Templates\Remove-MailboxMember.csv" }
 		Import-Csv $csv | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$member = $_.Member
 			$mailbox = $_.Mailbox
 			$progressBar1.Value = 40
@@ -1588,6 +1598,7 @@ function Add-TrustedSender {
 		$trustedSender = $trustedSenderInputBox.Text
 		$progressBar1.Value = 10
 		Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited | ForEach-Object {
+			Step-Progress
 			$progressBar1.Value = 30
 			Set-MailboxJunkEmailConfiguration $_.Name -TrustedSendersAndDomains @{Add=$trustedSender}
 			$progressBar1.Value = 80
@@ -1638,6 +1649,7 @@ function Add-UnifiedGroupMember {
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 30
 			$member = $_.Member
 			$group = $_.Group

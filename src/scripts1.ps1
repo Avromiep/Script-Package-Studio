@@ -1,4 +1,4 @@
-# Script-Package - script dialogs (Add-*)
+﻿# Script-Package - script dialogs (Add-*)
 # Every function keeps its original logic and cmdlet calls; only the UI layer
 # changed from WinForms to WPF windows styled by the merged design dictionary.
 
@@ -501,23 +501,34 @@ function New-MemberGroupDialog {
 # ---------------------------------------------------------------------------
 function New-AuthenticationPhoneDialog {
 	New-StyledDialog -Title 'Add-AuthenticationPhoneMethod' -Icon '&#xEE2F;' -BodyXaml @'
-<StackPanel Margin="16" Width="340">
+<StackPanel Margin="16" Width="420">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
 			<Grid Margin="0,12,0,0">
 				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
 				</Grid.ColumnDefinitions>
-				<Grid.RowDefinitions>
-					<RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-				</Grid.RowDefinitions>
 				<TextBlock Text="Email" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="EmailInput" Grid.Column="1"/>
-				<TextBlock Text="Phone" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
-				<TextBox x:Name="PhoneInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
+				<Button x:Name="ShowCurrentBtn" Grid.Column="2" Style="{DynamicResource BtnSecondary}" Content="Show current" Margin="8,0,0,0" MinWidth="104"
+						ToolTip="Load this user's current 2FA phone numbers, then click again to clear"/>
 			</Grid>
-			<TextBlock Text="Example: +1 2224446666" Style="{DynamicResource Small}" Margin="70,6,0,0"/>
+			<Border x:Name="PhoneBanner" Margin="0,14,0,0" Padding="10,6" CornerRadius="6" BorderThickness="1">
+				<TextBlock x:Name="PhoneBannerText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
+			</Border>
+			<Grid Margin="0,12,0,0">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
+				</Grid.ColumnDefinitions>
+				<TextBlock Text="Phone" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+				<TextBox x:Name="PhoneInput" Grid.Column="1"/>
+			</Grid>
+			<TextBlock Text="US/Canada: just the 10 digits (the +1 is added for you). Other countries: include the country code, e.g. +44 20 7946 0958." Style="{DynamicResource Small}" Margin="70,6,0,0" TextWrapping="Wrap"/>
+			<StackPanel Orientation="Horizontal" Margin="70,10,0,0">
+				<RadioButton x:Name="TypeMobileChip" Style="{DynamicResource Chip}" GroupName="PhoneType" Content="Mobile" IsChecked="True"/>
+				<RadioButton x:Name="TypeAltChip" Style="{DynamicResource Chip}" GroupName="PhoneType" Content="Alternate mobile" Margin="8,0,0,0"/>
+			</StackPanel>
 			<Button x:Name="AddPhoneBtn" Style="{DynamicResource BtnPrimary}" Content="Add Phone Number" Margin="0,14,0,0"/>
 		</StackPanel>
 	</Border>
@@ -539,10 +550,11 @@ function Add-AuthenticationPhoneMethod {
 	function OnAddPhoneButtonClick {
 		$progressBar1.Value = 10
 		$user = $emailInput.Text
-		$phoneNumber = $phoneInput.Text
+		$phoneNumber = Format-PhoneForMfa $phoneInput.Text   # bare 10-digit US or a +CC number both work; a correctly-formatted value passes through untouched
+		$ptype = if ($typeAltChip.IsChecked -eq $true) { 'alternateMobile' } else { 'mobile' }   # a user's primary mobile can hold one number; extra numbers go in as alternateMobile
 		$progressBar1.Value = 40
-		New-MgUserAuthenticationPhoneMethod -UserId $user -phoneType "mobile" -phoneNumber $phoneNumber
-		Write-Host "Added $phoneNumber to $user."
+		New-MgUserAuthenticationPhoneMethod -UserId $user -phoneType $ptype -phoneNumber $phoneNumber
+		Write-Host "Added $phoneNumber ($(Get-PhoneTypeLabel $ptype)) to $user."
 		$progressBar1.Value = 80
 		CheckForErrors
 		OperationComplete
@@ -561,7 +573,7 @@ function Add-AuthenticationPhoneMethod {
 		Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | ForEach-Object {
 			$progressBar1.Value = 20
 			$user = $_.Email
-			$phoneNumber = $_.Phone
+			$phoneNumber = Format-PhoneForMfa $_.Phone   # same normalization as the single add
 			$progressBar1.Value = 40
 			New-MgUserAuthenticationPhoneMethod -UserId $user -phoneType "mobile" -phoneNumber $phoneNumber
 			$progressBar1.Value = 80
@@ -571,10 +583,64 @@ function Add-AuthenticationPhoneMethod {
 		OperationComplete
 	}
 
+	# Banner above the phone box mirrors the auto-reply pattern: it flips between the user's CURRENT
+	# registered 2FA numbers (loaded by Show current, amber) and the NEW number you're adding
+	# (accent). $PmSuppress silences the flip while Show current writes the banner programmatically.
+	$script:PmShowingCurrent = $false
+	$script:PmSuppress = $false
+	function Set-PhoneBannerNew([string]$msg = 'NEW - the number you type below is ADDED to this user (existing 2FA numbers are kept).') {
+		$phoneBannerText.Text = $msg
+		$phoneBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'AccentBrush')
+		$phoneBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
+		$script:PmShowingCurrent = $false
+		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Show current' }
+	}
+	function Set-PhoneBannerCurrent([string]$msg) {
+		$phoneBannerText.Text = $msg
+		$phoneBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
+		$phoneBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		$script:PmShowingCurrent = $true
+		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Clear' }
+	}
+
 	$scriptForm8 = New-AuthenticationPhoneDialog
 	$emailInput = $scriptForm8.FindName('EmailInput')
 	Enable-RecipientAutocomplete $emailInput 'User'
 	$phoneInput = $scriptForm8.FindName('PhoneInput')
+	$typeMobileChip = $scriptForm8.FindName('TypeMobileChip')
+	$typeAltChip = $scriptForm8.FindName('TypeAltChip')
+	$phoneBanner = $scriptForm8.FindName('PhoneBanner')
+	$phoneBannerText = $scriptForm8.FindName('PhoneBannerText')
+	$showCurrentBtn = $scriptForm8.FindName('ShowCurrentBtn')
+	Set-PhoneBannerNew
+	# Typing a number means you're adding a new one - flip the banner back from a current-numbers preview.
+	$phoneInput.Add_TextChanged({ if (-not $script:PmSuppress -and $script:PmShowingCurrent) { Set-PhoneBannerNew } })
+
+	# "Show current": read this user's registered 2FA phone numbers so you can see what's already
+	# there before adding another. Toggles: while a preview is shown, the button clears it.
+	$showCurrentBtn.Add_Click({
+		if ($script:PmShowingCurrent) { Set-PhoneBannerNew; Write-Host 'Cleared the preview - the box adds a NEW number.' -ForegroundColor Cyan; return }
+		$user = $emailInput.Text.Trim()
+		if (-not $user) { Write-Host 'Enter a user email address first.' -ForegroundColor Yellow; return }
+		Write-Host "Fetching current 2FA phone numbers for $user..."
+		$progressBar1.Value = 20
+		try { $methods = @(Get-MgUserAuthenticationPhoneMethod -UserId $user -ErrorAction Stop) }
+		catch { Write-Host "Could not read phone methods for $user : $($_.Exception.Message)" -ForegroundColor Red; $progressBar1.Value = 0; return }
+		$progressBar1.Value = 60
+		if (-not $methods.Count) {
+			Set-PhoneBannerNew "No 2FA phone numbers are registered for $user yet - add one below."
+			Write-Host "No 2FA phone numbers on $user." -ForegroundColor Cyan
+		} else {
+			$lines = $methods | ForEach-Object { "$(Get-PhoneTypeLabel $_.PhoneType): $($_.PhoneNumber)" }
+			Set-PhoneBannerCurrent ("CURRENT 2FA numbers for ${user}:`n  " + ($lines -join "`n  ") + "`n`nType another number below to add it (pick Mobile or Alternate mobile).")
+			# offer Alternate mobile if a primary mobile already exists, so a second number doesn't collide
+			if ($methods.PhoneType -contains 'mobile' -and $typeAltChip) { $typeAltChip.IsChecked = $true }
+			Write-Host "Loaded $($methods.Count) current 2FA number(s) for $user." -ForegroundColor Green
+		}
+		CheckForErrors
+		$progressBar1.Value = 0
+	})
+
 	$scriptForm8.FindName('AddPhoneBtn').Add_Click({ OnAddPhoneButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('AddBulkPhoneBtn').Add_Click({ OnAddBulkPhoneButtonClick })

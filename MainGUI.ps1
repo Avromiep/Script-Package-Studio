@@ -1,4 +1,4 @@
-$version = "v3.1.76"
+$version = "v3.1.77"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -377,16 +377,9 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 	$script:UI[$n] = $el
 }
 
-# Start the search-status loading bar sliding (indeterminate). It runs forever on the render/
-# composition side; we just show/hide the bar in Update-AcStatus. Visible only while preparing,
-# when the main thread is free (background index), so it actually animates.
-try {
-	$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-	$anim.From = -26; $anim.To = 64
-	$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.95))
-	$anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-	$script:UI.SearchStatusBarTT.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $anim)
-} catch {}
+# Register the home-screen search-status light as a status target (starts its sliding-bar anim +
+# paints the current state). Recipient dialogs register their own copy so all stay in sync.
+try { [void](Register-AcStatusTarget $script:UI.SearchStatusPanel $script:UI.SearchStatusIcon $script:UI.SearchStatusLabel $script:UI.SearchStatusBar $script:UI.SearchStatusBarTT) } catch {}
 
 # load the largest frame from the multi-size .ico so the taskbar / Alt-Tab icon
 # is crisp (BitmapImage alone would grab the 16px frame and upscale it)
@@ -1082,7 +1075,11 @@ $script:UI.ConnectBtn.Add_Click({
 	$sel = Get-SelectedTenant
 	if ($sel) { Connect-Tenant $sel } else { Add-TenantSignIn }
 })
-$script:UI.DisconnectBtn.Add_Click({ Disconnect-Tenant })
+$script:UI.DisconnectBtn.Add_Click({
+	$who = if ($script:ActiveTenant) { " from `"$($script:ActiveTenant.name)`" ($($script:ActiveTenant.account))" } else { '' }
+	if (-not (Confirm-YesNo 'Disconnect tenant' "Disconnect$who? You'll need to sign in again to run tenant scripts.")) { return }
+	Disconnect-Tenant
+})
 
 $script:UI.ForgetTenantBtn.Add_Click({
 	$sel = Get-SelectedTenant
@@ -1373,7 +1370,15 @@ if ($env:SP_SHOT) {
 	}
 
 	$script:ShotBuilders = [ordered]@{
-		'dlg-add-2fa'            = { New-AuthenticationPhoneDialog }
+		'dlg-add-2fa'            = {
+			$w = New-AuthenticationPhoneDialog
+			$b = $w.FindName('PhoneBanner'); $t = $w.FindName('PhoneBannerText')
+			$t.Text = 'CURRENT 2FA numbers for user@contoso.com:' + [char]10 + '  Mobile: +1 2224446666' + [char]10 + '  Alternate mobile: +44 2079460958' + [char]10 + [char]10 + 'Type another number below to add it (pick Mobile or Alternate mobile).'
+			$b.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
+			$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+			$w.FindName('ShowCurrentBtn').Content = 'Clear'
+			$w
+		}
 		'dlg-add-autoreply'      = {
 			$w = New-AutoReplyDialog
 			$msg = "I'm out of the office until Monday. For anything urgent, contact sales@contoso.com."

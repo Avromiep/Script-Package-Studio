@@ -1,4 +1,4 @@
-﻿$version = "v3.1.80"
+﻿$version = "v3.1.81"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -420,6 +420,29 @@ if (-not $env:SP_SHOT) {
 	})
 }
 
+# Gentle "breathing" pulse on the progress bar while a script is running, so it never looks frozen.
+# Opacity is an INDEPENDENT animation (runs on WPF's render thread), so it keeps moving even while a
+# script blocks the UI thread mid-call - unlike the Value bar, which can only step between milestones.
+$script:ProgPulsing = $false
+function Start-ProgressPulse {
+	if ($script:ProgPulsing) { return }
+	try {
+		$pb = $script:UI.MainProgress
+		$a = New-Object System.Windows.Media.Animation.DoubleAnimation
+		$a.From = 0.4; $a.To = 1.0
+		$a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.7))
+		$a.AutoReverse = $true
+		$a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+		$pb.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a)
+		$script:ProgPulsing = $true
+	} catch {}
+}
+function Stop-ProgressPulse {
+	if (-not $script:ProgPulsing) { return }
+	try { $pb = $script:UI.MainProgress; $pb.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null); $pb.Opacity = 1 } catch {}
+	$script:ProgPulsing = $false
+}
+
 # $progressBar1 keeps the WinForms-era contract every script uses
 # ($progressBar1.Value = n) and pumps the dispatcher so updates paint during
 # synchronous work, like the old WinForms progress bar did.
@@ -434,9 +457,11 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 		# cleaner and reads as steadier progress. Reset (0) snaps instantly so it doesn't slide down.
 		try {
 			if ($target -le 0) {
+				Stop-ProgressPulse                          # idle - stop the breathing pulse
 				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
 				$pb.Value = 0
 			} else {
+				Start-ProgressPulse                         # a script is working - keep it visibly alive
 				$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
 				$anim.To = $target
 				$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(280))

@@ -141,8 +141,12 @@ function New-StyledDialog {
 		[string]$Title,
 		[string]$BodyXaml,
 		[string]$Icon = '&#xE54E;',
-		[object]$Owner
+		[object]$Owner,
+		[string]$HelpKey
 	)
+	# Which script's plain-language help the (i) button shows. Defaults to the (unescaped) title,
+	# which for most script windows is the script name - so help wires up automatically.
+	$hkey = if ($PSBoundParameters.ContainsKey('HelpKey')) { $HelpKey } else { [string]$Title }
 	# The title is plain text dropped into XAML attributes - escape &, <, >, " so a title like
 	# "Create AD & Email accounts" can't break the parse. ($Icon is a glyph entity - left as-is.)
 	$Title = [System.Security.SecurityElement]::Escape([string]$Title)
@@ -178,9 +182,13 @@ function New-StyledDialog {
 								   FontFamily="{DynamicResource UiFont}" FontSize="13" FontWeight="SemiBold"
 								   Foreground="{DynamicResource TextBrush}"/>
 					</StackPanel>
-					<Button x:Name="DlgCloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE6D3;"
-							Height="34" HorizontalAlignment="Right" VerticalAlignment="Top"
-							WindowChrome.IsHitTestVisibleInChrome="True"/>
+					<StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+						<Button x:Name="DlgHelpBtn" Style="{DynamicResource TitleBtn}" Content="&#xEA88;"
+								Height="34" Visibility="Collapsed" ToolTip="What this does / how to use it"
+								WindowChrome.IsHitTestVisibleInChrome="True"/>
+						<Button x:Name="DlgCloseBtn" Style="{DynamicResource TitleBtnClose}" Content="&#xE6D3;"
+								Height="34" WindowChrome.IsHitTestVisibleInChrome="True"/>
+					</StackPanel>
 				</Grid>
 			</Border>
 			<Grid Grid.Row="1">
@@ -207,6 +215,10 @@ $BodyXaml
 	$win = Read-XamlString $xaml
 	[void]$win.Resources.MergedDictionaries.Add($script:StyleDict)
 	$win.FindName('DlgCloseBtn').Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+	if ($script:ScriptHelp -and $script:ScriptHelp.ContainsKey($hkey)) {
+		$hb = $win.FindName('DlgHelpBtn'); $hb.Tag = $hkey; $hb.Visibility = 'Visible'
+		$hb.Add_Click({ param($s, $e) Show-ScriptHelp ([string]$s.Tag) })
+	}
 	$ownerWin = if ($Owner) { $Owner } elseif ($script:Window -and $script:Window.IsVisible) { $script:Window } else { $null }
 	if ($ownerWin) { $win.Owner = $ownerWin }
 	return $win
@@ -216,6 +228,87 @@ function Set-DialogTitle($Win, [string]$Text) {
 	$Win.Title = $Text
 	$t = $Win.FindName('DlgTitleText')
 	if ($t) { $t.Text = $Text }
+}
+
+# Show the plain-language help for a script (from $script:ScriptHelp) in a small scrollable dialog:
+# a short "what it does", numbered how-to steps, and an optional tip. Opened by the (i) button on the
+# home tiles and in the script windows. Falls back to the catalog description when no help is written.
+function Show-ScriptHelp([string]$Name) {
+	$w = New-ScriptHelpDialog $Name
+	[void]$w.ShowDialog()
+}
+function New-ScriptHelpDialog([string]$Name) {
+	$h = $null
+	if ($script:ScriptHelp) { $h = $script:ScriptHelp[$Name] }
+	$meta = $null
+	if ($script:ScriptCatalog) { $meta = $script:ScriptCatalog | Where-Object { $_.Name -eq $Name } | Select-Object -First 1 }
+	$display = if ($meta -and $meta.Display) { $meta.Display } elseif ($meta) { $meta.Name } else { $Name }
+	if (-not $h) { $h = @{ What = $(if ($meta) { $meta.Desc } else { 'No description available.' }); Steps = @(); Tip = '' } }
+
+	$win = New-StyledDialog -Title "How to use $display" -Icon '&#xEA88;' -HelpKey '__none__' -BodyXaml @'
+<ScrollViewer xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+              MaxHeight="470" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+  <StackPanel x:Name="HelpBody" Margin="18" Width="440"/>
+</ScrollViewer>
+'@
+	$panel = $win.FindName('HelpBody')
+	$uiFont = $script:StyleDict['UiFont']
+
+	$addHeading = {
+		param($text)
+		$tb = New-Object System.Windows.Controls.TextBlock
+		$tb.Text = $text; $tb.FontFamily = $uiFont; $tb.FontSize = 11; $tb.FontWeight = 'SemiBold'; $tb.Margin = '0,16,0,6'
+		$tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+		[void]$panel.Children.Add($tb)
+	}
+	$addPara = {
+		param($text, $size = 13)
+		$tb = New-Object System.Windows.Controls.TextBlock
+		$tb.Text = $text; $tb.TextWrapping = 'Wrap'; $tb.FontFamily = $uiFont; $tb.FontSize = $size; $tb.LineHeight = 19
+		$tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextBrush')
+		[void]$panel.Children.Add($tb)
+	}
+	$addStep = {
+		param($num, $text)
+		$g = New-Object System.Windows.Controls.Grid; $g.Margin = '0,7,0,0'
+		$c0 = New-Object System.Windows.Controls.ColumnDefinition; $c0.Width = [System.Windows.GridLength]::Auto
+		$c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = New-Object System.Windows.GridLength(1, 'Star')
+		$g.ColumnDefinitions.Add($c0); $g.ColumnDefinitions.Add($c1)
+		$n = New-Object System.Windows.Controls.TextBlock
+		$n.Text = "$num."; $n.Margin = '0,0,9,0'; $n.FontSize = 12.5; $n.FontWeight = 'SemiBold'; $n.MinWidth = 15
+		$n.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
+		$t = New-Object System.Windows.Controls.TextBlock
+		$t.Text = $text; $t.TextWrapping = 'Wrap'; $t.FontSize = 12.5; $t.LineHeight = 18; $t.FontFamily = $uiFont
+		$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextBrush')
+		[System.Windows.Controls.Grid]::SetColumn($t, 1)
+		[void]$g.Children.Add($n); [void]$g.Children.Add($t)
+		[void]$panel.Children.Add($g)
+	}
+
+	& $addPara ([string]$h.What)
+	$steps = @($h.Steps)
+	if ($steps.Count) {
+		& $addHeading 'How to use'
+		for ($i = 0; $i -lt $steps.Count; $i++) { & $addStep ($i + 1) ([string]$steps[$i]) }
+	}
+	if ("$($h.Tip)".Trim()) {
+		$b = New-Object System.Windows.Controls.Border
+		$b.Margin = '0,16,0,0'; $b.Padding = '11,9'; $b.CornerRadius = '6'
+		$b.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'AccentSoftBrush')
+		$t = New-Object System.Windows.Controls.TextBlock
+		$t.Text = "Tip: $($h.Tip)"; $t.TextWrapping = 'Wrap'; $t.FontSize = 12; $t.LineHeight = 17; $t.FontFamily = $uiFont
+		$t.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextBrush')
+		$b.Child = $t
+		[void]$panel.Children.Add($b)
+	}
+	if ($meta -and $meta.SignIn) {
+		$s = New-Object System.Windows.Controls.TextBlock
+		$s.Text = 'Requires being signed in to a Microsoft tenant.'; $s.Margin = '0,14,0,0'; $s.TextWrapping = 'Wrap'
+		$s.Style = $script:StyleDict['Small']
+		[void]$panel.Children.Add($s)
+	}
+	return $win
 }
 
 # ---------------------------------------------------------------------------

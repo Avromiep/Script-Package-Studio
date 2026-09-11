@@ -1,4 +1,4 @@
-﻿$version = "v3.1.81"
+﻿$version = "v3.1.82"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -918,6 +918,39 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Show-Information'; Desc = 'Script-Package Studio info and links.'; SignIn = $false; Cat = 'App'; Icon = 0xEA88 }
 )
 
+# Plain-language help for each script, shown by the (i) info button on the home tiles and in the
+# script windows. Keep it short and non-technical. Falls back to the catalog Desc when a script
+# isn't listed here. What = one-paragraph summary; Steps = how-to bullets; Tip = optional note.
+$script:ScriptHelp = @{
+	'Add-AuthenticationPhoneMethod' = @{ What = 'Adds a phone number to someone''s account for two-step verification (2FA) - the code they get by text or call when signing in. You can also see and remove the 2FA methods they already have.'; Steps = @('Type the person''s email, then their phone number. For a US/Canada number just type the 10 digits - the +1 and the flag fill in for you; for another country type its code (like +44) and it hops up next to the flag.'; 'Pick Mobile (their main number) or Alternate mobile (a second one), then click Add Phone Number.'; 'Show current lists what they already have. Remove a 2FA method lets you delete one - handy if they lost a phone or security key.'); Tip = 'To add many at once: click Open Template, fill in the spreadsheet, save it, then click Add Phone Numbers.' }
+	'Add-AutoReply' = @{ What = 'Turns on an automatic ''out of office'' reply for a mailbox.'; Steps = @('Type the mailbox''s email address.'; 'Write the message. Internal is for coworkers, External is for outside senders - leave Match Replies ticked to use the same text for both.'; 'Optionally tick Use Start and End Date to schedule it, then click Confirm.'; 'Show current loads the reply already on the mailbox so you can read or edit it before replacing it.'); Tip = '' }
+	'Add-Contacts' = @{ What = 'Adds outside people to your Microsoft 365 address book as contacts, so their name and email show up when your staff compose messages.'; Steps = @('Fill in the contact''s name and email, or click Open Template to add many from a spreadsheet.'; 'Click Add.'); Tip = '' }
+	'Add-DistributionListMember' = @{ What = 'Adds people to a distribution list - one email address that forwards to a whole group of people.'; Steps = @('Type the list''s email, then the person to add (start typing a name and pick them from the list).'; 'Click Add Member. To add lots of people, click Paste List and paste their names or emails.'); Tip = '' }
+	'Add-EmailAlias' = @{ What = 'Gives a mailbox extra email addresses (aliases). Mail sent to any of them lands in the same inbox.'; Steps = @('Type the mailbox, then the alias address you want to add, and click Add Alias.'; 'To make a batch of numbered aliases, tick Create Incremental Aliases and set how many.'); Tip = 'Numbered aliases start at 0. Example: alias ''sales'' with the number 60 creates sales0@..., sales1@... up to sales59@... - that is 60 addresses in total. So type the exact number you want (60 gives 60); just know the numbering starts at 0, not 1.' }
+	'Add-MailboxMember' = @{ What = 'Gives someone access to another person''s mailbox - Full Access (open and manage it), Send As (send as that mailbox), or Send on Behalf.'; Steps = @('Type the person getting access, then the mailbox. Click a permission button (Full Access, Send As, Send on Behalf), or Add Member for Full Access plus Send As together.'; 'Use Paste List to grant access to many people at once.'); Tip = '' }
+	'Add-TrustedSender' = @{ What = 'Marks an email address or a whole domain as trusted for EVERY mailbox in the tenant, so their messages won''t land in junk.'; Steps = @('Type the address or domain - for example news@vendor.com, or just vendor.com for everything from them.'; 'Click Add. It updates every mailbox, so in a large tenant it can take a while.'); Tip = '' }
+	'Add-UnifiedGroupMember' = @{ What = 'Adds people to a Teams / Microsoft 365 group.'; Steps = @('Type the group, then the person to add. Click Add Member, or Paste List to add many at once.'); Tip = '' }
+	'Block-User' = @{ What = 'Quickly locks someone out: disables their Active Directory and Microsoft 365 sign-in, turns their mailbox into a shared one, resets the password to something random, removes their licenses and 2FA, and signs them out everywhere.'; Steps = @('Type their email and their AD username, and tick what to block (Email, AD).'; 'Optionally give other people access to the now-shared mailbox and set an auto-reply.'; 'Click Block.'); Tip = 'For a full offboarding of someone who has left, use Terminate-Disable-ADAndEmailAccounts instead.' }
+	'Clear-RecycleBin' = @{ What = 'Empties the Recycle Bin on this computer. On a shared or terminal server this empties everyone''s recycle bin.'; Steps = @('Run it. This cannot be undone, so be sure.'); Tip = '' }
+	'Convert-UnifiedGroupToDistributionGroup' = @{ What = 'Recreates the members of a Microsoft 365 group as a plain distribution list.'; Steps = @('Type the group''s email. The new list gets the same name with ''-New'' added.'; 'Afterwards, rename or delete the old group in the admin center if you want.'); Tip = '' }
+	'Terminate-Disable-ADAndEmailAccounts' = @{ What = 'Full offboarding for someone who has left: disables their Active Directory and Microsoft 365 accounts, converts the mailbox to shared, removes licenses and 2FA, and can set an auto-reply and hand the mailbox to a manager.'; Steps = @('Type the user and choose the options (who gets the mailbox, an auto-reply).'; 'Run it.'); Tip = '' }
+	'Enable-Archive' = @{ What = 'Turns on the online archive mailbox for someone - extra storage that automatically moves their older mail out of the main inbox. Can also jump-start it or switch on auto-expanding archive.'; Steps = @('Type the mailbox, pick the option, and run.'); Tip = '' }
+	'Install-RequiredModules' = @{ What = 'Installs the two PowerShell components this app needs (Microsoft Graph and Exchange Online). The app usually offers to do this for you on first run.'; Steps = @('Click to install. It needs an internet connection.'); Tip = '' }
+	'New-ADAccounts' = @{ What = 'Creates many Active Directory user accounts at once from a spreadsheet.'; Steps = @('Click Open Template, fill in one row per person, and save.'; 'Run it. Tick Preview only first to check the list without creating anything.'); Tip = '' }
+	'New-ADAndEmailAccounts' = @{ What = 'Creates Active Directory accounts AND their licensed Microsoft 365 mailboxes in bulk.'; Steps = @('Enter the email domain, pick a license, fill in the template, and run.'); Tip = 'Buy enough licenses first, or the new mailboxes won''t get one assigned.' }
+	'New-EmailAccounts' = @{ What = 'Creates licensed Microsoft 365 accounts in bulk (mailboxes only, no Active Directory).'; Steps = @('Click Open Template, fill it in, pick a license, and run. Buy the licenses first.'); Tip = '' }
+	'Remove-DistributionListMember' = @{ What = 'Removes people from a distribution list.'; Steps = @('Type the list and the person to remove, then click Remove Member. Paste List handles many at once.'); Tip = '' }
+	'Remove-EmailAlias' = @{ What = 'Removes extra addresses (aliases) from a mailbox. The main address stays.'; Steps = @('Type the mailbox and the alias to remove, then click Remove. Bulk is available via the template.'); Tip = '' }
+	'Remove-MailboxMember' = @{ What = 'Takes away someone''s access to another mailbox - Full Access, Send As, or Send on Behalf.'; Steps = @('Type the person and the mailbox, pick the permission to remove, and run. Paste List handles many at once.'); Tip = '' }
+	'Remove-UnifiedGroupMember' = @{ What = 'Removes people from a Teams / Microsoft 365 group.'; Steps = @('Type the group and the person, then click Remove Member. Paste List handles many at once.'); Tip = '' }
+	'Remove-UserFromAllGroups' = @{ What = 'Removes a person from all (or the ones you choose) of the tenant''s groups - distribution lists, Teams/M365 groups, and security groups. Handy when offboarding.'; Steps = @('Type the user, review the groups found, and remove them.'); Tip = '' }
+	'Reset-MFA' = @{ What = 'Clears a user''s two-step verification (2FA) methods so they set them up fresh next sign-in - for example after they lost their phone.'; Steps = @('Type the user and run. Bulk is available via the template.'); Tip = 'To remove just ONE method instead of all of them, use Add-AuthenticationPhoneMethod and its ''Remove a 2FA method'' button.' }
+	'Set-License' = @{ What = 'Assigns, removes, or swaps Microsoft 365 licenses for people.'; Steps = @('Type the user, pick the license and whether to add/remove/swap, and run. Bulk is available via the template.'); Tip = '' }
+	'Set-ACLPermissions' = @{ What = 'Adds Windows file and folder permission rules - who is allowed to read or change a folder.'; Steps = @('Enter the folder, the user or group, and the access level, then run. Bulk is supported.'); Tip = '' }
+	'Set-NTP' = @{ What = 'Checks or sets where this computer gets its clock time. It can point the computer at time.windows.com.'; Steps = @('Click to check the current setting; use the button to set it.'); Tip = '' }
+	'Show-Information' = @{ What = 'About this app - the version you''re on and helpful links.'; Steps = @(); Tip = '' }
+}
+
 $script:Categories = @('All', 'Microsoft 365', 'Active Directory', 'System', 'App')
 $script:CurrentCategory = 'All'
 
@@ -927,7 +960,7 @@ function New-ScriptListItem($Meta) {
 	$item.Tag = $Meta.Name
 
 	$grid = [System.Windows.Controls.Grid]::new()
-	foreach ($w in @('Auto', '*')) {
+	foreach ($w in @('Auto', '*', 'Auto')) {
 		$c = [System.Windows.Controls.ColumnDefinition]::new()
 		$c.Width = if ($w -eq '*') { [System.Windows.GridLength]::new(1, 'Star') } else { [System.Windows.GridLength]::Auto }
 		[void]$grid.ColumnDefinitions.Add($c)
@@ -971,6 +1004,25 @@ function New-ScriptListItem($Meta) {
 	if ($Meta.SignIn) {
 		$item.ToolTip = 'Requires signing in to Microsoft Graph / Exchange Online first'
 	}
+
+	# (i) info button: opens a plain-language explanation of what the script does + how to use it.
+	# Handled so clicking it doesn't also start the script.
+	$info = [System.Windows.Controls.Button]::new()
+	$info.Style = $script:StyleDict['IconBtn']
+	$info.Width = 27; $info.Height = 27
+	$info.VerticalAlignment = 'Center'; $info.Margin = '8,0,0,0'
+	$info.Tag = $Meta.Name
+	$info.ToolTip = 'What this does and how to use it'
+	$ig = [System.Windows.Controls.TextBlock]::new()
+	$ig.Text = [string][char]0xEA88
+	$ig.FontFamily = $script:StyleDict['IconFont']
+	$ig.FontSize = 15
+	$ig.HorizontalAlignment = 'Center'; $ig.VerticalAlignment = 'Center'
+	$ig.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush')
+	$info.Content = $ig
+	$info.Add_Click({ param($s, $e) $e.Handled = $true; Show-ScriptHelp ([string]$s.Tag) })
+	[System.Windows.Controls.Grid]::SetColumn($info, 2)
+	[void]$grid.Children.Add($info)
 
 	$item.Content = $grid
 	$item.Add_MouseDoubleClick({ param($s, $e) Invoke-ScriptByName ([string]$s.Tag) })
@@ -1452,6 +1504,8 @@ if ($env:SP_SHOT) {
 			$list.SelectedIndex = 1
 			$w
 		}
+		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }
+		'dlg-help-2fa'           = { New-ScriptHelpDialog 'Add-AuthenticationPhoneMethod' }
 		'dlg-add-autoreply'      = {
 			$w = New-AutoReplyDialog
 			$msg = "I'm out of the office until Monday. For anything urgent, contact sales@contoso.com."

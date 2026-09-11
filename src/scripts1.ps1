@@ -1278,7 +1278,7 @@ function Add-EmailAlias {
 			$aliasName = $splitAlias[0]; $aliasDomain = $splitAlias[1]
 			$created = [System.Collections.Generic.List[string]]::new()
 			$failed  = [System.Collections.Generic.List[string]]::new()
-			for ($i = 0; $i -lt $numericUpDown1.Value; $i++) {
+			for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
 				$completeAlias = "$aliasName$i@$aliasDomain"
 				$r = Add-OneAlias $mailbox $completeAlias $false $accepted
 				if ($r.Status -eq 'done') { $created.Add($completeAlias) }

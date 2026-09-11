@@ -1,4 +1,4 @@
-# Script-Package - script dialogs (Remove-* .. Show-Information)
+﻿# Script-Package - script dialogs (Remove-* .. Show-Information)
 
 function Remove-DistributionListMember {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Remove-DistributionListMember.txt"
@@ -75,7 +75,7 @@ function Remove-EmailAlias {
 				$aliasName = $splitAlias[0]
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
-				for ($i = 0; $i -lt $numericUpDown1.Value; $i++) {
+				for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
 					$progressBar1.Value = 10
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
 					Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias}

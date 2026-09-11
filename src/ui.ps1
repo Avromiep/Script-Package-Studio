@@ -578,6 +578,47 @@ function Update-AcFlagHost($FlagHost, [string]$Raw) {
 		$panel.Visibility = 'Hidden'   # keep the slot's width so the box doesn't jump
 	}
 }
+# Drives the 2FA phone field's country indicator, which lives OUTSIDE the text box, to the left:
+# [flag] [+code]. $ctx = @{ Group; Img; Chip; Code }. The box itself holds only the NATIONAL number
+# (first digit flush-left) - if the user types a country code (+.. or 00..), it is lifted OUT of the
+# box into the +code label. A bare US/Canada number shows the US flag + "+1" once it's long enough.
+function Update-AcPhoneField($ctx, $TextBox) {
+	if (-not $ctx -or -not $TextBox -or $script:PhoneFmtBusy) { return }
+	$raw = "$($TextBox.Text)"
+	$info = Get-AcNumberCountry $raw
+	if (-not $info.Cc) { $ctx.Group.Visibility = 'Collapsed'; return }   # no country yet - hide the indicator
+	$flag = if ($info.Iso) { Get-AcFlagSource $info.Iso } else { $null }
+	if ($flag) {
+		$ctx.Img.Source = $flag; $ctx.Img.Visibility = 'Visible'; $ctx.Chip.Visibility = 'Collapsed'
+	} else {
+		$ctx.Chip.Text = if ($info.Iso) { $info.Iso.ToUpper() } else { "+$($info.Cc)" }
+		$ctx.Chip.Visibility = 'Visible'; $ctx.Img.Visibility = 'Collapsed'
+	}
+	$ctx.Code.Text = "+$($info.Cc)"
+	$ctx.Group.ToolTip = if ($info.Iso) { $info.Iso.ToUpper() } else { "+$($info.Cc)" }
+	$ctx.Group.Visibility = 'Visible'
+	# If a country code was typed INTO the box, move it out - leave just the national digits behind.
+	$t = $raw.Trim()
+	$allDigits = ($t -replace '[^\d]', '')
+	if ($t.StartsWith('+') -or $allDigits.StartsWith('00')) {
+		$d = if ($allDigits.StartsWith('00')) { $allDigits.Substring(2) } else { $allDigits }
+		$national = if ($d.StartsWith($info.Cc)) { $d.Substring($info.Cc.Length) } else { $d }
+		if ($national -ne $allDigits) {
+			$script:PhoneFmtBusy = $true
+			try { $TextBox.Text = $national; $TextBox.CaretIndex = $national.Length } finally { $script:PhoneFmtBusy = $false }
+		}
+	}
+}
+# The full "+CC national" number a phone field currently represents (label code + box digits), for
+# submitting to Graph. Falls back to Format-PhoneForMfa when no country indicator is showing.
+function Get-AcPhoneValue($ctx, $TextBox) {
+	$national = ("$($TextBox.Text)" -replace '[^\d]', '')
+	if ($ctx -and $ctx.Group.Visibility -eq 'Visible') {
+		$cc = "$($ctx.Code.Text)".TrimStart('+').Trim()
+		if ($cc -and $national) { return "+$cc $national" }
+	}
+	return Format-PhoneForMfa "$($TextBox.Text)"
+}
 # Friendly label for a Graph phone method type (mobile / alternateMobile / office).
 function Get-PhoneTypeLabel([string]$Type) {
 	switch ("$Type".ToLower()) {

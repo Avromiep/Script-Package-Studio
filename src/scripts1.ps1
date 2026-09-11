@@ -522,21 +522,23 @@ function New-AuthenticationPhoneDialog {
 					<ColumnDefinition Width="70"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
 				</Grid.ColumnDefinitions>
 				<TextBlock Text="Phone" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
-				<!-- Country flag for the typed number - OUTSIDE and to the left of the box. Shows the
-					 flag image when bundled, else a 2-letter country chip; hidden (slot kept) otherwise. -->
-				<Border x:Name="FlagPanel" Grid.Column="1" Width="26" Height="18" Margin="0,0,8,0" VerticalAlignment="Center"
-						CornerRadius="3" ClipToBounds="True" Background="{DynamicResource PanelBrush}"
-						BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="1" Visibility="Hidden">
-					<Grid>
-						<Image x:Name="FlagImg" Stretch="UniformToFill"/>
-						<TextBlock x:Name="FlagChip" FontSize="9" FontWeight="SemiBold" Visibility="Collapsed"
-								   Foreground="{DynamicResource TextDimBrush}"
-								   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-					</Grid>
-				</Border>
+				<!-- Country indicator OUTSIDE the box, to its left: [flag] [+code]. The box holds only the
+					 national number (first digit flush-left); a typed country code is lifted up here. -->
+				<StackPanel x:Name="PhoneCcGroup" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+					<Border x:Name="FlagPanel" Width="26" Height="18" CornerRadius="3" ClipToBounds="True"
+							Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource StrokeSoftBrush}" BorderThickness="1">
+						<Grid>
+							<Image x:Name="FlagImg" Stretch="UniformToFill"/>
+							<TextBlock x:Name="FlagChip" FontSize="9" FontWeight="SemiBold" Visibility="Collapsed"
+									   Foreground="{DynamicResource TextDimBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+						</Grid>
+					</Border>
+					<TextBlock x:Name="PhoneCcText" VerticalAlignment="Center" Margin="7,0,9,0" FontWeight="SemiBold"
+							   FontSize="13" Foreground="{DynamicResource TextBrush}"/>
+				</StackPanel>
 				<TextBox x:Name="PhoneInput" Grid.Column="2"/>
 			</Grid>
-			<TextBlock Text="US/Canada: just the 10 digits (the +1 is added for you). Other countries: include the country code, e.g. +44 20 7946 0958." Style="{DynamicResource Small}" Margin="70,6,0,0" TextWrapping="Wrap"/>
+			<TextBlock Text="US/Canada: just the 10 digits. Other countries: type the country code (e.g. +44) - it moves up next to the flag." Style="{DynamicResource Small}" Margin="70,6,0,0" TextWrapping="Wrap"/>
 			<StackPanel Orientation="Horizontal" Margin="70,10,0,0">
 				<RadioButton x:Name="TypeMobileChip" Style="{DynamicResource Chip}" GroupName="PhoneType" Content="Mobile" IsChecked="True"/>
 				<RadioButton x:Name="TypeAltChip" Style="{DynamicResource Chip}" GroupName="PhoneType" Content="Alternate mobile" Margin="8,0,0,0"/>
@@ -562,7 +564,7 @@ function Add-AuthenticationPhoneMethod {
 	function OnAddPhoneButtonClick {
 		$progressBar1.Value = 10
 		$user = $emailInput.Text
-		$phoneNumber = Format-PhoneForMfa $phoneInput.Text   # bare 10-digit US or a +CC number both work; a correctly-formatted value passes through untouched
+		$phoneNumber = Get-AcPhoneValue $phoneCc $phoneInput   # combines the +code shown by the flag with the national number in the box
 		$ptype = if ($typeAltChip.IsChecked -eq $true) { 'alternateMobile' } else { 'mobile' }   # a user's primary mobile can hold one number; extra numbers go in as alternateMobile
 		$progressBar1.Value = 40
 		New-MgUserAuthenticationPhoneMethod -UserId $user -phoneType $ptype -phoneNumber $phoneNumber
@@ -625,19 +627,17 @@ function Add-AuthenticationPhoneMethod {
 	$phoneBannerText = $scriptForm8.FindName('PhoneBannerText')
 	$showCurrentBtn = $scriptForm8.FindName('ShowCurrentBtn')
 	Set-PhoneBannerNew
-	# Country flag beside the phone box, updated live as you type (US flag as soon as it's a plausible
-	# US number; the right country once you type a + / country code).
-	$flagHost = [pscustomobject]@{ Panel = $scriptForm8.FindName('FlagPanel'); Img = $scriptForm8.FindName('FlagImg'); Chip = $scriptForm8.FindName('FlagChip') }
-	Update-AcFlagHost $flagHost $phoneInput.Text
+	# Country indicator (flag + "+code") shown OUTSIDE the box, to its left; the box keeps only the
+	# national number. Updated live as you type - US flag/+1 for a bare US number, the right country
+	# once a code is typed (the code is then lifted out of the box up next to the flag).
+	$phoneCc = [pscustomobject]@{ Group = $scriptForm8.FindName('PhoneCcGroup'); Img = $scriptForm8.FindName('FlagImg'); Chip = $scriptForm8.FindName('FlagChip'); Code = $scriptForm8.FindName('PhoneCcText') }
+	Update-AcPhoneField $phoneCc $phoneInput
 	# Typing a number means you're adding a new one - flip the banner back from a current-numbers preview.
 	$phoneInput.Add_TextChanged({
 		if ($script:PhoneFmtBusy) { return }
-		Set-AcPhoneFormatted $phoneInput -OnlyWhenComplete   # once a bare US number is complete, show "+1 ..."
-		Update-AcFlagHost $flagHost $phoneInput.Text
+		Update-AcPhoneField $phoneCc $phoneInput
 		if (-not $script:PmSuppress -and $script:PmShowingCurrent) { Set-PhoneBannerNew }
 	})
-	# Leaving the field normalizes whatever's there (incl. +CC numbers) to the Microsoft "+CC national" form.
-	$phoneInput.Add_LostKeyboardFocus({ Set-AcPhoneFormatted $phoneInput; Update-AcFlagHost $flagHost $phoneInput.Text })
 
 	# "Show current": read this user's registered 2FA phone numbers so you can see what's already
 	# there before adding another. Toggles: while a preview is shown, the button clears it.

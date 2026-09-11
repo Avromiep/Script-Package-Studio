@@ -26,6 +26,7 @@ function Remove-DistributionListMember {
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Remove-DistributionListMember.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
@@ -76,7 +77,7 @@ function Remove-EmailAlias {
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
 				for ($i = 0; $i -le $numericUpDown1.Value; $i++) {
-					$progressBar1.Value = 10
+					Step-Progress
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
 					try {
 						Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias} -ErrorAction Stop
@@ -116,6 +117,7 @@ function Remove-EmailAlias {
 	}
 	function OnRemoveAliasBulkButtonClick {
 		Import-Csv ".\Templates\Remove-EmailAlias.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 20
 			$mailbox = $_.Mailbox
 			$alias = $_.Alias
@@ -205,6 +207,7 @@ function Remove-UnifiedGroupMember {
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | ForEach-Object {
+			Step-Progress   # keep the bar climbing per item
 			$progressBar1.Value = 20
 			$member = $_.Member
 			$group = $_.Group
@@ -290,6 +293,7 @@ function Remove-UserFromAllGroups {
 		$objs = @()
 		try { $objs = Get-MgUserMemberOf -UserId $email -All -ErrorAction Stop } catch { $failed.Add("$label memberOf lookup - $($_.Exception.Message)"); return }
 		foreach ($o in $objs) {
+			Step-Progress   # keep the bar climbing per item
 			$ap = $o.AdditionalProperties
 			if ("$($ap['@odata.type'])" -notlike '*group') { continue }   # skip directory roles / admin units
 			$name = "$($ap['displayName'])"; $gt = @($ap['groupTypes']); $mail = [bool]$ap['mailEnabled']; $sec = [bool]$ap['securityEnabled']; $gmail = "$($ap['mail'])"
@@ -345,6 +349,7 @@ function Remove-UserFromAllGroups {
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $rows) {
+			Step-Progress   # keep the bar climbing per item
 			$email = "$($row.Email)".Trim()
 			if (-not $email) { continue }
 			Write-Host "Processing $email..."

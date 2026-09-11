@@ -1,4 +1,4 @@
-﻿$version = "v3.1.87"
+﻿$version = "v3.1.88"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -458,6 +458,7 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 		try {
 			if ($target -le 0) {
 				Stop-ProgressPulse                          # idle - stop the breathing pulse
+				$script:ProgTarget = 0                      # reset the self-advancing loop ticker
 				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
 				$pb.Value = 0
 			} else {
@@ -471,6 +472,29 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 		} catch { try { $pb.Value = $target } catch {} }
 		try { $pb.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}
 	}
+
+# Drive the progress bar smoothly across the items of a loop: call it after each item with how many
+# are done out of the total, and it maps that to a value between $Lo and $Hi. Every set forces a
+# repaint (via the proxy above), so the bar visibly climbs as a batch works through its items,
+# instead of jumping only at the end. Start a script at $Lo and finish at 100 either side of this.
+function Set-LoopProgress([int]$Done, [int]$Total, [int]$Lo = 12, [int]$Hi = 95) {
+	if ($Total -le 0) { return }
+	$v = $Lo + [int](($Hi - $Lo) * $Done / $Total)
+	if ($v -gt $Hi) { $v = $Hi } elseif ($v -lt $Lo) { $v = $Lo }
+	$progressBar1.Value = $v
+}
+
+# Self-advancing progress tick for loops where the item count isn't handy: call it once per item and
+# it nudges the bar a fraction of the way toward ~93% (so it always moves forward, faster on fast
+# items, and never quite finishes until the script sets 100). No total needed. It tracks its own
+# target (not the mid-animation Value) so a fast loop keeps climbing; it resets when the bar goes idle.
+$script:ProgTarget = 0
+function Step-Progress {
+	if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
+	$script:ProgTarget = $script:ProgTarget + [Math]::Max(1, [int]((93 - $script:ProgTarget) * 0.16))
+	if ($script:ProgTarget -gt 93) { $script:ProgTarget = 93 }
+	$progressBar1.Value = $script:ProgTarget
+}
 
 # ---- tenant profiles ------------------------------------------------------------
 # Saved tenants live in tenants.json next to the app (portable, like settings.ini).
@@ -922,7 +946,7 @@ $script:ScriptCatalog = @(
 # script windows. Keep it short and non-technical. Falls back to the catalog Desc when a script
 # isn't listed here. What = one-paragraph summary; Steps = how-to bullets; Tip = optional note.
 $script:ScriptHelp = @{
-	'Add-AuthenticationPhoneMethod' = @{ What = 'Adds a phone number to someone''s account for two-step verification (2FA) - the code they get by text or call when signing in. You can also see and remove the 2FA methods they already have.'; Steps = @('Type the person''s email, then their phone number. For a US/Canada number just type the 10 digits - the +1 and the flag fill in for you; for another country type its code (like +44) and it hops up next to the flag.'; 'Pick Mobile (their main number) or Alternate mobile (a second one), then click Add Phone Number.'; 'Show current lists what they already have. Remove a 2FA method lets you delete one - handy if they lost a phone or security key.'); Tip = 'To add many at once: click Open Template, fill in the spreadsheet, save it, then click Add Phone Numbers.' }
+	'Add-AuthenticationPhoneMethod' = @{ What = 'Adds a phone number to someone''s account for two-step verification (2FA) - the code they get by text or call when signing in. You can also see and remove the 2FA methods they already have.'; Steps = @('Type the person''s email, then their phone number. For US/Canada just type the 10 digits - the +1 and flag fill in for you. For another country, type its code (like +44) and it hops up next to the flag. Either way, you can also type or paste the full number with the code, like +1 8585555555, and it works too.'; 'Pick Mobile (their main number) or Alternate mobile (a second one), then click Add Phone Number.'; 'Show current lists what they already have. Remove a 2FA method lets you delete one - handy if they lost a phone or security key.'); Tip = 'To add many at once: click Open Template, fill in the spreadsheet, save it, then click Add Phone Numbers.' }
 	'Add-AutoReply' = @{ What = 'Turns on an automatic ''out of office'' reply for a mailbox.'; Steps = @('Type the mailbox''s email address.'; 'Write the message. Internal is for coworkers, External is for outside senders - leave Match Replies ticked to use the same text for both.'; 'Optionally tick Use Start and End Date to schedule it, then click Confirm.'; 'Show current loads the reply already on the mailbox so you can read or edit it before replacing it.'); Tip = '' }
 	'Add-Contacts' = @{ What = 'Adds outside people to your Microsoft 365 address book as contacts, so their name and email show up when your staff compose messages.'; Steps = @('Fill in the contact''s name and email, or click Open Template to add many from a spreadsheet.'; 'Click Add.'); Tip = '' }
 	'Add-DistributionListMember' = @{ What = 'Adds people to a distribution list - one email address that forwards to a whole group of people.'; Steps = @('Type the list''s email, then the person to add (start typing a name and pick them from the list).'; 'Click Add Member. To add lots of people, click Paste List and paste their names or emails.'); Tip = '' }

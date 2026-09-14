@@ -1,4 +1,4 @@
-﻿$version = "v3.1.95"
+﻿$version = "v3.1.96"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1430,7 +1430,10 @@ function Show-Settings {
 			try { if ((Get-Item $tmp).Length -gt 500KB) { $fsx = [System.IO.File]::OpenRead($tmp); $hdr = New-Object byte[] 2; [void]$fsx.Read($hdr, 0, 2); $fsx.Close(); $looksOk = ($hdr[0] -eq 0x4D -and $hdr[1] -eq 0x5A) } } catch { $looksOk = $false }
 			if (-not $looksOk) { & $setStatus "That download didn't look like a valid installer - opening the releases page instead."; Remove-Item $tmp -Force -ErrorAction Ignore; Start-Process 'https://github.com/Avromiep/Script-Package-Studio/releases/latest'; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
 			$prog.Value = 70; & $setStatus "Installing $remote..."
-			Start-Process $tmp -ArgumentList '/SP-', '/SILENT', "/DIR=`"$appRoot`"" -Wait
+			# /VERYSILENT (not /SILENT) so the installer's own progress window never pops up - the
+			# in-app progress + status is the only thing shown. /SUPPRESSMSGBOXES + /NORESTART keep it
+			# from prompting or restarting Windows while we handle the relaunch ourselves.
+			Start-Process $tmp -ArgumentList '/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$appRoot`"" -Wait
 			$prog.Value = 100
 			& $setStatus "Update to $remote installed. Click Relaunch now to finish."
 			$updateBtn.Visibility = 'Collapsed'; $relaunchBtn.Visibility = 'Visible'

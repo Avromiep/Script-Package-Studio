@@ -1,4 +1,4 @@
-﻿$version = "v3.1.91"
+﻿$version = "v3.1.92"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -364,9 +364,23 @@ $mainXaml = @"
 						<TextBlock x:Name="StatusText" Grid.Column="1" Text="Ready" Style="{DynamicResource Dim}"
 								   Margin="8,0,14,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
 					</Grid>
-					<ProgressBar x:Name="MainProgress" Grid.Row="1" Height="4" Maximum="100"
-							 Margin="14,0,14,6" HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
-							 Background="{DynamicResource StrokeSoftBrush}" BorderThickness="0"/>
+					<!-- Determinate fill (real progress) with a sliding marquee stripe over it for visible motion
+					     while a script runs. Clipped so the stripe stays inside the bar. -->
+					<Grid Grid.Row="1" Margin="14,0,14,6" Height="4" VerticalAlignment="Bottom" ClipToBounds="True">
+						<ProgressBar x:Name="MainProgress" Height="4" Maximum="100" HorizontalAlignment="Stretch"
+								 Background="{DynamicResource StrokeSoftBrush}" BorderThickness="0"/>
+						<!-- A soft white SHINE (not fill-coloured) so it reads as motion, never as extra progress. -->
+						<Border x:Name="MarqueeSeg" Width="100" Height="4" HorizontalAlignment="Left" Visibility="Collapsed">
+							<Border.Background>
+								<LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+									<GradientStop Color="#00FFFFFF" Offset="0"/>
+									<GradientStop Color="#70FFFFFF" Offset="0.5"/>
+									<GradientStop Color="#00FFFFFF" Offset="1"/>
+								</LinearGradientBrush>
+							</Border.Background>
+							<Border.RenderTransform><TranslateTransform x:Name="MarqueeTT"/></Border.RenderTransform>
+						</Border>
+					</Grid>
 				</Grid>
 			</Border>
 		</Grid>
@@ -382,7 +396,7 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn','ConnectedGroup','DisconnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
+		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress','MarqueeSeg','MarqueeTT')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el
@@ -420,26 +434,31 @@ if (-not $env:SP_SHOT) {
 	})
 }
 
-# Gentle "breathing" pulse on the progress bar while a script is running, so it never looks frozen.
-# Opacity is an INDEPENDENT animation (runs on WPF's render thread), so it keeps moving even while a
-# script blocks the UI thread mid-call - unlike the Value bar, which can only step between milestones.
+# A bright stripe slides across the progress bar while a script runs, for clearly-visible motion on
+# top of the determinate fill. (Like any WPF animation its clock is driven by the UI thread, so it
+# freezes during a single long blocking Exchange/Graph call - but it moves obviously between the
+# per-item steps, which is where the "is it frozen?" worry comes from.)
 $script:ProgPulsing = $false
 function Start-ProgressPulse {
 	if ($script:ProgPulsing) { return }
 	try {
-		$pb = $script:UI.MainProgress
+		$seg = $script:UI.MarqueeSeg; $tt = $script:UI.MarqueeTT
+		$w = [double]$script:UI.MainProgress.ActualWidth; if ($w -lt 60) { $w = 400 }
+		$seg.Visibility = 'Visible'
 		$a = New-Object System.Windows.Media.Animation.DoubleAnimation
-		$a.From = 0.4; $a.To = 1.0
-		$a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.7))
-		$a.AutoReverse = $true
+		$a.From = -100; $a.To = $w
+		$a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.05))
 		$a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-		$pb.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a)
+		$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $a)
 		$script:ProgPulsing = $true
 	} catch {}
 }
 function Stop-ProgressPulse {
 	if (-not $script:ProgPulsing) { return }
-	try { $pb = $script:UI.MainProgress; $pb.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null); $pb.Opacity = 1 } catch {}
+	try {
+		$script:UI.MarqueeTT.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
+		$script:UI.MarqueeSeg.Visibility = 'Collapsed'
+	} catch {}
 	$script:ProgPulsing = $false
 }
 

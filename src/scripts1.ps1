@@ -142,6 +142,8 @@ function Invoke-MemberRoute {
 
 # What each detected type is "called" for the after-the-fact note.
 $script:MemberTypeArticle = @{ Mailbox = 'a mailbox'; DistributionList = 'a distribution list'; UnifiedGroup = 'a Teams / Microsoft 365 group' }
+# Plain name of the category a script is FOR - used only in the "you opened the wrong script" heads-up.
+$script:MemberTypeName = @{ Mailbox = 'mailbox'; DistributionList = 'distribution list'; UnifiedGroup = 'Teams / Microsoft 365 group' }
 
 # Run one single-target add/remove through Invoke-MemberRoute and report the outcome with a
 # popup - INCLUDING a friendly note when the target turned out to be a different type than the
@@ -159,7 +161,10 @@ function Invoke-SingleMemberChange {
 	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected
 	$typeName = $r.TypeName
 	$mismatch = ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected)
-	$expArticle = $script:MemberTypeArticle[$Expected]
+	$expName = $script:MemberTypeName[$Expected]
+	# Always name the target's REAL, specific type (shared mailbox / user's mailbox / distribution list /
+	# Teams group), woven into the sentence. Heads-up only when the category differs from this script.
+	$where = if ($typeName -and $typeName -ne 'recipient') { "the $typeName `"$Target`"" } else { "`"$Target`"" }
 	switch ($r.Status) {
 		'unknown' {
 			Write-Host "Couldn't determine the type of '$Target'." -ForegroundColor Red
@@ -168,14 +173,14 @@ function Invoke-SingleMemberChange {
 		'done' {
 			Write-Host "$Member $verbPast $Target ($typeName)." -ForegroundColor Cyan
 			$progressBar1.Value = 80
-			$note = if ($mismatch) { "`n`nNote: `"$Target`" is actually $typeName, not $expArticle - but $Member was still $verbPast it." } else { '' }
-			Show-Notice $(if ($isRemove) { 'Removed' } else { 'Added' }) "$Member was $verbPast `"$Target`" ($typeName).$note" 'Info'
+			$note = if ($mismatch) { "`n`nHeads up: you used the $expName script, but `"$Target`" is actually a $typeName - $Member was still $verbPast it." } else { '' }
+			Show-Notice $(if ($isRemove) { 'Removed' } else { 'Added' }) "$Member was $verbPast $where.$note" 'Info'
 			OperationComplete
 		}
 		'noop' {
-			$noopMsg = if ($isRemove) { "$Member wasn't on `"$Target`" ($typeName) - nothing to remove." } else { "$Member is already on `"$Target`" ($typeName)." }
+			$noopMsg = if ($isRemove) { "$Member wasn't on $where - nothing to remove." } else { "$Member is already on $where." }
 			Write-Host $noopMsg -ForegroundColor Yellow
-			$note = if ($mismatch) { "`n`n(Heads up: `"$Target`" is actually $typeName, not $expArticle.)" } else { '' }
+			$note = if ($mismatch) { "`n`n(Heads up: you used the $expName script, but `"$Target`" is actually a $typeName.)" } else { '' }
 			Show-Notice 'Nothing to do' "$noopMsg$note" 'Info'
 		}
 		'failed' {
@@ -194,7 +199,7 @@ function Invoke-BulkMemberRow {
 	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action, [hashtable]$Cache, [System.Collections.Generic.HashSet[string]]$Corrected, [string]$MailboxRight = 'FullAndSendAs')
 	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected -Cache $Cache
 	if ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected -and $Corrected) {
-		[void]$Corrected.Add("$Target is $($r.TypeName)")
+		[void]$Corrected.Add("`"$Target`" is a $($r.TypeName)")
 	}
 	$verbPast = if ($Action -eq 'remove') { 'removed from' } else { 'added to' }
 	switch ($r.Status) {

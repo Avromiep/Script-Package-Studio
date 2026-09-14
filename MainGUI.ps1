@@ -1,4 +1,4 @@
-﻿$version = "v3.1.89"
+﻿$version = "v3.1.90"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1624,6 +1624,8 @@ if ($env:SP_SHOT) {
 		'dlg-updatecomplete'     = { New-UpdateCompleteDialog "Latest version already installed." }
 		'dlg-modules'            = { New-ModulesMissingDialog "Microsoft.Graph`nExchangeOnlineManagement" }
 		'dlg-notice-info'        = { New-NoticeDialog 'Already added' 'admin@contoso.com is already added to "Contoso Ltd".' 'Info' }
+		'dlg-added-clean'        = { New-NoticeDialog 'Added' 'rklor@contoso.com was added to the shared mailbox "utilities@contoso.com".' 'Info' }
+		'dlg-added-mismatch'     = { New-NoticeDialog 'Added' "jane@contoso.com was added to the Teams / Microsoft 365 group `"team@contoso.com`".`n`nHeads up: you used the distribution list script, but `"team@contoso.com`" is actually a Teams / Microsoft 365 group - jane@contoso.com was still added to it." 'Info' }
 		'dlg-notice-warn'        = { New-NoticeDialog 'Wrong script for this target' "'sales@contoso.com' is a distribution list, not a mailbox.`n`nUse the 'Add-DistributionListMember' script for it instead." 'Warn' }
 		'dlg-notice-summary'     = { New-NoticeDialog 'Add complete' "sales@contoso.com (shared mailbox): 5 added, 1 already there`nContoso Team (Teams / Microsoft 365 group): 5 added`ndl@contoso.com (distribution list): 4 added, 1 failed" 'Warn' }
 		'dlg-paste'              = { New-PasteMembersDialog -TargetPrefill "sales@contoso.com`nContoso Team" }

@@ -1334,6 +1334,152 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 	} catch { }
 }
 
+# ============================ Active Directory user search ====================================
+# Type-ahead for AD USERNAME fields (Block-User, Terminate) - type a full name OR a username and pick
+# from a dropdown that shows both. Fills the field with the SamAccountName (what the AD cmdlets want).
+# AD ANR (Ambiguous Name Resolution) is local + fast, so this is a plain debounced live query - no
+# background worker, index, connect or "preparing" state (unlike the tenant/EXO search). Stays plain
+# when the ActiveDirectory module isn't available (e.g. not on a domain controller).
+function New-ADUserRow([string]$Name, [string]$Sam, [string]$Upn, [bool]$Enabled) {
+	$g = New-Object System.Windows.Controls.Grid
+	$c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = New-Object System.Windows.GridLength (1, ([System.Windows.GridUnitType]::Star))
+	$c2 = New-Object System.Windows.Controls.ColumnDefinition; $c2.Width = [System.Windows.GridLength]::Auto
+	$g.ColumnDefinitions.Add($c1); $g.ColumnDefinitions.Add($c2)
+	$sp = New-Object System.Windows.Controls.StackPanel
+	$nm = New-Object System.Windows.Controls.TextBlock; $nm.Text = $Name; $nm.Foreground = $script:StyleDict['TextBrush']; $nm.FontSize = 13; $nm.TextTrimming = 'CharacterEllipsis'
+	$sub = if ($Upn) { "$Sam  $([char]0x00B7)  $Upn" } else { "$Sam" }
+	$em = New-Object System.Windows.Controls.TextBlock; $em.Text = $sub; $em.Foreground = $script:StyleDict['TextDimBrush']; $em.FontSize = 11; $em.TextTrimming = 'CharacterEllipsis'
+	[void]$sp.Children.Add($nm); [void]$sp.Children.Add($em)
+	[System.Windows.Controls.Grid]::SetColumn($sp, 0); [void]$g.Children.Add($sp)
+	if (-not $Enabled) {
+		$lb = New-Object System.Windows.Controls.TextBlock; $lb.Text = 'disabled'; $lb.Foreground = $script:StyleDict['WarnBrush']; $lb.FontSize = 11; $lb.VerticalAlignment = 'Center'; $lb.Margin = '12,0,2,0'
+		[System.Windows.Controls.Grid]::SetColumn($lb, 1); [void]$g.Children.Add($lb)
+	}
+	return $g
+}
+# Look up AD users matching $Term by name OR username (ANR), newest-typing-first ranked. Returns
+# @({Name;Sam;Upn;Enabled}) or @() (too short / no AD module / query error).
+function Get-ADUserMatches([string]$Term, [int]$Max = 12) {
+	$t = "$Term".Trim()
+	if ($t.Length -lt 2) { return @() }
+	if (-not (Get-Command Get-ADUser -ErrorAction SilentlyContinue)) { return @() }
+	$esc = $t -replace '\\', '\5c' -replace '\*', '\2a' -replace '\(', '\28' -replace '\)', '\29' -replace '/', '\2f'
+	$res = @()
+	try { $res = @(Get-ADUser -LDAPFilter "(anr=$esc)" -ResultSetSize $Max -Properties DisplayName, SamAccountName, UserPrincipalName, mail, Enabled -ErrorAction Stop) } catch { return @() }
+	$rows = foreach ($u in $res) {
+		$nm = if ("$($u.DisplayName)".Trim()) { "$($u.DisplayName)" } else { "$($u.Name)" }
+		$up = if ("$($u.UserPrincipalName)".Trim()) { "$($u.UserPrincipalName)" } elseif ("$($u.mail)".Trim()) { "$($u.mail)" } else { '' }
+		[pscustomobject]@{ Name = $nm; Sam = "$($u.SamAccountName)"; Upn = $up; Enabled = [bool]$u.Enabled }
+	}
+	$ic = [System.StringComparison]::OrdinalIgnoreCase
+	return @($rows | Sort-Object @{ Expression = { if ("$($_.Name)".StartsWith($t, $ic) -or "$($_.Sam)".StartsWith($t, $ic)) { 0 } else { 1 } } }, Name | Select-Object -First $Max)
+}
+function Enable-ADUserAutocomplete($TextBox) {
+	if (-not $TextBox) { return }
+	if ($script:Settings -and $script:Settings.recipientSearch -eq $false) { return }
+	if (-not (Get-Command Get-ADUser -ErrorAction SilentlyContinue)) { return }   # no AD module - leave the field plain
+	Set-FieldWatermark $TextBox 'Name or username'
+	try {
+		$border = Read-XamlString @'
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+        BorderThickness="1" CornerRadius="8" Padding="3" MaxWidth="660">
+  <ListBox x:Name="AcList" Background="Transparent" BorderThickness="0" MaxHeight="264"
+           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+    <ListBox.ItemContainerStyle>
+      <Style TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ListBoxItem">
+              <Border x:Name="ib" Background="Transparent" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                <ContentPresenter/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ib" Property="Background" Value="{DynamicResource CardHoverBrush}"/></Trigger>
+                <Trigger Property="IsSelected" Value="True"><Setter TargetName="ib" Property="Background" Value="{DynamicResource SelectionBrush}"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+    </ListBox.ItemContainerStyle>
+  </ListBox>
+</Border>
+'@
+		[void]$border.Resources.MergedDictionaries.Add($script:StyleDict)
+		$list = $border.FindName('AcList')
+		$popup = New-Object System.Windows.Controls.Primitives.Popup
+		$popup.PlacementTarget = $TextBox
+		$popup.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+		$popup.StaysOpen = $false
+		$popup.AllowsTransparency = $true
+		$popup.Child = $border
+		$state = [pscustomobject]@{ Suppress = $false }
+		$timer = New-Object System.Windows.Threading.DispatcherTimer
+		$timer.Interval = [TimeSpan]::FromMilliseconds(250)   # debounce a live AD query
+		$choose = {
+			if ($list.SelectedItem) {
+				$state.Suppress = $true
+				$TextBox.Text = [string]$list.SelectedItem.Tag   # SamAccountName
+				try { $TextBox.CaretIndex = $TextBox.Text.Length } catch {}
+				$state.Suppress = $false
+				$popup.IsOpen = $false
+				$TextBox.Focus()
+			}
+		}.GetNewClosure()
+		$sizePopup = { try { $border.MinWidth = [Math]::Max(260, $TextBox.ActualWidth) } catch {} }.GetNewClosure()
+		$renderMatches = {
+			param($matches)
+			$list.Items.Clear()
+			if (-not @($matches).Count) { $popup.IsOpen = $false; return }
+			foreach ($m in $matches) {
+				$it = New-Object System.Windows.Controls.ListBoxItem
+				$it.Content = New-ADUserRow $m.Name $m.Sam $m.Upn $m.Enabled
+				$it.Tag = $m.Sam
+				$it.Add_MouseLeftButtonUp($choose)
+				[void]$list.Items.Add($it)
+			}
+			& $sizePopup
+			$popup.IsOpen = $true
+		}.GetNewClosure()
+		$runQuery = {
+			$timer.Stop()
+			$t = "$($TextBox.Text)".Trim()
+			if ($t.Length -lt 2) { $popup.IsOpen = $false; return }
+			& $renderMatches (@(Get-ADUserMatches $t 12))
+		}.GetNewClosure()
+		$timer.Add_Tick($runQuery)
+		$TextBox.Add_TextChanged({
+			if ($state.Suppress) { return }
+			$timer.Stop()
+			$t = "$($TextBox.Text)".Trim()
+			if ($t.Length -lt 2) { $popup.IsOpen = $false; return }
+			$timer.Start()
+		}.GetNewClosure())
+		$TextBox.Add_PreviewKeyDown({
+			param($s, $e)
+			if (-not $popup.IsOpen) { return }
+			if ($e.Key -eq 'Down') {
+				if ($list.Items.Count) { $list.SelectedIndex = 0; $c = $list.ItemContainerGenerator.ContainerFromIndex(0); if ($c) { [void]$c.Focus() } }
+				$e.Handled = $true
+			} elseif ($e.Key -eq 'Escape') { $popup.IsOpen = $false; $e.Handled = $true }
+			elseif ($e.Key -eq 'Enter' -and $list.SelectedItem) { & $choose; $e.Handled = $true }
+		}.GetNewClosure())
+		$list.Add_PreviewKeyDown({
+			param($s, $e)
+			if ($e.Key -eq 'Enter') { & $choose; $e.Handled = $true }
+			elseif ($e.Key -eq 'Escape') { $popup.IsOpen = $false; $TextBox.Focus(); $e.Handled = $true }
+		}.GetNewClosure())
+		$TextBox.Add_LostKeyboardFocus({
+			if ($popup.IsOpen -and -not $popup.IsKeyboardFocusWithin) { $popup.IsOpen = $false }
+		}.GetNewClosure())
+	} catch { }
+}
+
+
 # Reads a bounded integer out of a plain TextBox (replaces WinForms NumericUpDown)
 function Get-NumericValue($TextBox, [int]$Max = 100) {
 	$n = 0

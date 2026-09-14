@@ -1,4 +1,4 @@
-﻿$version = "v3.1.93"
+﻿$version = "v3.1.94"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1649,6 +1649,31 @@ if ($env:SP_SHOT) {
 			@('Sales', 'sales@contoso.com', 'distribution list'),
 			@('Sales Managers', 'salesmgrs@contoso.com', 'mail-enabled security group'),
 			@('Sally Ann Reyes', 'sreyes@contoso.com', '')) }
+		'dlg-ac-aduser'          = {
+			# AD username type-ahead: type a name OR a username; the dropdown shows both.
+			$w = New-StyledDialog -Title 'Type-ahead - an AD user field' -Icon '&#xE721;' -BodyXaml @"
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="AD user (name or username)" Style="{DynamicResource Dim}"/>
+			<TextBox x:Name="AcField" Margin="0,6,0,0" Text="jsm"/>
+			<Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1" CornerRadius="8" Padding="3" Margin="0,4,0,0">
+				<ListBox x:Name="AcList" Background="Transparent" BorderThickness="0"/>
+			</Border>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+			$list = $w.FindName('AcList')
+			$sample = @(
+				@('John Smith', 'jsmith', 'john.smith@contoso.com', $true),
+				@('Jasmine Cole', 'jcole', 'jasmine.cole@contoso.com', $true),
+				@('Joseph Smithson', 'jsmithson', 'joseph.smithson@contoso.com', $false),
+				@('Jane Smart', 'jsmart', 'jane.smart@contoso.com', $true)
+			)
+			foreach ($r in $sample) { $it = New-Object System.Windows.Controls.ListBoxItem; $it.Content = New-ADUserRow $r[0] $r[1] $r[2] $r[3]; [void]$list.Items.Add($it) }
+			$w
+		}
 		'dlg-show-information'   = { New-InformationDialog }
 		'dlg-error'              = { New-ErrorDialog "Add-MailboxPermission: mailbox admin@contoso.com`nwas not found on the server." }
 		'dlg-opcomplete'         = { New-OperationCompleteDialog }

@@ -369,6 +369,7 @@ function Block-User {
 	$emailInputBox = $ScriptForm2.FindName('EmailInput')
 	Enable-RecipientAutocomplete $emailInputBox 'Mailbox'
 	$adNameInputBox = $ScriptForm2.FindName('AdNameInput')
+	Enable-ADUserAutocomplete $adNameInputBox
 	$emailCheckBox = $ScriptForm2.FindName('EmailCheck')
 	$adCheckBox = $ScriptForm2.FindName('AdCheck')
 	$emailOptionsPanel = $ScriptForm2.FindName('EmailOptionsPanel')
@@ -1674,6 +1675,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 	$form = New-DisableAccountsDialog
 	$emailInput = $form.FindName('EmailInput')
 	$adUserInput = $form.FindName('AdUserInput')
+	Enable-ADUserAutocomplete $adUserInput
 	Enable-RecipientAutocomplete $emailInput 'Mailbox'
 	$blockEmailCheck = $form.FindName('BlockEmailCheck')
 	$blockAdCheck = $form.FindName('BlockAdCheck')

@@ -1,4 +1,4 @@
-﻿$version = "v3.1.92"
+﻿$version = "v3.1.93"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -364,23 +364,34 @@ $mainXaml = @"
 						<TextBlock x:Name="StatusText" Grid.Column="1" Text="Ready" Style="{DynamicResource Dim}"
 								   Margin="8,0,14,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
 					</Grid>
-					<!-- Determinate fill (real progress) with a sliding marquee stripe over it for visible motion
-					     while a script runs. Clipped so the stripe stays inside the bar. -->
-					<Grid Grid.Row="1" Margin="14,0,14,6" Height="4" VerticalAlignment="Bottom" ClipToBounds="True">
-						<ProgressBar x:Name="MainProgress" Height="4" Maximum="100" HorizontalAlignment="Stretch"
-								 Background="{DynamicResource StrokeSoftBrush}" BorderThickness="0"/>
-						<!-- A soft white SHINE (not fill-coloured) so it reads as motion, never as extra progress. -->
-						<Border x:Name="MarqueeSeg" Width="100" Height="4" HorizontalAlignment="Left" Visibility="Collapsed">
-							<Border.Background>
-								<LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-									<GradientStop Color="#00FFFFFF" Offset="0"/>
-									<GradientStop Color="#70FFFFFF" Offset="0.5"/>
-									<GradientStop Color="#00FFFFFF" Offset="1"/>
-								</LinearGradientBrush>
-							</Border.Background>
-							<Border.RenderTransform><TranslateTransform x:Name="MarqueeTT"/></Border.RenderTransform>
-						</Border>
-					</Grid>
+					<!-- Progress bar: determinate blue fill (real progress) with a soft shimmer that moves WITHIN
+					     the filled portion (clipped to it, so it grows with the fill) - the common animated-
+					     progress look. Custom template puts the shimmer inside PART_Indicator. -->
+					<ProgressBar x:Name="MainProgress" Grid.Row="1" Height="4" Maximum="100"
+							 Margin="14,0,14,6" HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
+							 Background="{DynamicResource StrokeSoftBrush}" Foreground="{DynamicResource AccentBrush}" BorderThickness="0">
+						<ProgressBar.Template>
+							<ControlTemplate TargetType="{x:Type ProgressBar}">
+								<Grid>
+									<Border CornerRadius="2" Background="{TemplateBinding Background}"/>
+									<Border x:Name="PART_Track"/>
+									<Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="2" ClipToBounds="True"
+											Background="{TemplateBinding Foreground}">
+										<Rectangle x:Name="ProgShine">
+											<Rectangle.Fill>
+												<LinearGradientBrush StartPoint="0,0" EndPoint="64,0" MappingMode="Absolute" SpreadMethod="Repeat">
+													<GradientStop Color="#00FFFFFF" Offset="0"/>
+													<GradientStop Color="#66FFFFFF" Offset="0.5"/>
+													<GradientStop Color="#00FFFFFF" Offset="1"/>
+													<LinearGradientBrush.Transform><TranslateTransform x:Name="ProgShineTT"/></LinearGradientBrush.Transform>
+												</LinearGradientBrush>
+											</Rectangle.Fill>
+										</Rectangle>
+									</Border>
+								</Grid>
+							</ControlTemplate>
+						</ProgressBar.Template>
+					</ProgressBar>
 				</Grid>
 			</Border>
 		</Grid>
@@ -396,7 +407,7 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn','ConnectedGroup','DisconnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress','MarqueeSeg','MarqueeTT')) {
+		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el
@@ -439,15 +450,19 @@ if (-not $env:SP_SHOT) {
 # freezes during a single long blocking Exchange/Graph call - but it moves obviously between the
 # per-item steps, which is where the "is it frozen?" worry comes from.)
 $script:ProgPulsing = $false
+function Get-ProgShineTT {
+	$pb = $script:UI.MainProgress
+	try { [void]$pb.ApplyTemplate() } catch {}
+	try { return $pb.Template.FindName('ProgShineTT', $pb) } catch { return $null }
+}
 function Start-ProgressPulse {
 	if ($script:ProgPulsing) { return }
+	$tt = Get-ProgShineTT
+	if (-not $tt) { return }
 	try {
-		$seg = $script:UI.MarqueeSeg; $tt = $script:UI.MarqueeTT
-		$w = [double]$script:UI.MainProgress.ActualWidth; if ($w -lt 60) { $w = 400 }
-		$seg.Visibility = 'Visible'
 		$a = New-Object System.Windows.Media.Animation.DoubleAnimation
-		$a.From = -100; $a.To = $w
-		$a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(1.05))
+		$a.From = 0; $a.To = 64        # one gradient tile - loops seamlessly (SpreadMethod=Repeat)
+		$a.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromSeconds(0.9))
 		$a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
 		$tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $a)
 		$script:ProgPulsing = $true
@@ -455,10 +470,8 @@ function Start-ProgressPulse {
 }
 function Stop-ProgressPulse {
 	if (-not $script:ProgPulsing) { return }
-	try {
-		$script:UI.MarqueeTT.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
-		$script:UI.MarqueeSeg.Visibility = 'Collapsed'
-	} catch {}
+	$tt = Get-ProgShineTT
+	try { if ($tt) { $tt.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null) } } catch {}
 	$script:ProgPulsing = $false
 }
 

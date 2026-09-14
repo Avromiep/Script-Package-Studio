@@ -1,4 +1,4 @@
-﻿$version = "v3.1.94"
+﻿$version = "v3.1.95"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -88,14 +88,6 @@ function Save-AppSettings {
 		foreach ($k in $values.Keys) { if ($pending.Contains($k)) { $lines += "$k=$($values[$k])" } }
 		Set-Content -LiteralPath $script:SettingsIniPath -Value $lines -Encoding UTF8
 	} catch {}
-}
-
-# Settings retrieval function (kept for the hidden "Reload-Settings" entry)
-function LoadSettings {
-	Write-Host "Loading settings from settings.ini..."
-	Read-AppSettings
-	Apply-Theme $script:Settings.theme
-	Write-Host "Loaded settings."
 }
 
 Read-AppSettings
@@ -1152,8 +1144,6 @@ function OnRunButtonClick {
 		"Set-ACLPermissions" { Set-ACLPermissions }
 		"Set-NTP" { Set-NTP }
 		"Show-Information" { Show-Information }
-		"Debug" { Start-Process pwsh .\MainGUI.ps1 }
-		"Reload-Settings" { LoadSettings }
 		default { Write-Host "No script selected." }
 	}
 }
@@ -1434,6 +1424,11 @@ function Show-Settings {
 			Remove-Item -Path $tmp -Force -ErrorAction Ignore
 			Invoke-WebRequest -Uri 'https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio-Setup.exe' -OutFile $tmp -UseBasicParsing
 			if (-not (Test-Path $tmp)) { & $setStatus 'Download failed - opening the releases page.'; Start-Process 'https://github.com/Avromiep/Script-Package-Studio/releases/latest'; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
+			# Integrity guard: make sure we actually downloaded a real Windows installer (valid PE 'MZ'
+			# header, sane size) and not a truncated file or an HTML error page, before running it silently.
+			$looksOk = $false
+			try { if ((Get-Item $tmp).Length -gt 500KB) { $fsx = [System.IO.File]::OpenRead($tmp); $hdr = New-Object byte[] 2; [void]$fsx.Read($hdr, 0, 2); $fsx.Close(); $looksOk = ($hdr[0] -eq 0x4D -and $hdr[1] -eq 0x5A) } } catch { $looksOk = $false }
+			if (-not $looksOk) { & $setStatus "That download didn't look like a valid installer - opening the releases page instead."; Remove-Item $tmp -Force -ErrorAction Ignore; Start-Process 'https://github.com/Avromiep/Script-Package-Studio/releases/latest'; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
 			$prog.Value = 70; & $setStatus "Installing $remote..."
 			Start-Process $tmp -ArgumentList '/SP-', '/SILENT', "/DIR=`"$appRoot`"" -Wait
 			$prog.Value = 100

@@ -259,7 +259,7 @@ function Block-User {
 			$progressBar1.Value = 20
 			$samAccountName = $adNameInputBox.Text
 			Disable-ADAccount -Identity $samAccountName
-			Write-Host "Disabled $samAccountName. If there are any erros on this point then $samAccountName may not exist."
+			Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
 			$progressBar1.Value = 30
 			CheckForErrors
 		}
@@ -269,10 +269,10 @@ function Block-User {
 			Write-Host "`nConverted $user to shared mailbox" -ForegroundColor Cyan
 			$progressBar1.Value = 40
 			$passwordMethod = Get-MgUserAuthenticationPasswordMethod -UserId $user
-			Reset-MgUserAuthenticationMethodPassword -UserId $user -AuthenticationMethodId $passwordMethod.Id
+			Reset-MgUserAuthenticationMethodPassword -UserId $user -AuthenticationMethodId $passwordMethod.Id | Out-Null
 			Write-Host "Reset password for $user" -ForegroundColor Cyan
 			$progressBar1.Value = 50
-			Revoke-MgUserSignInSession -UserId $user
+			Revoke-MgUserSignInSession -UserId $user | Out-Null
 			Write-Host "Revoked $user's sessions."
 			Update-MgUser -UserId $user -AccountEnabled:$false
 			Write-Host "Disabled $user account" -ForegroundColor Cyan -NoNewline
@@ -475,7 +475,7 @@ function Clear-RecycleBin {
 
 # ---------------------------------------------------------------------------
 function New-ConvertGroupDialog {
-	New-StyledDialog -Title 'Convert-UnifiedGroupToDistributionList' -Icon '&#xE16F;' -BodyXaml @'
+	New-StyledDialog -Title 'Convert-UnifiedGroupToDistributionGroup' -Icon '&#xE16F;' -BodyXaml @'
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
@@ -505,7 +505,7 @@ function New-ConvertGroupDialog {
 
 function Convert-UnifiedGroupToDistributionGroup {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Convert-UnifiedGroupToDistributionGroup.txt"
-	Write-Host "Running Convert-UnifiedGroupToDistributionList script..."
+	Write-Host "Running Convert-UnifiedGroupToDistributionGroup script..."
 	$progressBar1.Value = 10
 	function OnCreateButtonClick {
 		Write-Host "Create button clicked."
@@ -530,7 +530,7 @@ function Convert-UnifiedGroupToDistributionGroup {
 	function OnTemplateButtonClick {
 		Write-Host "Open template button clicked."
 		$progressBar1.Value = 10
-		Invoke-Item ".\Templates\Convert-UnifiedGroupToDistributionList.txt"
+		Invoke-Item ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt"
 		$progressBar1.Value = 0
 		CheckForErrors
 	}
@@ -538,7 +538,7 @@ function Convert-UnifiedGroupToDistributionGroup {
 	function OnCreateBulkButtonClick {
 		Write-Host "Create bulk button clicked."
 		$progressBar1.Value = 2
-		Get-Content ".\Templates\Convert-UnifiedGroupToDistributionList.txt" | ForEach-Object {
+		Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | ForEach-Object {
 			$progressBar1.Value = 5
 			$OldGroupName = $_ -Split "@"
 			$DistGroupName = $OldGroupName[0] + "-New"
@@ -1057,7 +1057,7 @@ function New-ADAndEmailAccounts {
 				Password = $row.Password
 			}
 
-			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $row.GivenName -Surname $row.Surname -UserPrincipalName $emailAddress -MailNickname $row.SamAccountName -UsageLocation US
+			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $row.GivenName -Surname $row.Surname -UserPrincipalName $emailAddress -MailNickname $row.SamAccountName -UsageLocation $(if ("$($row.UsageLocation)".Trim()) { "$($row.UsageLocation)".Trim() } else { 'US' })
 			$progressBar1.Value = 90
 
 			# Set license
@@ -1186,7 +1186,7 @@ function New-EmailAccounts {
 
 			Assert-MgUserNotExists $emailAddress
 			if ($preview) { $created.Add($who); return }
-			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $firstName -Surname $lastName -UserPrincipalName $emailAddress -MailNickname $mailNickname -UsageLocation US
+			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $firstName -Surname $lastName -UserPrincipalName $emailAddress -MailNickname $mailNickname -UsageLocation $(if ("$($_.UsageLocation)".Trim()) { "$($_.UsageLocation)".Trim() } else { 'US' })
 			$progressBar1.Value = 60
 
 			# Set license
@@ -1695,7 +1695,3 @@ function Terminate-Disable-ADAndEmailAccounts {
 	Stop-Transcript
 }
 
-# ---------------------------------------------------------------------------
-function New-InboxRule-SP {
-	New-InboxRule -Name ForwardMail -Mailbox example@contoso.com -From example@contoso.com -ForwardTo example@contoso.com -MarkAsRead $true -MoveToFolder example@contoso.com:\Completed
-}

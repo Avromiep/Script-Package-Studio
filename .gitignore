@@ -6,3 +6,7 @@ Logs/
 tenants.json
 settings.ini
 Script-Package*Setup.exe
+
+# CSV templates are filled with real data (emails, names, passwords) before use.
+# Keep them on disk for the installer/zip build, but never commit a filled copy.
+Templates/*.csv

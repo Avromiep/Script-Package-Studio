@@ -32,7 +32,9 @@ A modern WPF interface with dark and light themes (toggle in the title bar; your
 
 **Activity log:** Everything the scripts report is collected in the collapsible Activity drawer at the bottom (`Ctrl+L`), color-coded, with copy/clear buttons.
 
-**Status bar:** Shows progress for running tasks and what ran last.
+**Status bar:** Shows progress for running tasks and what ran last. The progress bar shows how far along a task is, with a moving shimmer so you can tell it's still working.
+
+**Updating:** Updates are built into **Settings** (the gear icon) - it checks for a newer release, installs it, and offers to relaunch. (There's no separate "update" script.)
 
 <a name="scripts"></a>
 
@@ -71,7 +73,12 @@ Adds an email address or domain to the trusted senders list for all mailboxes in
 *Requires sign in.*  
 Add a single or multiple members to a Unified/Office365 Group.  
 
-### Add-2FA
+### Add-AutoReply
+
+*Requires sign in.*  
+Turn on an automatic (out-of-office) reply for a mailbox. Write the internal and external messages, optionally schedule a start/end date, and click Confirm. **Show current** loads the reply already set on the mailbox so you can review or edit it before replacing it.
+
+### Add-AuthenticationPhoneMethod
 
 *Requires sign in.*  
 Add a phone number to a user for 2FA.  
@@ -86,15 +93,20 @@ For AD: This will disable the AD account of the entered user.
 For O365: This will disable the account, convert the mailbox to type shared,  change the password to something random, remove all licenses and remove any 2FA number associated with the account. Has options for adding members to the shared mailbox and for adding an auto-reply.  
 Bulk options will be added in the future.
 
+### Terminate-Disable-ADAndEmailAccounts
+
+*Requires sign in. Requires run on server with Active Directory.*  
+Full offboarding for someone who has left: disables their Active Directory and Microsoft 365 accounts, converts the mailbox to shared, removes licenses and 2FA, revokes their sessions, and can set an auto-reply and give a manager access to the mailbox. Also has a bulk (CSV) option.
+
 ### Clear-RecycleBin
 
 Empties all recycle bins on the computer. For a terminal server, this would mean deleting the contents of everyone's recycle bins.
 
-### Convert-O365GroupToDistributionList
+### Convert-UnifiedGroupToDistributionGroup
 
 *Requires sign in.*  
-Creates a new distribution list using the members of an existing Office365 group.  
-Has an input field for an email address of a Microsoft365 Group. The script will create a new distribution list, get all the members of the M365 group and then add them to the newly created distribution list. The name of the new distribution list will be the first part of the email entered with "-New" tacked on.  
+Creates a new distribution list using the members of an existing Microsoft 365 (Unified) group.  
+Has an input field for an email address of a Microsoft 365 Group. The script will create a new distribution list, get all the members of the M365 group and then add them to the newly created distribution list. The name of the new distribution list will be the first part of the email entered with "-New" tacked on.  
 Also includes a tab for converting M365 groups in bulk.   
 If you want to change the names/addresses of the newly created distribution list(s) or if you want to delete the old M365 group(s) you will need to do it manually from the Office365 admin web portal.
 
@@ -144,9 +156,25 @@ Also has buttons for removing only SendAs, SendOnBehalf or FullAccess permission
 *Requires sign in.*  
 Removes a single or multiple members from a Unified/Office365 group.
 
-### Update-ScriptPackage
+### Remove-EmailAlias
 
-Attempts to update the script package if a newer version is available.  
+*Requires sign in.*  
+Remove an alias from a mailbox (the primary address stays). Also has options for removing aliases in bulk, and for removing numbered/incremental aliases.
+
+### Remove-UserFromAllGroups
+
+*Requires sign in.*  
+Remove a user from all (or the ones you choose) of the tenant's groups - distribution lists, Teams / Microsoft 365 groups, and security groups. Useful when offboarding someone.
+
+### Reset-MFA
+
+*Requires sign in.*  
+Clear a user's 2FA (MFA) methods so they re-register from scratch - for example after they lost their phone. Single or bulk.
+
+### Set-License
+
+*Requires sign in.*  
+Assign, remove, or swap Microsoft 365 licenses for a user. Single or bulk.
 
 ### Set-ACLPermissions
 

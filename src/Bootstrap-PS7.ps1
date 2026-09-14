@@ -1,4 +1,4 @@
-# Runs under Windows PowerShell (launched by Script-Package-Studio.bat only when PowerShell 7 /
+﻿# Runs under Windows PowerShell (launched by Script-Package-Studio.bat only when PowerShell 7 /
 # pwsh is NOT installed). Prompts to install PowerShell 7, installs it, then relaunches the app
 # under pwsh. Designed to work back to Windows Server 2012 / 2012 R2:
 #   - winget isn't on Windows Server, so the MSI path is the real installer there.
@@ -67,10 +67,14 @@ function Install-PS7 {
 		if ($url) {
 			$msi = Join-Path $env:TEMP (Split-Path $url -Leaf)
 			Invoke-WebRequest $url -OutFile $msi -UseBasicParsing
+			# The official PowerShell MSI is Authenticode-signed by Microsoft - verify that before
+			# running it so a tampered or corrupt download isn't installed silently with elevation.
+			$sig = Get-AuthenticodeSignature -FilePath $msi
+			if ($sig.Status -ne 'Valid') { throw "downloaded PowerShell MSI is not validly signed (status: $($sig.Status)) - not installing." }
 			# Installing to Program Files needs elevation; -Verb RunAs triggers the UAC prompt.
 			Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/passive', '/norestart' -Verb RunAs -Wait
 		}
-	} catch {}
+	} catch { Write-Warning "Couldn't install PowerShell 7 automatically: $($_.Exception.Message)" }
 	return [bool](Find-Pwsh)
 }
 

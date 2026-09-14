@@ -379,12 +379,6 @@ function Remove-UserFromAllGroups {
 	Stop-Transcript
 }
 
-function Revoke-AllSignInSessions {
-	$userIds = Get-MgUser -All | Select-Object ID
-	foreach($userId in $userIds) {
-		Revoke-MgUserSignInSession -UserId $userId.Id
-	}
-}
 
 # ---------------------------------------------------------------------------
 # Launch a detached helper that waits for THIS instance to fully exit (so the
@@ -431,56 +425,6 @@ catch { "relaunch: FAILED - `$_" | Out-File -LiteralPath '$logPath' -Append }
 	} catch {
 		"[$(Get-Date -Format o)] helper spawn FAILED - $($_ | Out-String)" | Out-File -LiteralPath $logPath -Append
 	}
-}
-
-function Update-ScriptPackage {
-	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Update-ScriptPackage.txt"
-	Write-Host "Running Update-ScriptPackage script..."
-	$restarting = $false
-	$progressBar1.Value = 10
-	$versionCheck = Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
-	$versionLink = $versionCheck.Links.href | Where-Object {
-		$_ -Like "*/releases/tag/v*"
-	}
-	$splitLink = $versionLink -Split 'tag/'
-	$remoteVersion = $splitLink[1]
-	$progressBar1.Value = 30
-
-	if ($remoteVersion -eq $version) {
-		Write-Host "Latest version of Script-Package Studio already installed."
-		$progressBar1.Value = 100
-		CheckForErrors
-		$progressBar1.Value = 0
-		[void](New-UpdateCompleteDialog "Latest version already installed.").ShowDialog()
-	} else {
-		Write-Host "Downloading latest version of Script-Package Studio..."
-		Remove-Item -Path "$env:TEMP\Script-Package-Studio-Setup.exe" -Force -ErrorAction Ignore
-		Invoke-WebRequest -Uri "https://github.com/Avromiep/Script-Package-Studio/releases/latest/download/Script-Package-Studio-Setup.exe" -OutFile "$env:TEMP\Script-Package-Studio-Setup.exe"
-		$progressBar1.Value = 50
-		if (Test-Path "$env:TEMP\Script-Package-Studio-Setup.exe") {
-			Write-Host "Launching downloaded file..."
-			# Force the install into the folder the app is ACTUALLY running from. A silent
-			# install inherits this (elevated) process's token, so without /DIR Inno's
-			# {autopf} could resolve to a DIFFERENT location (e.g. Program Files vs. the
-			# per-user Programs folder), updating a copy the relaunch never starts.
-			$appRoot = Split-Path $script:SrcDir -Parent
-			Start-Process "$env:TEMP\Script-Package-Studio-Setup.exe" -ArgumentList "/SP-", "/SILENT", "/DIR=`"$appRoot`"" -Wait
-			$progressBar1.Value = 70
-			CheckForErrors
-			$progressBar1.Value = 100
-			[void](New-UpdateCompleteDialog "Update installed. Script-Package Studio will now restart.").ShowDialog()
-			Write-Host "Relaunching the updated app..."
-			Restart-App
-			$restarting = $true
-		} else {
-			Write-Host "Setup download failed - opening the releases page instead." -ForegroundColor Yellow
-			Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/latest"
-			CheckForErrors
-			$progressBar1.Value = 0
-		}
-	}
-	Stop-Transcript
-	if ($restarting) { $script:Window.Close() }
 }
 
 # ---------------------------------------------------------------------------
@@ -767,11 +711,6 @@ function Set-ACLPermissions {
 	Stop-Transcript
 }
 
-# ---------------------------------------------------------------------------
-function Set-EmailForwarding {
-	Set-Mailbox -Identity "Sample User" -DeliverToMailboxAndForward $true -ForwardingSMTPAddress "sample.parent@example.com"
-	Set-Mailbox -Identity "Ken Sanchez" -ForwardingAddress "pilarp@contoso.com"
-}
 
 # ---------------------------------------------------------------------------
 function New-SetNTPDialog {

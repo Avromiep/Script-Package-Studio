@@ -1607,7 +1607,7 @@ function Add-TrustedSender {
 			$progressBar1.Value = 30
 			Set-MailboxJunkEmailConfiguration $_.Name -TrustedSendersAndDomains @{Add=$trustedSender}
 			$progressBar1.Value = 80
-			Write-Host "Configured " + $_.Name
+			Write-Host "Configured $($_.Name)"
 		}
 		Write-Host "Finished configuring mailboxes."
 		CheckForErrors

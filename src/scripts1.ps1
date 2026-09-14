@@ -692,7 +692,7 @@ function Add-AuthenticationPhoneMethod {
 		$phoneBanner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'WarnBrush')
 		$phoneBannerText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
 		$script:PmShowingCurrent = $true
-		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Clear' }
+		if ($showCurrentBtn) { $showCurrentBtn.Content = 'Clear preview' }
 	}
 
 	$scriptForm8 = New-AuthenticationPhoneDialog

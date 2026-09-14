@@ -171,7 +171,7 @@ function Invoke-SingleMemberChange {
 			Show-Notice 'Not found' "Couldn't find `"$Target`" or work out its type (mailbox, distribution list, or Teams / Microsoft 365 group).`n`nCheck the address and that you're connected to the right tenant." 'Error'
 		}
 		'done' {
-			Write-Host "$Member $verbPast $Target ($typeName)." -ForegroundColor Cyan
+			Write-Host "$Member was $verbPast $where." -ForegroundColor Cyan
 			$progressBar1.Value = 80
 			$note = if ($mismatch) { "`n`nHeads up: you used the $expName script, but `"$Target`" is actually a $typeName - $Member was still $verbPast it." } else { '' }
 			Show-Notice $(if ($isRemove) { 'Removed' } else { 'Added' }) "$Member was $verbPast $where.$note" 'Info'
@@ -203,8 +203,8 @@ function Invoke-BulkMemberRow {
 	}
 	$verbPast = if ($Action -eq 'remove') { 'removed from' } else { 'added to' }
 	switch ($r.Status) {
-		'done'    { Write-Host "$Member $verbPast $Target ($($r.TypeName))." }
-		'noop'    { Write-Host "${Member}: nothing to do on '$Target' ($($r.TypeName))." -ForegroundColor Yellow }
+		'done'    { Write-Host "$Member was $verbPast the $($r.TypeName) `"$Target`"." }
+		'noop'    { Write-Host "${Member}: nothing to do on the $($r.TypeName) `"$Target`"." -ForegroundColor Yellow }
 		'failed'  { Write-Host "Couldn't process $Member on '$Target': $($r.Message)" -ForegroundColor Red }
 		'unknown' { Write-Host "Skipped $Member on '$Target' - couldn't determine its type." -ForegroundColor Yellow }
 	}
@@ -426,7 +426,7 @@ function New-PasteMembersDialog {
 							}
 						}
 					}
-					Write-Host "$m $(if ($isRemove) { 'removed from' } else { 'added to' }) $target ($typeName)"
+					Write-Host "$m $(if ($isRemove) { 'removed from' } else { 'added to' }) the $typeName `"$target`""
 					$counts.done++; $addedM.Add($m)
 				} catch {
 					$msg = "$($_.Exception.Message)".Trim()

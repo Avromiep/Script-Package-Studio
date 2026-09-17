@@ -124,6 +124,7 @@ function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview,
 	$title = if ($Preview) { "$What - preview" } else { "$What complete" }
 	Write-Host "${title}: done/would=$($c.Count) failed/skip=$($f.Count). CSV: $csvPath" -ForegroundColor Cyan
 	$kind = if ($f.Count) { 'Warn' } else { 'Info' }
+	$progressBar1.Value = 100
 	Show-Notice $title ($parts -join "`n`n") $kind
 	$progressBar1.Value = 0
 }

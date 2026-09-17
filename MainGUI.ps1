@@ -1,4 +1,4 @@
-﻿$version = "v3.1.96"
+﻿$version = "v3.1.97"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -477,8 +477,9 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 		param($v)
 		$pb = $script:UI.MainProgress
 		$target = [double]$v
-		# Glide smoothly to the new value (ease-out) instead of snapping between milestones - looks
-		# cleaner and reads as steadier progress. Reset (0) snaps instantly so it doesn't slide down.
+		# Progress must be honest: show a bit the instant a script starts and clearly reach 100% at the
+		# end. Because scripts run on the UI thread, a glide can't animate through a blocking call - so
+		# big steps snap (instant, never stuck mid-glide) and only small per-item loop steps glide.
 		try {
 			if ($target -le 0) {
 				Stop-ProgressPulse                          # idle - stop the breathing pulse
@@ -486,12 +487,23 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
 				$pb.Value = 0
 			} else {
+				if ($target -gt 100) { $target = 100 }
 				Start-ProgressPulse                         # a script is working - keep it visibly alive
-				$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-				$anim.To = $target
-				$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(280))
-				$anim.EasingFunction = New-Object System.Windows.Media.Animation.CubicEase
-				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $anim)
+				$cur = [double]$pb.Value
+				# Snap (no glide) for the first move off idle, big milestone jumps, and the final fill to
+				# 100 - so a bit of progress shows the instant a script starts and it visibly reaches 100%.
+				# A UI-thread-blocking call right after a set stops a 280ms glide from finishing, which
+				# would look stuck mid-glide; only small per-item loop steps still glide smoothly.
+				if ($cur -lt 8 -or ($target - $cur) -gt 22 -or $target -ge 100) {
+					$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
+					$pb.Value = $target
+				} else {
+					$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
+					$anim.To = $target
+					$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(240))
+					$anim.EasingFunction = New-Object System.Windows.Media.Animation.CubicEase
+					$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $anim)
+				}
 			}
 		} catch { try { $pb.Value = $target } catch {} }
 		try { $pb.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}

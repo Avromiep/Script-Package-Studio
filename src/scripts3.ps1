@@ -15,7 +15,7 @@ function Remove-DistributionListMember {
 		Write-Host "OpenTemplate button clicked."
 		$progressBar1.Value = 10
 		Invoke-Item ".\Templates\Remove-DistributionListMember.csv"
-		$progressBar1.Value = 80
+		$progressBar1.Value = 100
 		CheckForErrors
 		$progressBar1.Value = 0
 	}
@@ -142,7 +142,7 @@ function Remove-EmailAlias {
 		Write-Host "GetAliasButton clicked."
 		$progressBar1.Value = 10
 		$infoTextBox.Text = Get-Mailbox $mailboxTextBox.Text | Select-Object -ExpandProperty emailaddresses
-		$progressBar1.Value = 80
+		$progressBar1.Value = 100
 		CheckForErrors
 		$progressBar1.Value = 0
 	}
@@ -196,7 +196,7 @@ function Remove-UnifiedGroupMember {
 		Write-Host "OpenTemplate button clicked."
 		$progressBar1.Value = 10
 		Invoke-Item ".\Templates\Remove-UnifiedGroupMember.csv"
-		$progressBar1.Value = 80
+		$progressBar1.Value = 100
 		CheckForErrors
 		$progressBar1.Value = 0
 	}

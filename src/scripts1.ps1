@@ -94,6 +94,7 @@ function Invoke-MemberRoute {
 		$typeName = Get-RecipientTypeName $script:LastRecipientRaw
 		if ($Cache) { $Cache[$Target] = @{ Cat = $cat; Name = $typeName } }
 	}
+	if (-not $Cache) { $progressBar1.Value = 65 }   # single op: bar advances once the type is known, before the change
 	$res = @{ Category = $cat; TypeName = $typeName; Status = 'unknown'; Message = '' }
 	$effCat = if ($cat -and $cat -ne 'Other') { $cat } elseif ($FallbackCategory) { $FallbackCategory } else { '' }
 	if (-not $effCat) { return $res }
@@ -172,7 +173,7 @@ function Invoke-SingleMemberChange {
 		}
 		'done' {
 			Write-Host "$Member was $verbPast $where." -ForegroundColor Cyan
-			$progressBar1.Value = 80
+			$progressBar1.Value = 100
 			$note = if ($mismatch) { "`n`nHeads up: you used the $expName script, but `"$Target`" is actually a $typeName - $Member was still $verbPast it." } else { '' }
 			Show-Notice $(if ($isRemove) { 'Removed' } else { 'Added' }) "$Member was $verbPast $where.$note" 'Info'
 			OperationComplete
@@ -1304,6 +1305,7 @@ function Add-EmailAlias {
 			$progressBar1.Value = 40
 			$asPrimary = ($primaryCheckBox.IsChecked -eq $true)
 			$r = Add-OneAlias $mailbox $alias $asPrimary $accepted
+			$progressBar1.Value = 100
 			switch ($r.Status) {
 				'done'    { $verb = if ($asPrimary) { "set as the primary address on" } else { "added to" }; Write-Host "$alias $verb $mailbox." -ForegroundColor Cyan; Show-Notice 'Alias added' "'$alias' was $verb `"$mailbox`"." 'Info' }
 				'noop'    { Write-Host "$alias already assigned." -ForegroundColor Yellow; Show-Notice 'Already an alias' "'$alias' is already assigned as an address (on this or another recipient)." 'Info' }
@@ -1356,7 +1358,7 @@ function Add-EmailAlias {
 		Write-Host "GetAliasButton clicked."
 		$progressBar1.Value = 10
 		$infoTextBox.Text = Get-Mailbox $mailboxTextBox.Text | Select-Object -ExpandProperty emailaddresses
-		$progressBar1.Value = 80
+		$progressBar1.Value = 100
 		CheckForErrors
 		$progressBar1.Value = 0
 	}

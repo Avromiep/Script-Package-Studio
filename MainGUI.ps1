@@ -1,4 +1,4 @@
-﻿$version = "v3.1.97"
+﻿$version = "v3.1.98"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -329,10 +329,10 @@ $mainXaml = @"
 							<Button x:Name="LogClearBtn" Style="{DynamicResource BtnGhost}" Content="Clear" Padding="8,2"/>
 						</StackPanel>
 					</Grid>
-					<ListBox x:Name="LogList" Grid.Row="1" Height="150" Margin="4,0,4,4" Background="Transparent"
-							 BorderThickness="0" Visibility="Collapsed"
-							 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-							 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"/>
+					<RichTextBox x:Name="LogList" Grid.Row="1" Height="150" Margin="4,0,4,4" Background="Transparent"
+					             BorderThickness="0" Visibility="Collapsed" IsReadOnly="True" IsReadOnlyCaretVisible="False"
+					             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+					             IsInactiveSelectionHighlightEnabled="True" FontSize="12"/>
 				</Grid>
 			</Border>
 
@@ -865,35 +865,30 @@ function Disconnect-Tenant {
 # The launcher runs pwsh hidden, so console output was never visible. Shadowing
 # Write-Host mirrors every message the scripts print into the log drawer (and
 # still writes to the console for anyone running from a terminal).
-$script:UI.LogList.ItemContainerStyle = $script:StyleDict['LogItemStyle']
+$script:UI.LogList.FontFamily = $script:StyleDict['UiFont']
+$script:UI.LogList.Document.PagePadding = New-Object System.Windows.Thickness 0
 
 # Matches email addresses so the tenant/account email in a log line can be blurred
 # on its own (keeping "Connected to <tenant>..." readable) when the blur toggle is on.
 $script:LogEmailRegex = [regex]'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
 function New-LogEmailBlur { $fx = New-Object System.Windows.Media.Effects.BlurEffect; $fx.Radius = 5; $fx }
 
-# Render a log line as inlines: plain Runs for the text, and each email in its own
-# TextBlock (via InlineUIContainer) so the email alone can carry a BlurEffect. The full
-# raw text is stashed in .Tag because InlineUIContainer content is NOT part of .Text
-# (Copy reads .Tag so the copied log keeps the real addresses).
-function Set-LogItemInlines([System.Windows.Controls.TextBlock]$Tb, [string]$FullText, [string]$BrushKey) {
-	$Tb.Inlines.Clear()
-	$Tb.Tag = $FullText
-	$idx = 0
-	foreach ($m in $script:LogEmailRegex.Matches($FullText)) {
-		if ($m.Index -gt $idx) { $Tb.Inlines.Add((New-Object System.Windows.Documents.Run ($FullText.Substring($idx, $m.Index - $idx)))) }
-		$eb = [System.Windows.Controls.TextBlock]::new()
-		$eb.Text = $m.Value
-		$eb.FontFamily = $Tb.FontFamily
-		$eb.FontSize = $Tb.FontSize
-		$eb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $BrushKey)
-		if ($script:Settings.blurTenant) { $eb.Effect = New-LogEmailBlur }
-		$uic = New-Object System.Windows.Documents.InlineUIContainer $eb
-		$uic.BaselineAlignment = [System.Windows.BaselineAlignment]::TextBottom
-		$Tb.Inlines.Add($uic)
-		$idx = $m.Index + $m.Length
-	}
-	if ($idx -lt $FullText.Length) { $Tb.Inlines.Add((New-Object System.Windows.Documents.Run ($FullText.Substring($idx)))) }
+# A log line renders as a single selectable Run. When the tenant/account blur is on, each email in
+# the line is masked with same-length '*' in the DISPLAY - so selecting/copying (or the Copy button)
+# yields stars, while the real text is kept on the paragraph's .Tag.Raw so un-blurring restores it.
+function Get-LogDisplayText([string]$Raw) {
+	if ($script:Settings.blurTenant) { return $script:LogEmailRegex.Replace($Raw, { param($m) '*' * $m.Value.Length }) }
+	return $Raw
+}
+function New-LogParagraph([string]$FullText, [string]$BrushKey) {
+	$p = New-Object System.Windows.Documents.Paragraph
+	$p.Margin = New-Object System.Windows.Thickness 0
+	$p.LineHeight = 15
+	$p.Tag = [pscustomobject]@{ Raw = $FullText; Brush = $BrushKey }
+	$run = New-Object System.Windows.Documents.Run (Get-LogDisplayText $FullText)
+	$run.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, $BrushKey)
+	[void]$p.Inlines.Add($run)
+	return $p
 }
 
 function Add-UiLog([string]$Text, [string]$Color = '') {
@@ -906,17 +901,12 @@ function Add-UiLog([string]$Text, [string]$Color = '') {
 		'Cyan'     { 'InfoBrush' }
 		default    { 'TextDimBrush' }
 	}
-	$tb = [System.Windows.Controls.TextBlock]::new()
-	$tb.FontFamily = $script:StyleDict['UiFont']
-	$tb.FontSize = 12
-	$tb.TextWrapping = 'Wrap'
-	$tb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $brushKey)
-	Set-LogItemInlines $tb ("[{0:h:mm:ss tt}]  {1}" -f (Get-Date), $Text) $brushKey
-	$list = $script:UI.LogList
-	[void]$list.Items.Add($tb)
-	while ($list.Items.Count -gt 500) { $list.Items.RemoveAt(0) }
-	$script:UI.LogCountText.Text = "$($list.Items.Count) entries"
-	if ($list.IsVisible) { $list.ScrollIntoView($list.Items[$list.Items.Count - 1]) }
+	$full = '[{0:h:mm:ss tt}]  {1}' -f (Get-Date), $Text
+	$doc = $script:UI.LogList.Document
+	[void]$doc.Blocks.Add((New-LogParagraph $full $brushKey))
+	while ($doc.Blocks.Count -gt 500) { $doc.Blocks.Remove($doc.Blocks.FirstBlock) }
+	$script:UI.LogCountText.Text = "$($doc.Blocks.Count) entries"
+	if ($script:UI.LogList.IsVisible) { $script:UI.LogList.ScrollToEnd() }
 }
 
 function Write-Host {
@@ -942,8 +932,8 @@ function Set-LogExpanded([bool]$Expanded) {
 	$script:Settings.logExpanded = $Expanded
 	$script:UI.LogList.Visibility = if ($Expanded) { 'Visible' } else { 'Collapsed' }
 	$script:UI.LogToggleIcon.Text = if ($Expanded) { [string][char]0xE488 } else { [string][char]0xE490 }
-	if ($Expanded -and $script:UI.LogList.Items.Count -gt 0) {
-		$script:UI.LogList.ScrollIntoView($script:UI.LogList.Items[$script:UI.LogList.Items.Count - 1])
+	if ($Expanded -and $script:UI.LogList.Document.Blocks.Count -gt 0) {
+		$script:UI.LogList.ScrollToEnd()
 	}
 }
 
@@ -1281,14 +1271,11 @@ function Set-TenantBlur([bool]$On) {
 	Set-TenantPopupBlur $On
 	# Blur/unblur the email address inside each activity-log line (the rest of the line
 	# - "Connected to <tenant> as ..." - stays readable so the log is still useful).
-	if ($script:UI.LogList) {
-		foreach ($item in $script:UI.LogList.Items) {
-			if ($item -is [System.Windows.Controls.TextBlock]) {
-				foreach ($inline in $item.Inlines) {
-					if ($inline -is [System.Windows.Documents.InlineUIContainer] -and $inline.Child) {
-						$inline.Child.Effect = if ($On) { New-LogEmailBlur } else { $null }
-					}
-				}
+	if ($script:UI.LogList -and $script:UI.LogList.Document) {
+		foreach ($blk in @($script:UI.LogList.Document.Blocks)) {
+			if ($blk -is [System.Windows.Documents.Paragraph] -and $blk.Tag) {
+				$run = @($blk.Inlines)[0]
+				if ($run -is [System.Windows.Documents.Run]) { $run.Text = Get-LogDisplayText ([string]$blk.Tag.Raw) }
 			}
 		}
 	}
@@ -1311,11 +1298,11 @@ $script:UI.ScriptList.Add_KeyDown({ param($s, $e)
 # ---- activity log wiring ---------------------------------------------------------
 $script:UI.LogToggleBtn.Add_Click({ Set-LogExpanded (-not $script:Settings.logExpanded); Save-AppSettings })
 $script:UI.LogClearBtn.Add_Click({
-	$script:UI.LogList.Items.Clear()
+	$script:UI.LogList.Document.Blocks.Clear()
 	$script:UI.LogCountText.Text = ''
 })
 $script:UI.LogCopyBtn.Add_Click({
-	$text = ($script:UI.LogList.Items | ForEach-Object { if ($_.Tag) { [string]$_.Tag } else { [string]$_.Text } }) -join "`r`n"
+	$text = (@($script:UI.LogList.Document.Blocks) | ForEach-Object { if ($_.Tag) { Get-LogDisplayText ([string]$_.Tag.Raw) } }) -join "`r`n"
 	if ($text) { [System.Windows.Clipboard]::SetText($text) }
 })
 

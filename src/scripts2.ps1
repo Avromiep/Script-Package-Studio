@@ -44,7 +44,7 @@ function Remove-UserLicenses([string]$User) {
 		$gname = $gid
 		try { $gname = (Get-MgGroup -GroupId $gid -Property DisplayName -ErrorAction Stop).DisplayName } catch {}
 		try { Remove-MgGroupMemberByRef -GroupId $gid -DirectoryObjectId $u.Id -ErrorAction Stop; Write-Host "  removed from licensing group '$gname' to drop its group-assigned license(s)." -ForegroundColor Cyan }
-		catch { Write-Host "  license from group '$gname' still assigned - remove them from that group manually: $($_.Exception.Message)" -ForegroundColor Yellow }
+		catch { Write-Host "  couldn't drop the group-assigned license from '$gname' - either the app lacks rights to edit that group, or it's a dynamic / on-prem-synced group whose membership is set by rule (can't be edited here). If the license must come off now, remove or exclude the user from that group in the admin center. ($($_.Exception.Message))" -ForegroundColor Yellow }
 	}
 }
 
@@ -1612,6 +1612,34 @@ function Terminate-Disable-ADAndEmailAccounts {
 		}
 	}
 
+	# Focused prompt (owned by this dialog) to give someone access to the offboarded mailbox -
+	# grants FullAccess + SendAs, same as Block-User. Replaces reusing the whole Add-MailboxMember
+	# window (which opened behind this dialog and could be missed). Add several, then Done/close.
+	function Invoke-AddMemberPrompt([string]$email) {
+		# Grant one OR several people at once (comma/semicolon/newline separated); the dialog stays
+		# open and the box clears + refocuses after each click so you can keep adding, then close it.
+		function OnTermAddMemberClick {
+			$names = @($addMemberBox.Text -split '[;,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+			if (-not $names.Count) { return }
+			foreach ($who in $names) {
+				try {
+					Add-MailboxPermission -Identity $email -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
+					Add-RecipientPermission -Identity $email -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+					Write-Host "  gave $who access (FullAccess + SendAs) to $email." -ForegroundColor Cyan
+				} catch { Write-Host "  couldn't give $who access to $email`: $($_.Exception.Message)" -ForegroundColor Yellow }
+			}
+			$addMemberBox.Text = ''
+			try { $addMemberBox.Focus() } catch {}
+		}
+		$d = New-BlockAddMemberDialog
+		try { $d.Owner = $form } catch {}
+		$addMemberBox = $d.FindName('AddMemberBox')
+		Enable-RecipientAutocomplete $addMemberBox 'User'
+		Set-FieldWatermark $addMemberBox 'One or more, separated by commas'
+		$d.FindName('AddMemberBtn').Add_Click({ OnTermAddMemberClick })
+		[void]$d.ShowDialog()
+	}
+
 	function OnBlockButtonClick {
 		$email = $emailInput.Text.Trim(); $adUser = $adUserInput.Text.Trim()
 		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
@@ -1626,7 +1654,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if ($blockEmail) {
 			try {
 				Disable-OneEmail $email
-				if ($addMembersCheck.IsChecked -eq $true) { Add-MailboxMember -MailboxPrefill $email }
+				if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $email }
 				if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $email }
 				Write-Host "Finished blocking $email." -ForegroundColor Cyan
 			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
@@ -1664,7 +1692,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 				if ($blockAd -and $u) { Disable-OneAd $u }
 				if ($blockEmail -and $e) {
 					Disable-OneEmail $e
-					if ($addMembersCheck.IsChecked -eq $true) { Add-MailboxMember -MailboxPrefill $e }
+					if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $e }
 					if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $e }
 				}
 				$done.Add($who)

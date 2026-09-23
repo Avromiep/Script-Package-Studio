@@ -1445,7 +1445,15 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
             $sa = @(Get-RecipientPermission -Trustee $Source -ErrorAction Stop | Where-Object { $_.AccessControlType -eq 'Allow' -and ("$($_.AccessRights)" -match 'SendAs') })
             foreach ($p in $sa) {
                 $id = "$($p.Identity)"
-                if ($id -and $id -ne $Source -and $id -notmatch 'NT AUTHORITY') { $inv.SendAs += @{ Id = $id; Name = $id } }
+                if (-not $id -or $id -eq $Source -or $id -match 'NT AUTHORITY') { continue }
+                if (-not $Opts.UserMailboxes) {
+                    # Unless the user opted to include user mailboxes, drop Send As on a personal user
+                    # mailbox - so "off" means shared mailboxes only for BOTH Full Access and Send As.
+                    $rtd = ''
+                    try { $rtd = "$((Get-Recipient -Identity $id -ErrorAction Stop | Select-Object -First 1).RecipientTypeDetails)" } catch {}
+                    if ($rtd -eq 'UserMailbox') { $inv.Skipped += "$id (Send As on a user's mailbox - left out; tick 'include user mailboxes' to copy it)"; continue }
+                }
+                $inv.SendAs += @{ Id = $id; Name = $id }
             }
         } catch { $inv.Skipped += "couldn't read Send As grants: $($_.Exception.Message)" }
     }
@@ -1524,8 +1532,8 @@ function New-CopyAccessDialog {
             <CheckBox x:Name="ChkDl" Content="Distribution list memberships" IsChecked="True" Margin="0,6,0,0"/>
             <CheckBox x:Name="ChkUnified" Content="Teams / Microsoft 365 group memberships" IsChecked="True" Margin="0,6,0,0"/>
             <CheckBox x:Name="ChkSecurity" Content="Security group memberships" Margin="0,6,0,0"/>
-            <CheckBox x:Name="ChkUserMbx" Content="Also scan regular user mailboxes for Full Access (slower)" Margin="0,10,0,0"/>
-            <TextBlock Text="Full Access has no reverse lookup, so mailboxes are scanned one by one - this can take a few minutes in a big tenant and the window stays busy while it runs." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            <CheckBox x:Name="ChkUserMbx" Content="Also include regular user mailboxes (Full Access + Send As, slower)" Margin="0,10,0,0"/>
+            <TextBlock Text="Off by default, only shared mailboxes are touched - so it never gives access to someone's personal mailbox. Turn it on to also copy access to regular user mailboxes; Full Access is then found by scanning every mailbox, which can take a few minutes in a big tenant." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
             <Grid Margin="0,12,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Button x:Name="PreviewBtn" Style="{DynamicResource BtnSecondary}" Content="Preview"/>

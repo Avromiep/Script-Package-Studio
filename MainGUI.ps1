@@ -1,4 +1,4 @@
-﻿$version = "v3.1.100"
+﻿$version = "v3.1.101"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -977,7 +977,7 @@ $script:ScriptHelp = @{
 	'Add-Contacts' = @{ What = 'Adds outside people to your Microsoft 365 address book as contacts, so their name and email show up when your staff compose messages.'; Steps = @('Fill in the contact''s name and email, or click Open Template to add many from a spreadsheet.'; 'Click Add.'); Tip = '' }
 	'Add-DistributionListMember' = @{ What = 'Adds people to a distribution list - one email address that forwards to a whole group of people.'; Steps = @('Type the list''s email, then the person to add (start typing a name and pick them from the list).'; 'Click Add Member. To add lots of people, click Paste List and paste their names or emails.'); Tip = '' }
 	'Add-EmailAlias' = @{ What = 'Gives a mailbox extra email addresses (aliases). Mail sent to any of them lands in the same inbox.'; Steps = @('Type the mailbox, then the alias address you want to add, and click Add Alias.'; 'To make a batch of numbered aliases, tick Create Incremental Aliases and set how many.'); Tip = 'Numbered aliases start at 1. Example: alias ''sales'' with the number 60 creates sales1@..., sales2@... up to sales60@... - that is 60 addresses in total. So just type how many you want (60 gives 60).' }
-	'Add-MailboxMember' = @{ What = 'Gives someone access to another person''s mailbox - Full Access (open and manage it), Send As (send as that mailbox), or Send on Behalf.'; Steps = @('Type the person getting access, then the mailbox. Click a permission button (Full Access, Send As, Send on Behalf), or Add Member for Full Access plus Send As together.'; 'Use Paste List to grant access to many people at once.'; 'Copy access from a user... gives one person the same access as another - shared mailboxes, distribution lists and Teams / Microsoft 365 groups. Preview shows what will be copied before you apply it.'); Tip = 'Copy access only touches shared mailboxes by default - it never grants access to someone''s personal mailbox unless you tick "include user mailboxes".' }
+	'Add-MailboxMember' = @{ What = 'Gives someone access to another person''s mailbox - Full Access (open and manage it), Send As (send as that mailbox), or Send on Behalf.'; Steps = @('Type the person getting access, then the mailbox. Click a permission button (Full Access, Send As, Send on Behalf), or Add Member for Full Access plus Send As together.'; 'Use Paste List to grant access to many people at once.'; 'Copy access from a user... gives one person the same access as another - shared mailboxes, distribution lists and Teams / Microsoft 365 groups. Preview shows what will be copied before you apply it.'); Tip = 'Copy access shows what a user has as a checklist you review before applying - personal mailboxes come unchecked so you never copy one by accident, while shared mailboxes, lists and groups are ticked by default.' }
 	'Add-TrustedSender' = @{ What = 'Marks an email address or a whole domain as trusted for EVERY mailbox in the tenant, so their messages won''t land in junk.'; Steps = @('Type the address or domain - for example news@vendor.com, or just vendor.com for everything from them.'; 'Click Add. It updates every mailbox, so in a large tenant it can take a while.'); Tip = '' }
 	'Add-UnifiedGroupMember' = @{ What = 'Adds people to a Teams / Microsoft 365 group.'; Steps = @('Type the group, then the person to add. Click Add Member, or Paste List to add many at once.'); Tip = '' }
 	'Block-User' = @{ What = 'Quickly locks someone out: disables their Active Directory and Microsoft 365 sign-in, turns their mailbox into a shared one, resets the password to something random, removes their licenses and 2FA, and signs them out everywhere.'; Steps = @('Type their email and their AD username, and tick what to block (Email, AD).'; 'Optionally give other people access to the now-shared mailbox and set an auto-reply.'; 'Click Block.'); Tip = 'For a full offboarding of someone who has left, use Terminate-Disable-ADAndEmailAccounts instead.' }
@@ -1519,6 +1519,19 @@ if ($env:SP_SHOT) {
 		[pscustomobject]@{ Id='f1'; Type='#microsoft.graph.fido2AuthenticationMethod'; Kind='Security key (FIDO2)'; Detail='YubiKey 5C'; Removable=$true },
 		[pscustomobject]@{ Id='e1'; Type='#microsoft.graph.emailAuthenticationMethod'; Kind='Email'; Detail='sara.personal@gmail.com'; Removable=$true }
 	)
+	# Populate a copy-access dialog's checklist for screenshots. $Rows = @(@{Header=..} | @{Text=..;Checked=..}).
+	function Add-ShotCopyRows($w, $Rows, [string]$Status) {
+		$panel = $w.FindName('ItemsHost')
+		foreach ($r in $Rows) {
+			if ($r.Header) {
+				$h = New-Object System.Windows.Controls.TextBlock; $h.Text = $r.Header; $h.FontSize = 11; $h.Margin = '0,8,0,2'
+				$h.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextDimBrush'); [void]$panel.Children.Add($h)
+			} else {
+				$cb = New-Object System.Windows.Controls.CheckBox; $cb.Content = $r.Text; $cb.IsChecked = [bool]$r.Checked; $cb.Margin = '2,2,0,0'; [void]$panel.Children.Add($cb)
+			}
+		}
+		if ($Status) { $w.FindName('ResultStatus').Text = $Status }
+	}
 	$script:ShotBuilders = [ordered]@{
 		'dlg-add-2fa'            = {
 			$w = New-AuthenticationPhoneDialog
@@ -1558,10 +1571,42 @@ if ($env:SP_SHOT) {
 			$w
 		}
 		'dlg-copy-access'        = {
+			# Scenario 1: a normal Preview - shared mailboxes / lists / groups checked; a personal Send As unchecked.
 			$w = New-CopyAccessDialog
 			$w.FindName('SourceInput').Text = 'jane.doe@contoso.com'
 			$w.FindName('TargetInput').Text = 'new.hire@contoso.com'
-			$w.FindName('ResultBox').Text = "jane.doe@contoso.com has:" + [char]10 + [char]10 + "Full Access (2):" + [char]10 + "  Sales Shared  <sales-mbx@contoso.com>" + [char]10 + "  Support  <support@contoso.com>" + [char]10 + "Send As (1):" + [char]10 + "  ceo@contoso.com" + [char]10 + "Distribution lists (1):" + [char]10 + "  Sales DL  <sales@contoso.com>" + [char]10 + "Teams / M365 groups (1):" + [char]10 + "  Marketing Team  <marketing@contoso.com>"
+			Add-ShotCopyRows $w @(
+				@{ Header = 'Full Access (mailboxes)' },
+				@{ Text = 'Sales Shared   [shared mailbox]   <sales-mbx@contoso.com>'; Checked = $true },
+				@{ Text = 'Support Team   [shared mailbox]   <support@contoso.com>';   Checked = $true },
+				@{ Header = 'Send As (mailboxes)' },
+				@{ Text = 'sales-mbx@contoso.com   [shared mailbox]'; Checked = $true },
+				@{ Text = 'jane.doe@contoso.com   [user''s mailbox]'; Checked = $false },
+				@{ Header = 'Distribution lists' },
+				@{ Text = 'Sales DL   [distribution list]   <sales@contoso.com>'; Checked = $true },
+				@{ Header = 'Teams / Microsoft 365 groups' },
+				@{ Text = 'Marketing Team   [Teams / Microsoft 365 group]   <marketing@contoso.com>'; Checked = $true }
+			) "Found 6 item(s) for jane.doe@contoso.com. Ticked items will be copied to new.hire@contoso.com.  1 personal mailbox is unchecked - tick it only if it's really shared."
+			$w
+		}
+		'dlg-copy-access-scan'   = {
+			# Scenario 2: "scan user mailboxes" on - personal mailboxes appear labelled + UNCHECKED among the shared ones,
+			# so you can tick a personal mailbox that's actually used as a shared one (Karen Lee below).
+			$w = New-CopyAccessDialog
+			$w.FindName('SourceInput').Text = 'bob.smith@contoso.com'
+			$w.FindName('TargetInput').Text = 'temp.cover@contoso.com'
+			$w.FindName('ChkUserMbx').IsChecked = $true
+			Add-ShotCopyRows $w @(
+				@{ Header = 'Full Access (mailboxes)' },
+				@{ Text = 'Reception   [shared mailbox]   <reception@contoso.com>'; Checked = $true },
+				@{ Text = 'Info Desk   [shared mailbox]   <info@contoso.com>';       Checked = $true },
+				@{ Text = 'Karen Lee   [user''s mailbox]   <karen.lee@contoso.com>'; Checked = $false },
+				@{ Header = 'Send As (mailboxes)' },
+				@{ Text = 'reception@contoso.com   [shared mailbox]'; Checked = $true },
+				@{ Text = 'karen.lee@contoso.com   [user''s mailbox]'; Checked = $false },
+				@{ Header = 'Distribution lists' },
+				@{ Text = 'Front Office   [distribution list]   <frontoffice@contoso.com>'; Checked = $true }
+			) "Found 6 item(s) for bob.smith@contoso.com.  2 personal mailboxes are unchecked - Karen Lee is used as a shared inbox, so tick it; leave the rest."
 			$w
 		}
 		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }

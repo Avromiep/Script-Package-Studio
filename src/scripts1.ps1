@@ -1397,6 +1397,227 @@ function Add-EmailAlias {
 	Stop-Transcript
 }
 
+# ===================== Copy a user's access to another user ==============================
+# Mirror what one user "has" onto another: shared / other-mailbox Full Access + Send As,
+# distribution-list membership, Teams / Microsoft 365 group membership, and (optional)
+# security-group membership. Group membership is read in ONE Graph call (Get-MgUserMemberOf);
+# Send As is a fast reverse lookup (Get-RecipientPermission -Trustee); Full Access has no
+# reverse lookup so mailboxes are scanned one by one - which can take a few minutes in a big
+# tenant and keeps the window busy while it runs (the app's usual UI-thread limit), so the
+# bar steps per mailbox to show it's working.
+
+# Build an inventory of what $Source has, honouring $Opts (@{ Mailbox; Dl; Unified; Security;
+# UserMailboxes }). $Progress is called as & $Progress $done $total during the Full Access scan.
+# Returns an ordered hashtable: Full / SendAs / Dl / Unified / Security = @(@{ Id; Name }); Skipped = @(string).
+function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock]$Progress) {
+    $inv = [ordered]@{ Full = @(); SendAs = @(); Dl = @(); Unified = @(); Security = @(); Skipped = @() }
+
+    # --- group memberships (distribution / Teams-M365 / security) in one Graph call ---
+    if ($Opts.Dl -or $Opts.Unified -or $Opts.Security) {
+        $groups = @()
+        try { $groups = @(Get-MgUserMemberOf -UserId $Source -All -ErrorAction Stop) }
+        catch { $inv.Skipped += "couldn't read group memberships: $($_.Exception.Message)" }
+        foreach ($g in $groups) {
+            $ap = $g.AdditionalProperties
+            if (-not $ap -or "$($ap['@odata.type'])" -ne '#microsoft.graph.group') { continue }
+            $name = "$($ap['displayName'])"; $mail = "$($ap['mail'])"
+            $types = @($ap['groupTypes'])
+            $isUnified = $types -contains 'Unified'
+            $isDynamic = $types -contains 'DynamicMembership'
+            $mailEnabled = [bool]$ap['mailEnabled']
+            $securityEnabled = [bool]$ap['securityEnabled']
+            $onprem = [bool]$ap['onPremisesSyncEnabled']
+            if ($isDynamic) { $inv.Skipped += "$name (dynamic group - membership is set by rule)"; continue }
+            if ($onprem)    { $inv.Skipped += "$name (synced from on-prem - manage it on-premises)"; continue }
+            if ($isUnified) {
+                if ($Opts.Unified) { if ($mail) { $inv.Unified += @{ Id = $mail; Name = $name } } else { $inv.Skipped += "$name (Teams/M365 group has no address)" } }
+            } elseif ($mailEnabled) {
+                if ($Opts.Dl) { if ($mail) { $inv.Dl += @{ Id = $mail; Name = $name } } else { $inv.Skipped += "$name (distribution list has no address)" } }
+            } else {
+                if ($Opts.Security) { $inv.Security += @{ Id = $g.Id; Name = $name } }
+            }
+        }
+    }
+
+    # --- Send As (fast reverse lookup by trustee) ---
+    if ($Opts.Mailbox) {
+        try {
+            $sa = @(Get-RecipientPermission -Trustee $Source -ErrorAction Stop | Where-Object { $_.AccessControlType -eq 'Allow' -and ("$($_.AccessRights)" -match 'SendAs') })
+            foreach ($p in $sa) {
+                $id = "$($p.Identity)"
+                if ($id -and $id -ne $Source -and $id -notmatch 'NT AUTHORITY') { $inv.SendAs += @{ Id = $id; Name = $id } }
+            }
+        } catch { $inv.Skipped += "couldn't read Send As grants: $($_.Exception.Message)" }
+    }
+
+    # --- Full Access (no reverse lookup exists - scan mailboxes) ---
+    if ($Opts.Mailbox) {
+        $rtd = if ($Opts.UserMailboxes) { @('SharedMailbox', 'UserMailbox', 'RoomMailbox', 'EquipmentMailbox') } else { @('SharedMailbox') }
+        $mbxs = @()
+        try { $mbxs = @(Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails $rtd -ErrorAction Stop) }
+        catch { $inv.Skipped += "couldn't list mailboxes to scan for Full Access: $($_.Exception.Message)" }
+        $i = 0; $tot = $mbxs.Count
+        foreach ($mb in $mbxs) {
+            $i++
+            if ($Progress) { & $Progress $i $tot }
+            if ("$($mb.PrimarySmtpAddress)" -eq $Source) { continue }   # their own mailbox
+            try {
+                $perm = @(Get-MailboxPermission -Identity $mb.Identity -User $Source -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ("$($_.AccessRights)" -match 'FullAccess') })
+                if ($perm.Count) { $inv.Full += @{ Id = "$($mb.PrimarySmtpAddress)"; Name = "$($mb.DisplayName)" } }
+            } catch {}
+        }
+    }
+    return $inv
+}
+
+# Apply an inventory (from Get-UserAccessInventory) onto $Target. Each grant tolerates its own
+# failure so one hiccup doesn't stop the rest; "already has it" is counted, not failed.
+# Returns @{ Granted; Already; Failed = @(string); Total }.
+function Copy-UserAccess([string]$Target, $Inv, [scriptblock]$Progress) {
+    $granted = 0; $already = 0; $failed = @()
+    $targetId = ''
+    if (@($Inv.Security).Count) { try { $targetId = (Get-MgUser -UserId $Target -ErrorAction Stop).Id } catch {} }
+    $items = @()
+    foreach ($x in $Inv.Full)     { $items += @{ Kind = 'Full';     Id = $x.Id; Name = $x.Name } }
+    foreach ($x in $Inv.SendAs)   { $items += @{ Kind = 'SendAs';   Id = $x.Id; Name = $x.Name } }
+    foreach ($x in $Inv.Dl)       { $items += @{ Kind = 'Dl';       Id = $x.Id; Name = $x.Name } }
+    foreach ($x in $Inv.Unified)  { $items += @{ Kind = 'Unified';  Id = $x.Id; Name = $x.Name } }
+    foreach ($x in $Inv.Security) { $items += @{ Kind = 'Security'; Id = $x.Id; Name = $x.Name } }
+    $i = 0; $tot = $items.Count
+    foreach ($it in $items) {
+        $i++
+        if ($Progress) { & $Progress $i $tot }
+        try {
+            switch ($it.Kind) {
+                'Full'     { Add-MailboxPermission -Identity $it.Id -User $Target -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null }
+                'SendAs'   { Add-RecipientPermission -Identity $it.Id -Trustee $Target -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null }
+                'Dl'       { Add-DistributionGroupMember -Identity $it.Id -Member $Target -ErrorAction Stop }
+                'Unified'  { Add-UnifiedGroupLinks -Identity $it.Id -LinkType Members -Links $Target -ErrorAction Stop }
+                'Security' { if ($targetId) { New-MgGroupMember -GroupId $it.Id -DirectoryObjectId $targetId -ErrorAction Stop } else { throw "couldn't resolve $Target for the security-group add" } }
+            }
+            $granted++
+            Write-Host "  copied $($it.Kind): $($it.Name)" -ForegroundColor Cyan
+        } catch {
+            $msg = "$($_.Exception.Message)".Trim()
+            if (Test-HarmlessMemberError $msg) { $already++; Write-Host "  already had $($it.Kind): $($it.Name)" -ForegroundColor Yellow }
+            else { $failed += "$($it.Name) [$($it.Kind)] - $msg"; Write-Host "  couldn't copy $($it.Kind) '$($it.Name)': $msg" -ForegroundColor Red }
+        }
+    }
+    return @{ Granted = $granted; Already = $already; Failed = $failed; Total = $tot }
+}
+
+function New-CopyAccessDialog {
+    New-StyledDialog -Title "Copy a user's access" -Icon '&#xED93;' -BodyXaml @'
+<StackPanel Margin="16" Width="450">
+    <Border Style="{DynamicResource Card}">
+        <StackPanel>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="46"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <TextBlock Text="From" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+                <TextBox x:Name="SourceInput" Grid.Column="1"/>
+                <TextBlock Text="To" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
+                <TextBox x:Name="TargetInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
+            </Grid>
+            <TextBlock Text="Copy which access:" Style="{DynamicResource Small}" Margin="0,12,0,4"/>
+            <CheckBox x:Name="ChkMailbox" Content="Shared / other mailbox access (Full Access + Send As)" IsChecked="True"/>
+            <CheckBox x:Name="ChkDl" Content="Distribution list memberships" IsChecked="True" Margin="0,6,0,0"/>
+            <CheckBox x:Name="ChkUnified" Content="Teams / Microsoft 365 group memberships" IsChecked="True" Margin="0,6,0,0"/>
+            <CheckBox x:Name="ChkSecurity" Content="Security group memberships" Margin="0,6,0,0"/>
+            <CheckBox x:Name="ChkUserMbx" Content="Also scan regular user mailboxes for Full Access (slower)" Margin="0,10,0,0"/>
+            <TextBlock Text="Full Access has no reverse lookup, so mailboxes are scanned one by one - this can take a few minutes in a big tenant and the window stays busy while it runs." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <Button x:Name="PreviewBtn" Style="{DynamicResource BtnSecondary}" Content="Preview"/>
+                <Button x:Name="CopyBtn" Style="{DynamicResource BtnPrimary}" Content="Copy access" Grid.Column="2"/>
+            </Grid>
+        </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+        <StackPanel>
+            <TextBlock Text="Result" Style="{DynamicResource H3}"/>
+            <TextBox x:Name="ResultBox" Style="{DynamicResource TextArea}" IsReadOnly="True" Height="190" Margin="0,6,0,0" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Border>
+</StackPanel>
+'@
+}
+
+# Open the copy-access dialog (owned by $Owner so it sits on top of the Add-MailboxMember window).
+function Invoke-CopyAccessDialog {
+    param([object]$Owner)
+    $dlg = New-CopyAccessDialog
+    if ($Owner) { try { $dlg.Owner = $Owner } catch {} }
+    $srcBox = $dlg.FindName('SourceInput'); $tgtBox = $dlg.FindName('TargetInput')
+    Enable-RecipientAutocomplete $srcBox 'User'
+    Enable-RecipientAutocomplete $tgtBox 'User'
+    $chkMbx = $dlg.FindName('ChkMailbox'); $chkDl = $dlg.FindName('ChkDl'); $chkUni = $dlg.FindName('ChkUnified')
+    $chkSec = $dlg.FindName('ChkSecurity'); $chkUserMbx = $dlg.FindName('ChkUserMbx')
+    $resultBox = $dlg.FindName('ResultBox')
+
+    function Get-CopyOpts {
+        @{ Mailbox = ($chkMbx.IsChecked -eq $true); Dl = ($chkDl.IsChecked -eq $true); Unified = ($chkUni.IsChecked -eq $true); Security = ($chkSec.IsChecked -eq $true); UserMailboxes = ($chkUserMbx.IsChecked -eq $true) }
+    }
+    function Format-Inv($inv) {
+        $lines = @()
+        if (@($inv.Full).Count)     { $lines += "Full Access ($(@($inv.Full).Count)):";           $inv.Full     | ForEach-Object { $lines += "  $($_.Name)  <$($_.Id)>" } }
+        if (@($inv.SendAs).Count)   { $lines += "Send As ($(@($inv.SendAs).Count)):";             $inv.SendAs   | ForEach-Object { $lines += "  $($_.Id)" } }
+        if (@($inv.Dl).Count)       { $lines += "Distribution lists ($(@($inv.Dl).Count)):";      $inv.Dl       | ForEach-Object { $lines += "  $($_.Name)  <$($_.Id)>" } }
+        if (@($inv.Unified).Count)  { $lines += "Teams / M365 groups ($(@($inv.Unified).Count)):"; $inv.Unified | ForEach-Object { $lines += "  $($_.Name)  <$($_.Id)>" } }
+        if (@($inv.Security).Count) { $lines += "Security groups ($(@($inv.Security).Count)):";    $inv.Security | ForEach-Object { $lines += "  $($_.Name)" } }
+        if (@($inv.Skipped).Count)  { $lines += "Skipped ($(@($inv.Skipped).Count)):";            $inv.Skipped  | ForEach-Object { $lines += "  $_" } }
+        if (-not $lines.Count) { $lines += 'Nothing found for that user with the selected options.' }
+        return ($lines -join "`r`n")
+    }
+    function Get-Validated {
+        $src = $srcBox.Text.Trim(); $tgt = $tgtBox.Text.Trim()
+        if (-not $src -or -not $tgt) { Show-Notice 'Missing info' 'Enter both a From user and a To user.' 'Warn'; return $null }
+        if ($src -eq $tgt) { Show-Notice 'Same user' 'The From and To users are the same.' 'Warn'; return $null }
+        if (-not (Get-MgContext)) { Show-Notice 'Not connected' 'Connect to the tenant first (top bar).' 'Warn'; return $null }
+        $o = Get-CopyOpts
+        if (-not ($o.Mailbox -or $o.Dl -or $o.Unified -or $o.Security)) { Show-Notice 'Nothing selected' 'Tick at least one kind of access to copy.' 'Warn'; return $null }
+        return @{ Src = $src; Tgt = $tgt; Opts = $o }
+    }
+    $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 70 }
+
+    function OnPreviewClick {
+        $v = Get-Validated; if (-not $v) { return }
+        $resultBox.Text = "Scanning $($v.Src)..."
+        $progressBar1.Value = 12
+        $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
+        $progressBar1.Value = 100
+        $resultBox.Text = "$($v.Src) has:`r`n`r`n" + (Format-Inv $inv)
+        Write-Host "Previewed $($v.Src)'s access." -ForegroundColor Cyan
+        $progressBar1.Value = 0
+    }
+    function OnCopyClick {
+        $v = Get-Validated; if (-not $v) { return }
+        $resultBox.Text = "Scanning $($v.Src)..."
+        $progressBar1.Value = 12
+        $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
+        $total = @($inv.Full).Count + @($inv.SendAs).Count + @($inv.Dl).Count + @($inv.Unified).Count + @($inv.Security).Count
+        if (-not $total) { $progressBar1.Value = 0; $resultBox.Text = (Format-Inv $inv); Show-Notice 'Nothing to copy' "Found no matching access for $($v.Src)." 'Info'; return }
+        Write-Host "Copying $($v.Src)'s access to $($v.Tgt): $total item(s)..." -ForegroundColor Cyan
+        $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 72 98 }
+        $res = Copy-UserAccess $v.Tgt $inv $applyProgress
+        $progressBar1.Value = 100
+        $summary = @("Copied $($v.Src)'s access to $($v.Tgt).", "Granted: $($res.Granted)")
+        if ($res.Already) { $summary += "Already had: $($res.Already)" }
+        if (@($res.Failed).Count) { $summary += "Failed: $(@($res.Failed).Count)"; $res.Failed | ForEach-Object { $summary += "  $_" } }
+        if (@($inv.Skipped).Count) { $summary += "Skipped (can't copy automatically): $(@($inv.Skipped).Count)"; $inv.Skipped | ForEach-Object { $summary += "  $_" } }
+        $resultBox.Text = ($summary -join "`r`n")
+        $kind = if (@($res.Failed).Count) { 'Warn' } else { 'Info' }
+        Show-Notice 'Copy access' ($summary -join "`r`n") $kind
+        $progressBar1.Value = 0
+    }
+
+    $dlg.FindName('PreviewBtn').Add_Click({ OnPreviewClick })
+    $dlg.FindName('CopyBtn').Add_Click({ OnCopyClick })
+    [void]$dlg.ShowDialog()
+}
+
+
+
 # ---------------------------------------------------------------------------
 function New-MailboxMemberDialog {
 	New-StyledDialog -Title 'Add-MailboxMember' -Icon '&#xED93;' -BodyXaml @'
@@ -1439,6 +1660,13 @@ function New-MailboxMemberDialog {
 			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
 			<Button x:Name="BulkMembersBtn" Style="{DynamicResource BtnPrimary}" Content="Add Members" Margin="0,8,0,0"/>
 			<Button x:Name="PasteBtn" Style="{DynamicResource BtnSecondary}" Content="Paste List..." Margin="0,8,0,0"/>
+		</StackPanel>
+	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Copy a user's access" Style="{DynamicResource H3}"/>
+			<TextBlock Text="Give one user the same shared mailboxes, distribution lists and Teams / Microsoft 365 groups as another user." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+			<Button x:Name="CopyAccessBtn" Style="{DynamicResource BtnSecondary}" Content="Copy access from a user..." Margin="0,10,0,0"/>
 		</StackPanel>
 	</Border>
 </StackPanel>
@@ -1554,6 +1782,7 @@ function Add-MailboxMember {
 	$scriptForm1.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$bulkMembersButton.Add_Click({ OnBulkMembersButtonClick })
 	$scriptForm1.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $mailboxInputBox.Text -Action $(if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }) })
+	$scriptForm1.FindName('CopyAccessBtn').Add_Click({ Invoke-CopyAccessDialog -Owner $scriptForm1 })
 
 	if ($mailboxMemberMode -eq 0) {
 		Set-DialogTitle $scriptForm1 "Add-MailboxMember"

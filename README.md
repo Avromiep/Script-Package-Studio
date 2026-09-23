@@ -61,7 +61,8 @@ Also has options for adding aliases in bulk.
 *Requires sign in.*  
 Add a member to another mailbox. It can be a shared mailbox or just another user's email.  
 Also has options for adding members in bulk.  
-Also has buttons for adding only SendAs, SendOnBehalf or FullAccess permissions (FullAccess is also known as ReadAndManage).
+Also has buttons for adding only SendAs, SendOnBehalf or FullAccess permissions (FullAccess is also known as ReadAndManage).  
+**Copy a user's access:** the *Copy access from a user...* button mirrors everything one user has onto another - shared / other-mailbox access (Full Access + Send As), distribution lists, and Teams / Microsoft 365 groups (security groups optional). Enter a *From* and a *To* user, tick what to copy, and use *Preview* to see what will be copied before *Copy access* applies it. Group memberships and Send As are found instantly; Full Access has no reverse lookup so mailboxes are scanned one by one (shared mailboxes by default; tick the box to also scan user mailboxes) - this can take a few minutes in a large tenant. Dynamic and on-prem-synced groups are listed as skipped since their membership can't be edited here.
 
 ### Add-TrustedSender
 

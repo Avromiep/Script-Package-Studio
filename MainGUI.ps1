@@ -1,4 +1,4 @@
-﻿$version = "v3.1.98"
+﻿$version = "v3.1.99"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1555,6 +1555,13 @@ if ($env:SP_SHOT) {
 				[void]$list.Items.Add($it)
 			}
 			$list.SelectedIndex = 1
+			$w
+		}
+		'dlg-copy-access'        = {
+			$w = New-CopyAccessDialog
+			$w.FindName('SourceInput').Text = 'jane.doe@contoso.com'
+			$w.FindName('TargetInput').Text = 'new.hire@contoso.com'
+			$w.FindName('ResultBox').Text = "jane.doe@contoso.com has:" + [char]10 + [char]10 + "Full Access (2):" + [char]10 + "  Sales Shared  <sales-mbx@contoso.com>" + [char]10 + "  Support  <support@contoso.com>" + [char]10 + "Send As (1):" + [char]10 + "  ceo@contoso.com" + [char]10 + "Distribution lists (1):" + [char]10 + "  Sales DL  <sales@contoso.com>" + [char]10 + "Teams / M365 groups (1):" + [char]10 + "  Marketing Team  <marketing@contoso.com>"
 			$w
 		}
 		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }

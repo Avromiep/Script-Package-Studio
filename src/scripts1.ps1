@@ -1536,27 +1536,25 @@ function New-CopyAccessDialog {
             <CheckBox x:Name="ChkSecurity" Content="Security group memberships" Margin="0,6,0,0"/>
             <CheckBox x:Name="ChkUserMbx" Content="Also scan regular user mailboxes for Full Access (slower)" Margin="0,10,0,0"/>
             <TextBlock Text="Personal (user) mailboxes are listed UNCHECKED - nothing personal is copied unless you tick it. Shared mailboxes, lists and groups are checked. Full Access on a user mailbox is only found when you turn on the scan above (slow in a big tenant); Send As on a user mailbox always shows." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
-            <Grid Margin="0,12,0,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                <Button x:Name="PreviewBtn" Style="{DynamicResource BtnSecondary}" Content="Preview"/>
-                <Button x:Name="CopyBtn" Style="{DynamicResource BtnPrimary}" Content="Copy selected" Grid.Column="2"/>
-            </Grid>
+            <TextBlock Text="Step 1 &#183; Load what this user has" Style="{DynamicResource Small}" Margin="0,12,0,4"/>
+            <Button x:Name="LoadBtn" Style="{DynamicResource BtnPrimary}" Content="Load their access"/>
         </StackPanel>
     </Border>
     <Border Style="{DynamicResource Card}" Margin="0,12,0,0">
         <StackPanel>
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock Text="Review and choose what to copy" Style="{DynamicResource H3}" VerticalAlignment="Center"/>
+                <TextBlock Text="Step 2 &#183; Review and choose what to copy" Style="{DynamicResource H3}" VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Button x:Name="SelectAllBtn" Style="{DynamicResource BtnGhost}" Content="All" Padding="8,2"/>
                     <Button x:Name="SelectNoneBtn" Style="{DynamicResource BtnGhost}" Content="None" Padding="8,2" Margin="4,0,0,0"/>
                 </StackPanel>
             </Grid>
-            <TextBlock x:Name="ResultStatus" Style="{DynamicResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="Click Preview to list what this user has. Personal mailboxes come unchecked - tick any that are really shared, then Copy selected."/>
+            <TextBlock x:Name="ResultStatus" Style="{DynamicResource Small}" Margin="0,4,0,0" TextWrapping="Wrap" Text="Enter the two users above and click Load their access. What they have will be listed here to review - personal mailboxes come unchecked - then Copy selected."/>
             <ScrollViewer MaxHeight="240" Margin="0,8,0,0" VerticalScrollBarVisibility="Auto">
                 <StackPanel x:Name="ItemsHost"/>
             </ScrollViewer>
+            <Button x:Name="CopyBtn" Style="{DynamicResource BtnPrimary}" Content="Copy selected" Margin="0,12,0,0" IsEnabled="False"/>
         </StackPanel>
     </Border>
 </StackPanel>
@@ -1573,7 +1571,7 @@ function Invoke-CopyAccessDialog {
     Enable-RecipientAutocomplete $tgtBox 'User'
     $chkMbx = $dlg.FindName('ChkMailbox'); $chkDl = $dlg.FindName('ChkDl'); $chkUni = $dlg.FindName('ChkUnified')
     $chkSec = $dlg.FindName('ChkSecurity'); $chkUserMbx = $dlg.FindName('ChkUserMbx')
-    $itemsHost = $dlg.FindName('ItemsHost'); $status = $dlg.FindName('ResultStatus')
+    $itemsHost = $dlg.FindName('ItemsHost'); $status = $dlg.FindName('ResultStatus'); $copyBtn = $dlg.FindName('CopyBtn')
 
     function Get-CopyOpts {
         @{ Mailbox = ($chkMbx.IsChecked -eq $true); Dl = ($chkDl.IsChecked -eq $true); Unified = ($chkUni.IsChecked -eq $true); Security = ($chkSec.IsChecked -eq $true); UserMailboxes = ($chkUserMbx.IsChecked -eq $true) }
@@ -1615,10 +1613,11 @@ function Invoke-CopyAccessDialog {
     }
     $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 90 }
 
-    function OnPreviewClick {
+    function OnLoadClick {
         $v = Get-Validated; if (-not $v) { return }
+        $copyBtn.IsEnabled = $false
         $itemsHost.Children.Clear()
-        $status.Text = "Scanning $($v.Src)..."
+        $status.Text = "Generating preview for $($v.Src) - this can take a moment..."
         $progressBar1.Value = 12
         $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
         Add-Section 'Full Access (mailboxes)' $inv.Full
@@ -1632,19 +1631,20 @@ function Invoke-CopyAccessDialog {
         if (-not $found) {
             $status.Text = "Found nothing for $($v.Src) with those options." + $(if (@($inv.Skipped).Count) { "  Skipped: " + (@($inv.Skipped) -join '; ') } else { '' })
         } else {
-            $msg = "Found $found item(s) for $($v.Src). Ticked items will be copied to $($v.Tgt)."
+            $copyBtn.IsEnabled = $true
+            $msg = "Found $found item(s) for $($v.Src). Review below, then click Copy selected to give them to $($v.Tgt)."
             if ($personal) { $msg += "  $personal personal mailbox(es) are unchecked - tick any that are really shared." }
             if (@($inv.Skipped).Count) { $msg += "  Skipped " + @($inv.Skipped).Count + " (dynamic / on-prem / no address)." }
             $status.Text = $msg
         }
-        Write-Host "Previewed $($v.Src)'s access: $found item(s)." -ForegroundColor Cyan
+        Write-Host "Loaded $($v.Src)'s access: $found item(s)." -ForegroundColor Cyan
         $progressBar1.Value = 0
     }
     function OnCopyClick {
         $v = Get-Validated; if (-not $v) { return }
         $chosen = Get-Chosen
         if (-not @($chosen).Count) {
-            if (-not @($itemsHost.Children).Count) { Show-Notice 'Preview first' 'Click Preview to list this user''s access, then tick what to copy.' 'Info' }
+            if (-not @($itemsHost.Children).Count) { Show-Notice 'Load first' 'Click Load their access first to list what this user has, then tick what to copy.' 'Info' }
             else { Show-Notice 'Nothing ticked' 'Tick at least one item to copy.' 'Warn' }
             return
         }
@@ -1662,7 +1662,15 @@ function Invoke-CopyAccessDialog {
         $progressBar1.Value = 0
     }
 
-    $dlg.FindName('PreviewBtn').Add_Click({ OnPreviewClick })
+    # Enforce Step 1 -> Step 2: Copy stays disabled until a preview is loaded, and re-locks if the
+    # From user or the "look for" options change, so a stale list can never be copied.
+    $markStale = {
+        $copyBtn.IsEnabled = $false
+        if (@($itemsHost.Children).Count) { $itemsHost.Children.Clear(); $status.Text = "Details changed - click Load their access again to refresh the list." }
+    }.GetNewClosure()
+    $srcBox.Add_TextChanged($markStale)
+    foreach ($c in @($chkMbx, $chkDl, $chkUni, $chkSec, $chkUserMbx)) { $c.Add_Checked($markStale); $c.Add_Unchecked($markStale) }
+    $dlg.FindName('LoadBtn').Add_Click({ OnLoadClick })
     $dlg.FindName('CopyBtn').Add_Click({ OnCopyClick })
     $dlg.FindName('SelectAllBtn').Add_Click({ Set-AllChecks $true })
     $dlg.FindName('SelectNoneBtn').Add_Click({ Set-AllChecks $false })

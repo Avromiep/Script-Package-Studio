@@ -1,4 +1,4 @@
-﻿$version = "v3.1.101"
+﻿$version = "v3.1.102"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1531,6 +1531,7 @@ if ($env:SP_SHOT) {
 			}
 		}
 		if ($Status) { $w.FindName('ResultStatus').Text = $Status }
+		$w.FindName('CopyBtn').IsEnabled = $true   # shots simulate the loaded state, so Copy is unlocked
 	}
 	$script:ShotBuilders = [ordered]@{
 		'dlg-add-2fa'            = {

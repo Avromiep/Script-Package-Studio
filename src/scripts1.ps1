@@ -337,17 +337,17 @@ function New-PasteMembersDialog {
 		$countText.Text = "$($emails.Count) unique"
 	}.GetNewClosure())
 
-	# Live: pull each target out of the pasted text (email in the line if present, else the whole
-	# line so a plain name/alias still works), de-duped - so pasting "Sales sales@x.com" lists just
-	# the address. Same paste-and-extract behavior as the members box.
+	# Live: pull targets out of the pasted text - ALL email addresses on a line (any count, any
+	# separator: ";", ",", spaces, tabs), else the whole line so a plain name/alias still works -
+	# de-duped. So "Sales sales@x.com" lists just the address, and "a@x.com; b@x.com" lists both.
 	$refreshTargets = {
 		$out = [System.Collections.Generic.List[string]]::new()
 		$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		foreach ($line in ($targetsInput.Text -split "\r?\n")) {
 			$line = $line.Trim(); if (-not $line) { continue }
 			$em = @(Get-EmailsFromText $line)
-			$val = if ($em.Count) { $em[0] } else { $line }
-			if ($seen.Add($val)) { [void]$out.Add($val) }
+			if ($em.Count) { foreach ($e in $em) { if ($seen.Add($e)) { [void]$out.Add($e) } } }
+			elseif ($seen.Add($line)) { [void]$out.Add($line) }
 		}
 		$targetsPreview.Text = ($out -join "`r`n")
 		$targetsCount.Text = "$($out.Count) target(s)"
@@ -365,7 +365,7 @@ function New-PasteMembersDialog {
 		foreach ($line in ($targetsPreview.Text -split "\r?\n")) {
 			$line = $line.Trim(); if (-not $line) { continue }
 			$em = @(Get-EmailsFromText $line)
-			$targets += if ($em.Count) { $em[0] } else { $line }
+			if ($em.Count) { $targets += $em } else { $targets += $line }
 		}
 		$targets = @($targets | Select-Object -Unique)
 		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' "No people to $verbLow - paste some text with email addresses at the top." 'Warn'; return }

@@ -77,14 +77,14 @@ Add a single or multiple members to a Unified/Office365 Group.
 ### Add-AutoReply
 
 *Requires sign in.*  
-Turn on an automatic (out-of-office) reply for a mailbox. Write the internal and external messages, optionally schedule a start/end date, and click Confirm. **Show current** loads the reply already set on the mailbox so you can review or edit it before replacing it.
+Turn on an automatic (out-of-office) reply for a mailbox. Write the internal and external messages, optionally schedule a start/end date, and click Confirm. The reply already set on the mailbox **loads automatically** as soon as you enter the address (an amber banner marks it as the current one) - edit it to replace it, or click **Clear preview** to start fresh. (**Show current** still reloads it manually if needed.)
 
 ### Add-AuthenticationPhoneMethod
 
 *Requires sign in.*  
 Add a phone number to a user for 2FA.  
 You don't have to type the `+1 ` yourself - enter a US/Canada number as plain digits (any format, e.g. `(222) 444-6666`). For other countries, type the country code (e.g. `+44` or `00441234...`) and it's lifted out of the box up next to the flag. A country flag and the `+code` show just to the left of the box (outside it) and update live as you type, while the box keeps just the national number - so you can see which country the number is being read as. It's submitted to Microsoft in the `+CC national` format it expects.  
-**Show current** lists the 2FA methods already registered for that user - phone, alternate phone, Microsoft Authenticator, other authenticator apps, security keys, email, and so on (only the ones they actually have). **Remove a 2FA method** opens a picker where you select one of those methods and remove it (with a yes/no confirm) - useful when someone lost a phone or key. A colored banner makes it clear whether you're viewing current methods or adding a new one. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
+The 2FA methods already registered for that user **load automatically** when you enter their address (an amber banner marks them as current) - phone, alternate phone, Microsoft Authenticator, other authenticator apps, security keys, email, and so on (only the ones they actually have). **Show current** re-lists them manually, and **Remove a 2FA method** opens a picker where you select one of those methods and remove it (with a yes/no confirm) - useful when someone lost a phone or key. The banner flips to accent the moment you type a new number to add. Add a number as the primary **Mobile** or as an **Alternate mobile** (use Alternate when a mobile is already set).  
 Also has options for bulk (the same number formatting applies to the CSV).
 
 ### Block-User

@@ -744,29 +744,54 @@ function Add-AuthenticationPhoneMethod {
 		return [bool]$infos.Count
 	}
 
-	# "Show current": list this user's registered 2FA methods so you can see what they have before
-	# adding another. Read-only - use "Remove a 2FA method" to remove one. Toggles hide on re-click.
-	$showCurrentBtn.Add_Click({
-		if ($script:PmShowingCurrent) { $methodsScroller.Visibility = 'Collapsed'; $methodsPanel.Children.Clear(); Set-PhoneBannerNew; Write-Host 'Closed the list - the box adds a NEW number.' -ForegroundColor Cyan; return }
-		$user = $emailInput.Text.Trim()
-		if (-not $user) { Write-Host 'Enter a user email address first.' -ForegroundColor Yellow; return }
-		Write-Host "Fetching current sign-in methods for $user..."
-		$progressBar1.Value = 20
-		$any = & $refreshMethods
-		$progressBar1.Value = 60
-		if ($null -eq $any) { $progressBar1.Value = 0; return }   # read failed / no user (already logged)
-		if (-not $any) {
-			$methodsScroller.Visibility = 'Collapsed'
-			Set-PhoneBannerNew "No 2FA methods are registered for $user yet - add a phone number below."
-			Write-Host "No 2FA methods on $user." -ForegroundColor Cyan
-		} else {
-			$methodsScroller.Visibility = 'Visible'
-			Set-PhoneBannerCurrent "CURRENT 2FA methods for ${user}. Use ""Remove a 2FA method"" to remove one, or add a new phone number below."
-			Write-Host "Loaded current sign-in methods for $user." -ForegroundColor Green
-		}
-		CheckForErrors
-		$progressBar1.Value = 0
-	})
+    # Load + show the user's CURRENT 2FA methods (read-only list). Shared by the auto-load (on
+    # entering a user) and the manual button.
+    function Show-CurrentMethods([string]$user) {
+        if (-not $user) { return }
+        Write-Host "Fetching current sign-in methods for $user..."
+        $progressBar1.Value = 20
+        $any = & $refreshMethods
+        $progressBar1.Value = 60
+        if ($null -eq $any) { $progressBar1.Value = 0; return }   # read failed / no user (already logged)
+        if (-not $any) {
+            $methodsScroller.Visibility = 'Collapsed'
+            Set-PhoneBannerNew "No 2FA methods are registered for $user yet - add a phone number below."
+            Write-Host "No 2FA methods on $user." -ForegroundColor Cyan
+        } else {
+            $methodsScroller.Visibility = 'Visible'
+            Set-PhoneBannerCurrent "CURRENT 2FA methods for ${user}. Use ""Remove a 2FA method"" to remove one, or add a new phone number below."
+            Write-Host "Loaded current sign-in methods for $user." -ForegroundColor Green
+        }
+        CheckForErrors
+        $progressBar1.Value = 0
+    }
+
+    # The button now just toggles the list - the current methods load automatically once you enter a
+    # user. Re-click hides them (and switches the box back to adding a NEW number).
+    $showCurrentBtn.Add_Click({
+        if ($script:PmShowingCurrent) { $methodsScroller.Visibility = 'Collapsed'; $methodsPanel.Children.Clear(); Set-PhoneBannerNew; Write-Host 'Closed the list - the box adds a NEW number.' -ForegroundColor Cyan; return }
+        $user = $emailInput.Text.Trim()
+        if (-not $user) { Write-Host 'Enter a user email address first.' -ForegroundColor Yellow; return }
+        $script:PmLastLoaded = $user
+        Show-CurrentMethods $user
+    })
+
+    # Auto-load the user's current 2FA methods the moment a full address is entered (typed or picked).
+    # Debounced; only when connected; skips a repeat of the same user.
+    $script:PmLastLoaded = ''
+    $pmAutoTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $pmAutoTimer.Interval = [TimeSpan]::FromMilliseconds(450)
+    $pmAutoTimer.Add_Tick({
+        $pmAutoTimer.Stop()
+        $u = $emailInput.Text.Trim()
+        if (-not (Test-AcIsCompleteEmail $u)) { return }
+        if ($u -eq $script:PmLastLoaded) { return }
+        if (-not (Get-MgContext)) { return }
+        $script:PmLastLoaded = $u
+        Show-CurrentMethods $u
+    })
+    $emailInput.Add_TextChanged({ $pmAutoTimer.Stop(); $pmAutoTimer.Start() })
+
 
 	# "Remove a 2FA method": open the picker to choose one of the user's methods to remove.
 	$scriptForm8.FindName('RemoveMethodBtn').Add_Click({
@@ -938,58 +963,79 @@ function Add-AutoReply {
 	$useScheduleCheckBox.Add_Checked($onSchedule)
 	$useScheduleCheckBox.Add_Unchecked($onSchedule)
 
-	# "Show current": load the mailbox's existing auto-reply so the user can see if
-	# there's already one they like before writing a new one.
-	$showCurrentBtn.Add_Click({
-		# Toggle: while a preview is loaded this button clears it; otherwise it loads the current reply.
-		if ($script:ArShowingCurrent) {
-			$script:ArSuppress = $true
-			$internalReplyTextBox.Text = ''
-			$externalReplyTextBox.Text = ''
-			$script:ArSuppress = $false
-			Set-BannerNew
-			Write-Host "Cleared the preview - compose a new auto-reply." -ForegroundColor Cyan
-			return
-		}
-		$mailbox = $emailInputBox.Text.Trim()
-		if (-not $mailbox) { Write-Host "Enter a mailbox email address first." -ForegroundColor Yellow; return }
-		Write-Host "Fetching current auto-reply for $mailbox..."
-		$progressBar1.Value = 20
-		try {
-			$cfg = Get-MailboxAutoReplyConfiguration -Identity $mailbox -ErrorAction Stop
-		} catch {
-			Write-Host "Could not read auto-reply for $mailbox : $($_.Exception.Message)" -ForegroundColor Red
-			$progressBar1.Value = 0
-			return
-		}
-		$progressBar1.Value = 60
-		$state = [string]$cfg.AutoReplyState
-		$script:ArSuppress = $true
-		if (-not $state -or $state -eq 'Disabled') {
-			$internalReplyTextBox.Text = ''
-			$externalReplyTextBox.Text = ''
-			$script:ArSuppress = $false
-			Set-BannerNew 'No auto-reply is currently set on this mailbox - compose a new one below (set on Confirm).'
-			Write-Host "No auto-reply is currently set on $mailbox (state: $state). You can create a new one." -ForegroundColor Cyan
-		} else {
-			$intText = ConvertFrom-AutoReplyHtml ([string]$cfg.InternalMessage)
-			$extText = ConvertFrom-AutoReplyHtml ([string]$cfg.ExternalMessage)
-			# if internal/external differ, turn off Match Replies so loading one doesn't overwrite the other
-			if ($intText -ne $extText) { $matchRepliesCheckBox.IsChecked = $false }
-			$internalReplyTextBox.Text = $intText
-			$externalReplyTextBox.Text = $extText
-			if ($state -eq 'Scheduled') {
-				$useScheduleCheckBox.IsChecked = $true
-				if ($cfg.StartTime) { try { $startDatePicker.SelectedDate = [datetime]$cfg.StartTime } catch {} }
-				if ($cfg.EndTime)   { try { $endDatePicker.SelectedDate   = [datetime]$cfg.EndTime }   catch {} }
-			}
-			$script:ArSuppress = $false
-			Set-BannerCurrent
-			Write-Host "Current auto-reply on $mailbox is '$state' - loaded below for REVIEW (edit it to replace)." -ForegroundColor Green
-		}
-		CheckForErrors
-		$progressBar1.Value = 0
-	})
+    # Load + preview the mailbox's CURRENT auto-reply. The amber banner makes clear it's the current
+    # one; editing it flips the banner to NEW. Shared by the auto-load (on entering an address) and
+    # the manual button.
+    function Show-CurrentReply([string]$mailbox) {
+        if (-not $mailbox) { return }
+        Write-Host "Fetching current auto-reply for $mailbox..."
+        $progressBar1.Value = 20
+        try { $cfg = Get-MailboxAutoReplyConfiguration -Identity $mailbox -ErrorAction Stop }
+        catch { Write-Host "Could not read auto-reply for $mailbox : $($_.Exception.Message)" -ForegroundColor Red; $progressBar1.Value = 0; return }
+        $progressBar1.Value = 60
+        $state = [string]$cfg.AutoReplyState
+        $script:ArSuppress = $true
+        if (-not $state -or $state -eq 'Disabled') {
+            $internalReplyTextBox.Text = ''
+            $externalReplyTextBox.Text = ''
+            $script:ArSuppress = $false
+            Set-BannerNew 'No auto-reply is currently set on this mailbox - compose a new one below (set on Confirm).'
+            Write-Host "No auto-reply is currently set on $mailbox (state: $state)." -ForegroundColor Cyan
+        } else {
+            $intText = ConvertFrom-AutoReplyHtml ([string]$cfg.InternalMessage)
+            $extText = ConvertFrom-AutoReplyHtml ([string]$cfg.ExternalMessage)
+            if ($intText -ne $extText) { $matchRepliesCheckBox.IsChecked = $false }
+            $internalReplyTextBox.Text = $intText
+            $externalReplyTextBox.Text = $extText
+            if ($state -eq 'Scheduled') {
+                $useScheduleCheckBox.IsChecked = $true
+                if ($cfg.StartTime) { try { $startDatePicker.SelectedDate = [datetime]$cfg.StartTime } catch {} }
+                if ($cfg.EndTime)   { try { $endDatePicker.SelectedDate   = [datetime]$cfg.EndTime }   catch {} }
+            }
+            $script:ArSuppress = $false
+            Set-BannerCurrent
+            Write-Host "Current auto-reply on $mailbox is '$state' - loaded for REVIEW (edit to replace)." -ForegroundColor Green
+        }
+        CheckForErrors
+        $progressBar1.Value = 0
+    }
+
+    # The button is now a manual refresh / clear toggle - the current reply loads automatically once
+    # you enter an address, but this still lets you reload it, or clear the preview to start fresh.
+    $showCurrentBtn.Add_Click({
+        if ($script:ArShowingCurrent) {
+            $script:ArSuppress = $true
+            $internalReplyTextBox.Text = ''
+            $externalReplyTextBox.Text = ''
+            $script:ArSuppress = $false
+            Set-BannerNew
+            Write-Host "Cleared the preview - compose a new auto-reply." -ForegroundColor Cyan
+            return
+        }
+        $mailbox = $emailInputBox.Text.Trim()
+        if (-not $mailbox) { Write-Host "Enter a mailbox email address first." -ForegroundColor Yellow; return }
+        $script:ArLastLoaded = $mailbox
+        Show-CurrentReply $mailbox
+    })
+
+    # Auto-load the CURRENT auto-reply the moment a full address is entered (typed or picked from the
+    # dropdown) - no need to click Show current. Debounced so it doesn't fire mid-typing, only fires
+    # when connected, and never overwrites a reply you've already started composing.
+    $script:ArLastLoaded = ''
+    $arAutoTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $arAutoTimer.Interval = [TimeSpan]::FromMilliseconds(450)
+    $arAutoTimer.Add_Tick({
+        $arAutoTimer.Stop()
+        $mbx = $emailInputBox.Text.Trim()
+        if (-not (Test-AcIsCompleteEmail $mbx)) { return }
+        if ($mbx -eq $script:ArLastLoaded) { return }
+        if (-not (Get-MgContext)) { return }
+        if (-not $script:ArShowingCurrent -and ("$($internalReplyTextBox.Text)".Trim() -or "$($externalReplyTextBox.Text)".Trim())) { return }
+        $script:ArLastLoaded = $mbx
+        Show-CurrentReply $mbx
+    })
+    $emailInputBox.Add_TextChanged({ $arAutoTimer.Stop(); $arAutoTimer.Start() })
+
 
 	$addAutoReplyForm.FindName('ConfirmBtn').Add_Click({ OnConfirmAutoReplyButtonClick })
 

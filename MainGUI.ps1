@@ -1,4 +1,4 @@
-﻿$version = "v3.2.0"
+﻿$version = "v3.3.0"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -974,7 +974,7 @@ $script:ScriptCatalog = @(
 $script:ScriptHelp = @{
 	'Add-AuthenticationPhoneMethod' = @{ What = 'Adds a phone number to someone''s account for two-step verification (2FA) - the code they get by text or call when signing in. You can also see and remove the 2FA methods they already have.'; Steps = @('Type the person''s email, then their phone number. For US/Canada just type the 10 digits - the +1 and flag fill in for you. For another country, type its code (like +44) and it hops up next to the flag. Either way, you can also type or paste the full number with the code, like +1 8585555555, and it works too.'; 'Pick Mobile (their main number) or Alternate mobile (a second one), then click Add Phone Number.'; 'When you enter their address, the 2FA methods they already have load automatically (an amber banner marks them as current); Show current re-lists them, and Remove a 2FA method lets you delete one - handy if they lost a phone or security key.'); Tip = 'To add many at once: click Open Template, fill in the spreadsheet, save it, then click Add Phone Numbers.' }
 	'Add-AutoReply' = @{ What = 'Turns on an automatic ''out of office'' reply for a mailbox.'; Steps = @('Type the mailbox''s email address.'; 'Write the message. Internal is for coworkers, External is for outside senders - leave Match Replies ticked to use the same text for both.'; 'Optionally tick Use Start and End Date to schedule it, then click Confirm.'; 'The reply already on the mailbox loads automatically once you enter the address (an amber banner marks it as the current one); edit it to replace it, or use Clear preview to start fresh.'); Tip = '' }
-	'Add-Contacts' = @{ What = 'Adds outside people to your Microsoft 365 address book as contacts, so their name and email show up when your staff compose messages.'; Steps = @('Fill in the contact''s name and email, or click Open Template to add many from a spreadsheet.'; 'Click Add.'); Tip = '' }
+	'Add-Contacts' = @{ What = 'Adds outside people to your Microsoft 365 address book as contacts, or invites them as a guest.'; Steps = @('Pick a mode at the top: All info or Just email make an address-book contact only (no email is sent to them); Guest invite actually emails them an invitation and creates a guest they can be given access with.'; 'Fill in the email (and name if shown), then click the button - or Open Template to do many at once.'); Tip = 'Use Guest invite when the person needs ACCESS (Teams / Microsoft 365 group, SharePoint, an app); use the contact modes when you only want them in the address book / on a distribution list.' }
 	'Add-DistributionListMember' = @{ What = 'Adds people to a distribution list - one email address that forwards to a whole group of people.'; Steps = @('Type the list''s email, then the person to add (start typing a name and pick them from the list).'; 'Click Add Member. To add lots of people, click Paste List and paste their names or emails.'); Tip = '' }
 	'Add-EmailAlias' = @{ What = 'Gives a mailbox extra email addresses (aliases). Mail sent to any of them lands in the same inbox.'; Steps = @('Type the mailbox, then the alias address you want to add, and click Add Alias.'; 'To make a batch of numbered aliases, tick Create Incremental Aliases and set how many.'); Tip = 'Numbered aliases start at 1. Example: alias ''sales'' with the number 60 creates sales1@..., sales2@... up to sales60@... - that is 60 addresses in total. So just type how many you want (60 gives 60).' }
 	'Add-MailboxMember' = @{ What = 'Gives someone access to another person''s mailbox - Full Access (open and manage it), Send As (send as that mailbox), or Send on Behalf.'; Steps = @('Type the person getting access, then the mailbox. Click a permission button (Full Access, Send As, Send on Behalf), or Add Member for Full Access plus Send As together.'; 'Use Paste List to grant access to many people at once.'; 'Copy access from a user... gives one person the same access as another - shared mailboxes, distribution lists and Teams / Microsoft 365 groups. Preview shows what will be copied before you apply it.'); Tip = 'Copy access shows what a user has as a checklist you review before applying - personal mailboxes come unchecked so you never copy one by accident, while shared mailboxes, lists and groups are ticked by default.' }
@@ -1634,7 +1634,16 @@ if ($env:SP_SHOT) {
 			$w.FindName('ShowCurrentBtn').Content = 'Clear preview'
 			$w
 		}
-		'dlg-add-contacts'       = { New-AddContactsDialog }
+		'dlg-add-contacts'       = {
+			$w = New-AddContactsDialog
+			$w.FindName('GuestInviteChip').IsChecked = $true
+			$w.FindName('NameInput').Text = 'Dana Vendor'
+			$w.FindName('EmailInput').Text = 'dana@vendor.com'
+			$w.FindName('ModeHint').Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Name is optional.'
+			$w.FindName('AddContactBtn').Content = 'Send Guest Invite'
+			$w.FindName('BulkContactsBtn').Content = 'Send Invites'
+			$w
+		}
 		'dlg-add-distlistmember' = { New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste }
 		'dlg-remove-distlistmember' = { New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste }
 		'dlg-paste-remove'          = { New-PasteMembersDialog -TargetPrefill 'dl@contoso.com' -Action 'remove' }

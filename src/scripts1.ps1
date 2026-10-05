@@ -1046,138 +1046,183 @@ function Add-AutoReply {
 
 # ---------------------------------------------------------------------------
 function New-AddContactsDialog {
-	New-StyledDialog -Title 'Add-Contacts' -Icon '&#xE249;' -BodyXaml @'
+    New-StyledDialog -Title 'Add-Contacts' -Icon '&#xE249;' -BodyXaml @'
 <StackPanel Margin="16" Width="340">
-	<Border Style="{DynamicResource Card}">
-		<StackPanel>
-			<TextBlock Text="Mode" Style="{DynamicResource H3}"/>
-			<StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-				<RadioButton x:Name="AllInfoChip" Style="{DynamicResource Chip}" GroupName="ContactMode" Content="All info" IsChecked="True"/>
-				<RadioButton x:Name="JustEmailChip" Style="{DynamicResource Chip}" GroupName="ContactMode" Content="Just email" Margin="8,0,0,0"/>
-			</StackPanel>
-		</StackPanel>
-	</Border>
-	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
-		<StackPanel>
-			<TextBlock Text="Single" Style="{DynamicResource H3}"/>
-			<Grid Margin="0,12,0,0">
-				<Grid.ColumnDefinitions>
-					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
-				</Grid.ColumnDefinitions>
-				<Grid.RowDefinitions>
-					<RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-				</Grid.RowDefinitions>
-				<TextBlock Text="Name" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
-				<TextBox x:Name="NameInput" Grid.Column="1"/>
-				<TextBlock Text="Email" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
-				<TextBox x:Name="EmailInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
-			</Grid>
-			<Button x:Name="AddContactBtn" Style="{DynamicResource BtnPrimary}" Content="Add Contact" Margin="0,14,0,0"/>
-		</StackPanel>
-	</Border>
-	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
-		<StackPanel>
-			<TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
-			<Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
-			<Button x:Name="BulkContactsBtn" Style="{DynamicResource BtnPrimary}" Content="Add Contacts" Margin="0,8,0,0"/>
-		</StackPanel>
-	</Border>
+    <Border Style="{DynamicResource Card}">
+        <StackPanel>
+            <TextBlock Text="Mode" Style="{DynamicResource H3}"/>
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <RadioButton x:Name="AllInfoChip" Style="{DynamicResource Chip}" GroupName="ContactMode" Content="All info" IsChecked="True"/>
+                <RadioButton x:Name="JustEmailChip" Style="{DynamicResource Chip}" GroupName="ContactMode" Content="Just email" Margin="8,0,0,0"/>
+                <RadioButton x:Name="GuestInviteChip" Style="{DynamicResource Chip}" GroupName="ContactMode" Content="Guest invite" Margin="8,0,0,0"/>
+            </StackPanel>
+            <TextBlock x:Name="ModeHint" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,10,0,0" Text="Creates an address-book contact (with a name). No email is sent to the person."/>
+        </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+        <StackPanel>
+            <TextBlock Text="Single" Style="{DynamicResource H3}"/>
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Name" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+                <TextBox x:Name="NameInput" Grid.Column="1"/>
+                <TextBlock Text="Email" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
+                <TextBox x:Name="EmailInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
+            </Grid>
+            <Button x:Name="AddContactBtn" Style="{DynamicResource BtnPrimary}" Content="Add Contact" Margin="0,14,0,0"/>
+        </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+        <StackPanel>
+            <TextBlock Text="Bulk" Style="{DynamicResource H3}"/>
+            <Button x:Name="OpenTemplateBtn" Style="{DynamicResource BtnSecondary}" Content="Open Template" Margin="0,12,0,0"/>
+            <Button x:Name="BulkContactsBtn" Style="{DynamicResource BtnPrimary}" Content="Add Contacts" Margin="0,8,0,0"/>
+        </StackPanel>
+    </Border>
 </StackPanel>
 '@
 }
 
 function Add-Contacts {
-	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Add-Contacts.txt"
-	Write-Host "Running Add-Contacts script..."
-	UpdateProgressBar(10)
-	$addContactsMode = New-Object PSObject -Property @{ Value = 0 }
-	function OnAddContactButtonClick {
-		Write-Host "AddContact button clicked."
-		UpdateProgressBar(10)
-		if ($addContactsMode.Value -eq 0) {
-			$displayName = $nameInputBox.Text
-			$splitName = $displayName -Split ' '
-			$firstName = $splitName[0]
-			$lastName = $splitName[1]
-			$externalEmailAddress = $emailInputBox.Text
-			UpdateProgressBar(50)
-			New-MailContact -Name $displayName -DisplayName $displayName -ExternalEmailAddress $externalEmailAddress -FirstName $firstName -LastName $lastName
-			UpdateProgressBar(90)
-		} elseif ($addContactsMode.Value -eq 1) {
-			$externalEmailAddress = $emailInputBox.Text
-			UpdateProgressBar(50)
-			New-MailContact -Name $externalEmailAddress -ExternalEmailAddress $externalEmailAddress
-			UpdateProgressBar(90)
-		}
-		CheckForErrors
-		OperationComplete
-	}
-	function OnBulkContactsButtonClick {
-		Write-Host "AddContactsBulk button clicked."
-		$progressBar1.Value = 5
-		if ($addContactsMode.Value -eq 0) {
-			Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
-				Step-Progress   # keep the bar climbing per item
-				$displayName = $_.DisplayName
-				$splitName = $displayName -Split ' '
-				$firstName = $splitName[0]
-				$lastName = $splitName[1]
-				$externalEmailAddress = $_.EmailAddress
-				UpdateProgressBar(40)
-				New-MailContact -Name $displayName -DisplayName $displayName -ExternalEmailAddress $externalEmailAddress -FirstName $firstName -LastName $lastName
-				UpdateProgressBar(70)
-			}
-		} elseif ($addContactsMode.Value -eq 1) {
-			Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
-				UpdateProgressBar(10)
-				New-MailContact -Name $_ -ExternalEmailAddress $_
-				UpdateProgressBar(70)
-			}
-		}
-		CheckForErrors
-		OperationComplete
-	}
-	function OnOpenTemplateButtonClick {
-		Write-Host "OpenTemplate button clicked."
-		UpdateProgressBar(10)
-		if ($addContactsMode.Value -eq 0) {
-			Invoke-Item ".\Templates\Add-Contacts.csv"
-		} elseif ($addContactsMode.Value -eq 1) {
-			Invoke-Item ".\Templates\Add-Contacts.txt"
-		}
-		UpdateProgressBar(80)
-		CheckForErrors
-		UpdateProgressBar(0)
-	}
-	function OnRadioButtonSelect {
-		if ($allInfoRadioButton.IsChecked -eq $true) {
-			$addContactsMode.Value = 0
-			$nameInputBox.IsEnabled = $true
-		} elseif ($justEmailRadioButton.IsChecked -eq $true) {
-			$addContactsMode.Value = 1
-			$nameInputBox.IsEnabled = $false
-		}
-		Write-Host "Mode = $($addContactsMode.Value)"
-		CheckForErrors
-	}
+    Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Add-Contacts.txt"
+    Write-Host "Running Add-Contacts script..."
+    UpdateProgressBar(10)
+    $addContactsMode = New-Object PSObject -Property @{ Value = 0 }
 
-	$scriptForm10 = New-AddContactsDialog
-	$allInfoRadioButton = $scriptForm10.FindName('AllInfoChip')
-	$justEmailRadioButton = $scriptForm10.FindName('JustEmailChip')
-	$nameInputBox = $scriptForm10.FindName('NameInput')
-	$emailInputBox = $scriptForm10.FindName('EmailInput')
-	$allInfoRadioButton.Add_Checked({ OnRadioButtonSelect })
-	$justEmailRadioButton.Add_Checked({ OnRadioButtonSelect })
-	$scriptForm10.FindName('AddContactBtn').Add_Click({ OnAddContactButtonClick })
-	$scriptForm10.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
-	$scriptForm10.FindName('BulkContactsBtn').Add_Click({ OnBulkContactsButtonClick })
+    # Invite an external person as a B2B guest - this actually SENDS them an invitation email and
+    # creates a guest account (unlike the mail-contact modes, which only make an address-book entry).
+    # Skips if they're already in the directory so it never double-invites. $displayName is optional.
+    function Invoke-GuestInvite([string]$email, [string]$displayName) {
+        $e = "$email".Trim()
+        if (-not $e) { return }
+        $existing = $null
+        try { $existing = Get-MgUser -Filter "mail eq '$e'" -ErrorAction Stop | Select-Object -First 1 } catch {}
+        if (-not $existing) { try { $existing = Get-MgUser -Filter "otherMails/any(x:x eq '$e')" -ErrorAction Stop | Select-Object -First 1 } catch {} }
+        if ($existing) { Write-Host "$e is already in the directory - no invite sent." -ForegroundColor Yellow; return }
+        $p = @{ InvitedUserEmailAddress = $e; InviteRedirectUrl = 'https://myapps.microsoft.com'; SendInvitationMessage = $true; ErrorAction = 'Stop' }
+        if ("$displayName".Trim()) { $p.InvitedUserDisplayName = "$displayName".Trim() }
+        $inv = New-MgInvitation @p
+        Write-Host "Invited $e as a guest - they'll get an invitation email." -ForegroundColor Cyan
+    }
 
-	Write-Host "Loaded ScriptForm10."
-	UpdateProgressBar(0)
+    function OnAddContactButtonClick {
+        Write-Host "AddContact button clicked."
+        UpdateProgressBar(10)
+        if ($addContactsMode.Value -eq 0) {
+            $displayName = $nameInputBox.Text
+            $splitName = $displayName -Split ' '
+            $firstName = $splitName[0]
+            $lastName = $splitName[1]
+            $externalEmailAddress = $emailInputBox.Text
+            UpdateProgressBar(50)
+            New-MailContact -Name $displayName -DisplayName $displayName -ExternalEmailAddress $externalEmailAddress -FirstName $firstName -LastName $lastName
+            UpdateProgressBar(90)
+        } elseif ($addContactsMode.Value -eq 1) {
+            $externalEmailAddress = $emailInputBox.Text
+            UpdateProgressBar(50)
+            New-MailContact -Name $externalEmailAddress -ExternalEmailAddress $externalEmailAddress
+            UpdateProgressBar(90)
+        } elseif ($addContactsMode.Value -eq 2) {
+            UpdateProgressBar(50)
+            Invoke-GuestInvite $emailInputBox.Text $nameInputBox.Text
+            UpdateProgressBar(90)
+        }
+        CheckForErrors
+        OperationComplete
+    }
+    function OnBulkContactsButtonClick {
+        Write-Host "AddContactsBulk button clicked."
+        $progressBar1.Value = 5
+        if ($addContactsMode.Value -eq 0) {
+            Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
+                Step-Progress   # keep the bar climbing per item
+                $displayName = $_.DisplayName
+                $splitName = $displayName -Split ' '
+                $firstName = $splitName[0]
+                $lastName = $splitName[1]
+                $externalEmailAddress = $_.EmailAddress
+                UpdateProgressBar(40)
+                New-MailContact -Name $displayName -DisplayName $displayName -ExternalEmailAddress $externalEmailAddress -FirstName $firstName -LastName $lastName
+                UpdateProgressBar(70)
+            }
+        } elseif ($addContactsMode.Value -eq 1) {
+            Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
+                Step-Progress   # keep the bar climbing per item
+                $e = "$_".Trim(); if (-not $e) { return }
+                New-MailContact -Name $e -ExternalEmailAddress $e
+            }
+        } elseif ($addContactsMode.Value -eq 2) {
+            Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
+                Step-Progress   # keep the bar climbing per item
+                $e = "$_".Trim(); if (-not $e) { return }
+                Invoke-GuestInvite $e ''
+            }
+        }
+        CheckForErrors
+        OperationComplete
+    }
+    function OnOpenTemplateButtonClick {
+        Write-Host "OpenTemplate button clicked."
+        UpdateProgressBar(10)
+        if ($addContactsMode.Value -eq 0) {
+            Invoke-Item ".\Templates\Add-Contacts.csv"
+        } else {
+            # Just email and Guest invite both read a plain list of one address per line.
+            if (-not (Test-Path ".\Templates\Add-Contacts.txt")) { "" | Out-File ".\Templates\Add-Contacts.txt" -Encoding UTF8 }
+            Invoke-Item ".\Templates\Add-Contacts.txt"
+        }
+        UpdateProgressBar(80)
+        CheckForErrors
+        UpdateProgressBar(0)
+    }
+    function OnRadioButtonSelect {
+        if ($allInfoRadioButton.IsChecked -eq $true) {
+            $addContactsMode.Value = 0
+            $nameInputBox.IsEnabled = $true
+            $modeHint.Text = 'Creates an address-book contact (with a name). No email is sent to the person.'
+            $addContactButton.Content = 'Add Contact'; $bulkContactsButton.Content = 'Add Contacts'
+        } elseif ($justEmailRadioButton.IsChecked -eq $true) {
+            $addContactsMode.Value = 1
+            $nameInputBox.IsEnabled = $false
+            $modeHint.Text = 'Creates an address-book contact from just the email. No email is sent to the person.'
+            $addContactButton.Content = 'Add Contact'; $bulkContactsButton.Content = 'Add Contacts'
+        } elseif ($guestInviteRadioButton.IsChecked -eq $true) {
+            $addContactsMode.Value = 2
+            $nameInputBox.IsEnabled = $true
+            $modeHint.Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Name is optional.'
+            $addContactButton.Content = 'Send Guest Invite'; $bulkContactsButton.Content = 'Send Invites'
+        }
+        Write-Host "Mode = $($addContactsMode.Value)"
+        CheckForErrors
+    }
 
-	[void]$scriptForm10.ShowDialog()
+    $scriptForm10 = New-AddContactsDialog
+    $allInfoRadioButton = $scriptForm10.FindName('AllInfoChip')
+    $justEmailRadioButton = $scriptForm10.FindName('JustEmailChip')
+    $guestInviteRadioButton = $scriptForm10.FindName('GuestInviteChip')
+    $modeHint = $scriptForm10.FindName('ModeHint')
+    $nameInputBox = $scriptForm10.FindName('NameInput')
+    $emailInputBox = $scriptForm10.FindName('EmailInput')
+    $addContactButton = $scriptForm10.FindName('AddContactBtn')
+    $bulkContactsButton = $scriptForm10.FindName('BulkContactsBtn')
+    $allInfoRadioButton.Add_Checked({ OnRadioButtonSelect })
+    $justEmailRadioButton.Add_Checked({ OnRadioButtonSelect })
+    $guestInviteRadioButton.Add_Checked({ OnRadioButtonSelect })
+    $addContactButton.Add_Click({ OnAddContactButtonClick })
+    $scriptForm10.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
+    $bulkContactsButton.Add_Click({ OnBulkContactsButtonClick })
 
-	Stop-Transcript
+    Write-Host "Loaded ScriptForm10."
+    UpdateProgressBar(0)
+
+    [void]$scriptForm10.ShowDialog()
+
+    Stop-Transcript
 }
 
 # ---------------------------------------------------------------------------

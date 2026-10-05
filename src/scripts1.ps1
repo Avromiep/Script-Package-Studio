@@ -337,20 +337,24 @@ function New-PasteMembersDialog {
 		$countText.Text = "$($emails.Count) unique"
 	}.GetNewClosure())
 
-	# Live: pull targets out of the pasted text - ALL email addresses on a line (any count, any
-	# separator: ";", ",", spaces, tabs), else the whole line so a plain name/alias still works -
-	# de-duped. So "Sales sales@x.com" lists just the address, and "a@x.com; b@x.com" lists both.
+	# Live: filter the targets down the SAME way as the members box. If the pasted text has any
+	# email address(es), show JUST the emails, in the exact order they appear - so a messy blob with
+	# prose/signatures becomes only the addresses, and the last pasted email is the last one here.
+	# Only when there are NO emails at all do we keep each line as a plain-name/alias target (e.g.
+	# "Sales DL") so name-only targets still work.
 	$refreshTargets = {
-		$out = [System.Collections.Generic.List[string]]::new()
-		$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-		foreach ($line in ($targetsInput.Text -split "\r?\n")) {
-			$line = $line.Trim(); if (-not $line) { continue }
-			$em = @(Get-EmailsFromText $line)
-			if ($em.Count) { foreach ($e in $em) { if ($seen.Add($e)) { [void]$out.Add($e) } } }
-			elseif ($seen.Add($line)) { [void]$out.Add($line) }
+		$emails = @(Get-EmailsFromText $targetsInput.Text)
+		if ($emails.Count) {
+			$out = $emails
+		} else {
+			$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+			$list = [System.Collections.Generic.List[string]]::new()
+			foreach ($line in ($targetsInput.Text -split "?
+")) { $t = $line.Trim(); if ($t -and $seen.Add($t)) { [void]$list.Add($t) } }
+			$out = $list.ToArray()
 		}
-		$targetsPreview.Text = ($out -join "`r`n")
-		$targetsCount.Text = "$($out.Count) target(s)"
+		$targetsPreview.Text = (@($out) -join "`r`n")
+		$targetsCount.Text = "$(@($out).Count) target(s)"
 	}.GetNewClosure()
 	$targetsInput.Add_TextChanged($refreshTargets)
 	$targetsInput.Text = $TargetPrefill
@@ -360,14 +364,9 @@ function New-PasteMembersDialog {
 
 	$win.FindName('PasteAddBtn').Add_Click({
 		$members = @(Get-EmailsFromText $previewBox.Text)
-		# targets: read the extracted preview (email pulled per line, else the name/alias kept)
-		$targets = @()
-		foreach ($line in ($targetsPreview.Text -split "\r?\n")) {
-			$line = $line.Trim(); if (-not $line) { continue }
-			$em = @(Get-EmailsFromText $line)
-			if ($em.Count) { $targets += $em } else { $targets += $line }
-		}
-		$targets = @($targets | Select-Object -Unique)
+		# targets: the preview is already the final, filtered list (emails only, or plain names) in order
+		$targets = @($targetsPreview.Text -split "?
+" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
 		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' "No people to $verbLow - paste some text with email addresses at the top." 'Warn'; return }
 		if ($targets.Count -eq 0) { Show-Notice 'Nothing to do' 'Add at least one target (distribution list, shared mailbox, or Teams / M365 group) at the bottom.' 'Warn'; return }
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }

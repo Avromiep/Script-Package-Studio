@@ -1374,6 +1374,19 @@ function Get-ADUserMatches([string]$Term, [int]$Max = 12) {
 	$ic = [System.StringComparison]::OrdinalIgnoreCase
 	return @($rows | Sort-Object @{ Expression = { if ("$($_.Name)".StartsWith($t, $ic) -or "$($_.Sam)".StartsWith($t, $ic)) { 0 } else { 1 } } }, Name | Select-Object -First $Max)
 }
+# True if the Active Directory PowerShell module is usable here (cmdlets already loaded, or it can
+# be imported). The AD scripts need it; on a machine without it (no RSAT tools / not a domain
+# controller) Get-ADUser isn't recognized, so callers check this FIRST and show a clear message
+# instead of a raw "'Get-ADUser' is not recognized" error. Note: a plain Import-Module of a missing
+# module only WARNS and keeps going, so the old code failed later with that cryptic command error.
+function Test-ADModule {
+	if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) { return $true }
+	try { Import-Module ActiveDirectory -ErrorAction Stop } catch { return $false }
+	return [bool](Get-Command Get-ADUser -ErrorAction SilentlyContinue)
+}
+# Shared, friendly message when the AD module is missing.
+$script:ADMissingMsg = "The Active Directory PowerShell module isn't available on this computer. Run this on a domain controller, or on a machine with the RSAT ""Active Directory Domain Services"" tools installed (Windows: Settings > Optional features > Add a feature > ""RSAT: Active Directory Domain Services and Lightweight Directory Services Tools"")."
+
 function Enable-ADUserAutocomplete($TextBox) {
 	if (-not $TextBox) { return }
 	if ($script:Settings -and $script:Settings.recipientSearch -eq $false) { return }

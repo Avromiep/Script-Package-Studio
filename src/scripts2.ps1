@@ -248,6 +248,7 @@ function New-BlockAutoReplyDialog {
 }
 
 function Block-User {
+	if (-not (Confirm-ADAvailable)) { return }
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Block-User.txt"
 	Write-Host "Running Block-User script..."
 	$progressBar1.Value = 10
@@ -255,18 +256,13 @@ function Block-User {
 		Write-Host "Block button clicked."
 		$progressBar1.Value = 10
 		if ($adCheckBox.IsChecked -eq $true) {
-			if (Test-ADModule) {
-				$user = $adNameInputBox.Text
-				$progressBar1.Value = 20
-				$samAccountName = $adNameInputBox.Text
-				Disable-ADAccount -Identity $samAccountName
-				Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
-				$progressBar1.Value = 30
-				CheckForErrors
-			} else {
-				Write-Host "Active Directory module not available - skipping the AD step." -ForegroundColor Yellow
-				Show-Notice 'Active Directory not available' "$script:ADMissingMsg`n`nThe AD account wasn't disabled." 'Warn'
-			}
+			$user = $adNameInputBox.Text
+			$progressBar1.Value = 20
+			$samAccountName = $adNameInputBox.Text
+			Disable-ADAccount -Identity $samAccountName
+			Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
+			$progressBar1.Value = 30
+			CheckForErrors
 		}
 		if ($emailCheckBox.IsChecked -eq $true) {
 			$user = $emailInputBox.Text
@@ -710,10 +706,10 @@ function New-ADAccountsDialog {
 }
 
 function New-ADAccounts {
+	if (-not (Confirm-ADAvailable)) { return }
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\New-ADAccounts.txt"
 	Write-Host "Running New-ADAccounts script..."
 	$progressBar1.Value = 10
-	if (-not (Test-ADModule)) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $progressBar1.Value = 0; Stop-Transcript; return }
 	Write-Host "Importing ActiveDirectory Module..."
 	Import-Module ActiveDirectory
 	CheckForErrors
@@ -926,10 +922,10 @@ function New-ADAndEmailAccountsDialog {
 }
 
 function New-ADAndEmailAccounts {
+	if (-not (Confirm-ADAvailable)) { return }
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\New-ADAndEmailAccounts.txt"
 	Write-Host "Running New-ADAndEmailAccounts script..."
 	$progressBar1.Value = 10
-	if (-not (Test-ADModule)) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $progressBar1.Value = 0; Stop-Transcript; return }
 	Write-Host "Importing ActiveDirectory Module..."
 	Import-Module ActiveDirectory
 	CheckForErrors
@@ -1579,6 +1575,7 @@ function New-TermAutoReplyDialog([string]$Email) {
 }
 
 function Terminate-Disable-ADAndEmailAccounts {
+	if (-not (Confirm-ADAvailable)) { return }
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Terminate-Disable-ADAndEmailAccounts.txt"
 	Write-Host "Running Terminate-Disable-ADAndEmailAccounts script..."
 	$progressBar1.Value = 10
@@ -1655,14 +1652,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
 		$progressBar1.Value = 20
 		$errors = @()
-		if ($blockAd) {
-			if (Test-ADModule) {
-				try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" }
-			} else {
-				Write-Host "Active Directory module not available - skipping the AD step." -ForegroundColor Yellow
-				$errors += "AD ($adUser): $script:ADMissingMsg (AD step skipped.)"
-			}
-		}
+		if ($blockAd) { try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
 		$progressBar1.Value = 50
 		if ($blockEmail) {
 			try {
@@ -1693,11 +1683,6 @@ function Terminate-Disable-ADAndEmailAccounts {
 		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
 		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
-		if ($blockAd -and -not (Test-ADModule)) {
-			Show-Notice 'Active Directory not available' "$script:ADMissingMsg`n`nThe AD step is skipped$(if ($blockEmail) { ' - the email offboarding still runs' } else { '' })." 'Warn'
-			$blockAd = $false
-			if (-not $blockEmail) { return }
-		}
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()

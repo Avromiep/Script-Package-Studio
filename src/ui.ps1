@@ -1386,6 +1386,14 @@ function Test-ADModule {
 }
 # Shared, friendly message when the AD module is missing.
 $script:ADMissingMsg = "The Active Directory PowerShell module isn't available on this computer. Run this on a domain controller, or on a machine with the RSAT ""Active Directory Domain Services"" tools installed (Windows: Settings > Optional features > Add a feature > ""RSAT: Active Directory Domain Services and Lightweight Directory Services Tools"")."
+# Up-front gate for a script that needs Active Directory: if the module isn't here, pop the clear
+# message IMMEDIATELY (so you know the moment you open it) and return $false so the caller can stop
+# before opening its dialog - you just click OK and you're back on the script list.
+function Confirm-ADAvailable {
+	if (Test-ADModule) { return $true }
+	Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'
+	return $false
+}
 
 function Enable-ADUserAutocomplete($TextBox) {
 	if (-not $TextBox) { return }

@@ -1,4 +1,4 @@
-﻿$version = "v3.2.1"
+﻿$version = "v3.2.2"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1637,9 +1637,9 @@ if ($env:SP_SHOT) {
 		'dlg-add-contacts'       = {
 			$w = New-AddContactsDialog
 			$w.FindName('GuestInviteChip').IsChecked = $true
-			$w.FindName('NameInput').Text = 'Dana Vendor'
+			$w.FindName('NameLabel').Text = 'Name (optional)'
 			$w.FindName('EmailInput').Text = 'dana@vendor.com'
-			$w.FindName('ModeHint').Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Name is optional.'
+			$w.FindName('ModeHint').Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. You can enter just the email; the name is optional.'
 			$w.FindName('AddContactBtn').Content = 'Send Guest Invite'
 			$w.FindName('BulkContactsBtn').Content = 'Send Invites'
 			$w

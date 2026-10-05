@@ -1069,7 +1069,7 @@ function New-AddContactsDialog {
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
-                <TextBlock Text="Name" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="NameLabel" Text="Name" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
                 <TextBox x:Name="NameInput" Grid.Column="1"/>
                 <TextBlock Text="Email" Style="{DynamicResource Dim}" Grid.Row="1" VerticalAlignment="Center" Margin="0,8,0,0"/>
                 <TextBox x:Name="EmailInput" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"/>
@@ -1184,17 +1184,20 @@ function Add-Contacts {
         if ($allInfoRadioButton.IsChecked -eq $true) {
             $addContactsMode.Value = 0
             $nameInputBox.IsEnabled = $true
+            $nameLabel.Text = 'Name'
             $modeHint.Text = 'Creates an address-book contact (with a name). No email is sent to the person.'
             $addContactButton.Content = 'Add Contact'; $bulkContactsButton.Content = 'Add Contacts'
         } elseif ($justEmailRadioButton.IsChecked -eq $true) {
             $addContactsMode.Value = 1
             $nameInputBox.IsEnabled = $false
+            $nameLabel.Text = 'Name'
             $modeHint.Text = 'Creates an address-book contact from just the email. No email is sent to the person.'
             $addContactButton.Content = 'Add Contact'; $bulkContactsButton.Content = 'Add Contacts'
         } elseif ($guestInviteRadioButton.IsChecked -eq $true) {
             $addContactsMode.Value = 2
             $nameInputBox.IsEnabled = $true
-            $modeHint.Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Name is optional.'
+            $nameLabel.Text = 'Name (optional)'
+            $modeHint.Text = 'Invites the person as a guest - they GET an invitation email and can be given access to Teams / Microsoft 365 groups, SharePoint and apps. You can enter just the email; the name is optional.'
             $addContactButton.Content = 'Send Guest Invite'; $bulkContactsButton.Content = 'Send Invites'
         }
         Write-Host "Mode = $($addContactsMode.Value)"
@@ -1207,6 +1210,7 @@ function Add-Contacts {
     $guestInviteRadioButton = $scriptForm10.FindName('GuestInviteChip')
     $modeHint = $scriptForm10.FindName('ModeHint')
     $nameInputBox = $scriptForm10.FindName('NameInput')
+    $nameLabel = $scriptForm10.FindName('NameLabel')
     $emailInputBox = $scriptForm10.FindName('EmailInput')
     $addContactButton = $scriptForm10.FindName('AddContactBtn')
     $bulkContactsButton = $scriptForm10.FindName('BulkContactsBtn')

@@ -389,10 +389,15 @@ function New-PasteMembersDialog {
 					if (Confirm-YesNo 'External addresses found' $msg '&#xEA88;') { $externalMode = 'bring-in' }
 				}
 			}
-		$progressBar1.Value = 10
-		$totalOps = [Math]::Max(1, $targets.Count * $members.Count)   # members across every target
-		$opN = 0
+		$progressBar1.Value = 12
+		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
+		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
 		foreach ($target in $targets) {
+			$ti++
+			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a
+			# long run (e.g. 44 targets) climbs steadily instead of sitting still during each lookup.
+			$script:UI.StatusText.Text = "$actLow target $ti of $tc`: $target..."
+			Set-LoopProgress $ti $tc 12 95
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
 			if (-not $cat -or $cat -eq 'Other') {
@@ -435,7 +440,6 @@ function New-PasteMembersDialog {
 						elseif (Test-HarmlessMemberError $msg) { Write-Host "${m}: nothing to do on '$target'." -ForegroundColor Yellow; $counts.noop++; $noopM.Add($m) }
 					else { Write-Host "Failed: $m on '$target': $msg" -ForegroundColor Red; $counts.failed++; $anyFailed = $true; $failM.Add($m) }
 				}
-				$opN++; Set-LoopProgress $opN $totalOps   # advance the bar per member so it climbs as it works
 			}
 			# Name the actual addresses under each target (not just counts) so it's clear WHAT
 			# was added/removed where. Indented one level under the target header.

@@ -1,4 +1,4 @@
-﻿$version = "v3.2.6"
+﻿$version = "v3.2.7"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -489,21 +489,13 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 			} else {
 				if ($target -gt 100) { $target = 100 }
 				Start-ProgressPulse                         # a script is working - keep it visibly alive
-				$cur = [double]$pb.Value
-				# Snap (no glide) for the first move off idle, big milestone jumps, and the final fill to
-				# 100 - so a bit of progress shows the instant a script starts and it visibly reaches 100%.
-				# A UI-thread-blocking call right after a set stops a 280ms glide from finishing, which
-				# would look stuck mid-glide; only small per-item loop steps still glide smoothly.
-				if ($cur -lt 8 -or ($target - $cur) -gt 22 -or $target -ge 100) {
-					$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
-					$pb.Value = $target
-				} else {
-					$anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-					$anim.To = $target
-					$anim.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(240))
-					$anim.EasingFunction = New-Object System.Windows.Media.Animation.CubicEase
-					$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $anim)
-				}
+				# SNAP straight to the value - no glide. Scripts run on the UI thread, so a glide can't
+				# animate through the blocking Exchange/Graph call that follows a progress update - it just
+				# freezes mid-glide and looks stuck (e.g. sitting at ~10% through a long 44-target run).
+				# Snapping makes every step land immediately and accurately reflect where it is; the
+				# shimmer (which rides on top) keeps the bar looking alive between steps.
+				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
+				$pb.Value = $target
 			}
 		} catch { try { $pb.Value = $target } catch {} }
 		try { $pb.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {}

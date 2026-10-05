@@ -42,12 +42,12 @@ A modern WPF interface with dark and light themes (toggle in the title bar; your
 
 ### Add-Contacts
 
-*Requires sign in.*  
-Add outside people to Microsoft 365. Pick a mode at the top:
-- **All info** / **Just email** - create a **mail contact** (address-book entry only; it shows in the Global Address List and can be added to distribution lists). No email is sent to the person.
-- **Guest invite** - sends the person a real **B2B guest invitation email** and creates a guest account that can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Skips anyone already in the directory so it never double-invites.
+*Requires sign in.* *(Shown in the list as **Add-Contacts & Guests**.)*  
+Add outside people to Microsoft 365. Pick what you want to do:
+- **Add contact** - creates a **mail contact** (address-book entry only; it shows in the Global Address List and can be added to distribution lists). No email is sent to the person. The name is optional - enter just the email and the address is used as the name.
+- **Invite guest** - sends the person a real **B2B guest invitation email** and creates a guest account that can be given access to Teams / Microsoft 365 groups, SharePoint and apps. Skips anyone already in the directory so it never double-invites. Name optional.
 
-Single or bulk (Open Template). For Just email and Guest invite the bulk template is a plain list of one address per line.
+Single or bulk (Open Template). The contact bulk template is a CSV (DisplayName optional + EmailAddress); the guest bulk template is a plain list of one address per line.
 
 ### Add-DistributionListMember
 

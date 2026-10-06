@@ -658,7 +658,9 @@ function Set-ACLPermissions {
 				Write-Host "Error, both radio buttons unchecked."
 			}
 			$continuousProgressBar.Value = 50
+			$script:TpStart = $null; $script:TpCount = 0
 			Get-Content ".\Templates\Set-ACLPermissions.txt" | ForEach-Object {
+				Step-Progress   # per-path tick (drives the throughput readout in the status bar)
 				$continuousProgressBar.Value = 60
 				$aclPath = $_
 				$acl = Get-Acl $aclPath

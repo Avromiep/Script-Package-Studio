@@ -1,4 +1,4 @@
-﻿$version = "v3.2.11"
+﻿$version = "v3.2.12"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -484,6 +484,7 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 			if ($target -le 0) {
 				Stop-ProgressPulse                          # idle - stop the breathing pulse
 				$script:ProgTarget = 0                      # reset the self-advancing loop ticker
+				$script:TpStart = $null; $script:TpCount = 0; $script:TpPrefix = ''  # reset the throughput readout
 				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
 				$pb.Value = 0
 			} else {
@@ -507,6 +508,7 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 # instead of jumping only at the end. Start a script at $Lo and finish at 100 either side of this.
 function Set-LoopProgress([int]$Done, [int]$Total, [int]$Lo = 12, [int]$Hi = 95) {
 	if ($Total -le 0) { return }
+	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0 }
 	$v = $Lo + [int](($Hi - $Lo) * $Done / $Total)
 	if ($v -gt $Hi) { $v = $Hi } elseif ($v -lt $Lo) { $v = $Lo }
 	$progressBar1.Value = $v
@@ -517,11 +519,45 @@ function Set-LoopProgress([int]$Done, [int]$Total, [int]$Lo = 12, [int]$Hi = 95)
 # items, and never quite finishes until the script sets 100). No total needed. It tracks its own
 # target (not the mid-animation Value) so a fast loop keeps climbing; it resets when the bar goes idle.
 $script:ProgTarget = 0
+$script:TpStart  = $null   # start time of the current batch (for the throughput readout)
+$script:TpCount  = 0      # items ticked so far in this batch
+$script:TpPrefix = ''     # status-line text captured at the start of the batch
 function Step-Progress {
 	if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
 	$script:ProgTarget = $script:ProgTarget + [Math]::Max(1, [int]((93 - $script:ProgTarget) * 0.16))
 	if ($script:ProgTarget -gt 93) { $script:ProgTarget = 93 }
+	# Throughput readout: on the first tick, capture the current status line as a prefix; then each
+	# tick append "N done · ~Xs each" so a long batch visibly shows it's moving and how fast per item.
+	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0; $script:TpPrefix = (("$($script:UI.StatusText.Text)") -replace '\.\.\.\s*$','').Trim() }
+	$script:TpCount++
+	$tp = Get-ThroughputText ($script:TpCount - 1)
+	if ($tp) {
+		$pfx = if ($script:TpPrefix) { "$($script:TpPrefix) · " } else { '' }
+		try { $script:UI.StatusText.Text = "$pfx$($script:TpCount - 1) done · $tp" } catch {}
+	}
 	$progressBar1.Value = $script:ProgTarget
+}
+
+# Format a rough duration for the throughput readout / ETA.
+function Format-TpDuration([double]$Secs) {
+	if ($Secs -lt 1) { return '<1s' }
+	if ($Secs -lt 90) { return ('{0}s' -f [int][Math]::Round($Secs)) }
+	$m = [int][Math]::Floor($Secs / 60); $s = [int][Math]::Round($Secs - $m * 60)
+	if ($s -ge 60) { $m++; $s = 0 }
+	if ($m -lt 60) { return ('{0}m {1}s' -f $m, $s) }
+	$h = [int][Math]::Floor($m / 60); $m = $m % 60
+	return ('{0}h {1}m' -f $h, $m)
+}
+# Build the "~Xs each [· ~Ys left]" readout from the batch clock. $Done = items finished so far;
+# pass $Total for an ETA. Returns '' until there's enough elapsed time to be meaningful.
+function Get-ThroughputText([int]$Done, [int]$Total = 0) {
+	if (-not $script:TpStart -or $Done -le 0) { return '' }
+	$elapsed = ([DateTime]::UtcNow - $script:TpStart).TotalSeconds
+	if ($elapsed -lt 0.5) { return '' }
+	$per = $elapsed / $Done
+	$txt = ('~{0:0.0}s each' -f $per)
+	if ($Total -gt $Done) { $txt = $txt + ' · ~' + (Format-TpDuration ($per * ($Total - $Done))) + ' left' }
+	return $txt
 }
 
 # ---- tenant profiles ------------------------------------------------------------

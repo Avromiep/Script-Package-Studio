@@ -555,7 +555,9 @@ function Convert-UnifiedGroupToDistributionGroup {
 	function OnCreateBulkButtonClick {
 		Write-Host "Create bulk button clicked."
 		$progressBar1.Value = 2
+		$script:TpStart = $null; $script:TpCount = 0
 		Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | ForEach-Object {
+			Step-Progress   # per-group tick (drives the throughput readout)
 			$progressBar1.Value = 5
 			$OldGroupName = $_ -Split "@"
 			$DistGroupName = $OldGroupName[0] + "-New"

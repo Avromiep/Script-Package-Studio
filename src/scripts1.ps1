@@ -392,11 +392,15 @@ function New-PasteMembersDialog {
 		$progressBar1.Value = 12
 		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
 		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
+		$script:TpStart = $null; $script:TpCount = 0   # fresh throughput clock for this batch
 		foreach ($target in $targets) {
 			$ti++
-			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a
-			# long run (e.g. 44 targets) climbs steadily instead of sitting still during each lookup.
-			$script:UI.StatusText.Text = "$actLow target $ti of $tc`: $target..."
+			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a long
+			# run (e.g. 44 targets) climbs steadily instead of sitting still; the "· ~Xs each / ~Ys left"
+			# throughput readout makes a slow run read as working, not stuck.
+			$tpTail = Get-ThroughputText ($ti - 1) $tc
+			$tpTail = if ($tpTail) { "  ($tpTail)" } else { '...' }
+			$script:UI.StatusText.Text = "$actLow target $ti of $tc`: $target$tpTail"
 			Set-LoopProgress $ti $tc 12 95
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
@@ -1688,7 +1692,7 @@ function Invoke-CopyAccessDialog {
         if (-not ($o.Mailbox -or $o.Dl -or $o.Unified -or $o.Security)) { Show-Notice 'Nothing selected' 'Tick at least one kind of access to look for.' 'Warn'; return $null }
         return @{ Src = $src; Tgt = $tgt; Opts = $o }
     }
-    $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 90 }
+    $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 90; $tp = Get-ThroughputText $done $total; if ($tp) { $status.Text = "Scanning access... $done of $total · $tp" } }
 
     function OnLoadClick {
         $v = Get-Validated; if (-not $v) { return }
@@ -1696,6 +1700,7 @@ function Invoke-CopyAccessDialog {
         $itemsHost.Children.Clear()
         $status.Text = "Generating preview for $($v.Src) - this can take a moment..."
         $progressBar1.Value = 12
+        $script:TpStart = $null; $script:TpCount = 0
         $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
         Add-Section 'Full Access (mailboxes)' $inv.Full
         Add-Section 'Send As (mailboxes)' $inv.SendAs
@@ -1727,7 +1732,8 @@ function Invoke-CopyAccessDialog {
         }
         Write-Host "Copying $(@($chosen).Count) selected item(s) to $($v.Tgt)..." -ForegroundColor Cyan
         $progressBar1.Value = 12
-        $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98 }
+        $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98; $tp = Get-ThroughputText $done $total2; if ($tp) { $status.Text = "Copying... $done of $total2 · $tp" } }
+        $script:TpStart = $null; $script:TpCount = 0
         $res = Copy-UserAccess $v.Tgt $chosen $applyProgress
         $progressBar1.Value = 100
         $summary = @("Copied to $($v.Tgt).", "Granted: $($res.Granted)")

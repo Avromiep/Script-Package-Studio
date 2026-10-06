@@ -321,7 +321,7 @@ function Remove-UserFromAllGroups {
 		$types = Get-SelectedTypes
 		if (-not ($types.Values -contains $true)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
 		if (-not $email) { Show-Notice 'Missing info' 'Enter the user email.' 'Warn'; return }
-		if (-not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar)." 'Warn'; return }
+		if (-not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar)." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$progressBar1.Value = 30
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
@@ -344,7 +344,7 @@ function Remove-UserFromAllGroups {
 		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
 		$types = Get-SelectedTypes
 		if (-not ($types.Values -contains $true)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
-		if (-not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first." 'Warn'; return }
+		if (-not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()

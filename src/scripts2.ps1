@@ -44,7 +44,7 @@ function Remove-UserLicenses([string]$User) {
 		$gname = $gid
 		try { $gname = (Get-MgGroup -GroupId $gid -Property DisplayName -ErrorAction Stop).DisplayName } catch {}
 		try { Remove-MgGroupMemberByRef -GroupId $gid -DirectoryObjectId $u.Id -ErrorAction Stop; Write-Host "  removed from licensing group '$gname' to drop its group-assigned license(s)." -ForegroundColor Cyan }
-		catch { Write-Host "  couldn't drop the group-assigned license from '$gname' - either the app lacks rights to edit that group, or it's a dynamic / on-prem-synced group whose membership is set by rule (can't be edited here). If the license must come off now, remove or exclude the user from that group in the admin center. ($($_.Exception.Message))" -ForegroundColor Yellow }
+		catch { Write-Host "  note: the license from '$gname' comes from that group's membership (not a direct assignment), so it can't be removed here. This is usually fine: that's a rule-based (dynamic) group - e.g. 'account enabled & licensed' - and now that the account is DISABLED the rule drops the user automatically, so the license comes off on its own within a few minutes (that's why it looks removed when you check). Only if that group isn't dynamic do you need to remove/exclude the user from it in the admin center. ($($_.Exception.Message))" -ForegroundColor Yellow }
 	}
 }
 
@@ -186,10 +186,11 @@ function New-BlockUserDialog {
 }
 
 function New-BlockAddMemberDialog {
-	New-StyledDialog -Title 'Add members to the blocked mailbox' -Icon '&#xEDBB;' -BodyXaml @'
-<StackPanel Margin="16" Width="320">
+	New-StyledDialog -Title 'Give someone access to the mailbox' -Icon '&#xEDBB;' -BodyXaml @'
+<StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
+			<TextBlock x:Name="AddMemberHint" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,0,0,10" Text="Give one or more people Full Access + Send As to this mailbox. Enter a person and click Add; the box clears so you can add another. Click Done when you're finished (or if you don't want to add anyone)."/>
 			<Grid>
 				<Grid.ColumnDefinitions>
 					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
@@ -197,7 +198,11 @@ function New-BlockAddMemberDialog {
 				<TextBlock Text="Member" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 				<TextBox x:Name="AddMemberBox" Grid.Column="1"/>
 			</Grid>
-			<Button x:Name="AddMemberBtn" Style="{DynamicResource BtnPrimary}" Content="Add" Margin="0,14,0,0" IsDefault="True"/>
+			<Grid Margin="0,14,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+				<Button x:Name="AddMemberDoneBtn" Style="{DynamicResource BtnSecondary}" Content="Done / Skip"/>
+				<Button x:Name="AddMemberBtn" Style="{DynamicResource BtnPrimary}" Content="Add" Grid.Column="2" IsDefault="True"/>
+			</Grid>
 		</StackPanel>
 	</Border>
 </StackPanel>
@@ -289,18 +294,30 @@ function Block-User {
 			if ($addMembersCheckBox.IsChecked -eq $true) {
 				Write-Host "addMembersCheckBox is checked, loading AddMember form..."
 				function OnAddMemberButtonClick {
-					$addUser = $addMemberBox.Text
-					Add-MailboxPermission -Identity $user -User $addUser -AccessRights FullAccess -InheritanceType All -AutoMapping $true
-					Add-RecipientPermission -Identity $user -Trustee $addUser -AccessRights SendAs -Confirm:$false
-					Write-Host "Added $addUser to $user" -ForegroundColor Cyan
+					$names = @($addMemberBox.Text -split '[;,
+]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+					if (-not $names.Count) { return }
+					$okList = @()
+					foreach ($who in $names) {
+						try {
+							Add-MailboxPermission -Identity $user -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
+							Add-RecipientPermission -Identity $user -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
+							Write-Host "Gave $who access (FullAccess + SendAs) to $user." -ForegroundColor Cyan
+							$okList += $who
+						} catch { Write-Host "Couldn't give $who access to $user`: $($_.Exception.Message)" -ForegroundColor Yellow }
+					}
 					$addMemberBox.Text = ""
-					CheckForErrors
-					OperationComplete
+					if ($okList.Count) { $addMemberHint.Text = "Added $($okList -join ', '). Add another person if you want, or click Done." }
+					try { $addMemberBox.Focus() } catch {}
 				}
 
 				$AddMemberForm = New-BlockAddMemberDialog
 				$addMemberBox = $AddMemberForm.FindName('AddMemberBox')
+				$addMemberHint = $AddMemberForm.FindName('AddMemberHint')
+				Enable-RecipientAutocomplete $addMemberBox 'User'
+				Set-FieldWatermark $addMemberBox 'One or more, separated by commas'
 				$AddMemberForm.FindName('AddMemberBtn').Add_Click({ OnAddMemberButtonClick })
+				$AddMemberForm.FindName('AddMemberDoneBtn').Add_Click({ $AddMemberForm.Close() })
 				Write-Host "Loaded AddMemberForm."
 				[void]$AddMemberForm.ShowDialog()
 			}
@@ -1624,22 +1641,27 @@ function Terminate-Disable-ADAndEmailAccounts {
 		function OnTermAddMemberClick {
 			$names = @($addMemberBox.Text -split '[;,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 			if (-not $names.Count) { return }
+			$okList = @()
 			foreach ($who in $names) {
 				try {
 					Add-MailboxPermission -Identity $email -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
 					Add-RecipientPermission -Identity $email -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
 					Write-Host "  gave $who access (FullAccess + SendAs) to $email." -ForegroundColor Cyan
+					$okList += $who
 				} catch { Write-Host "  couldn't give $who access to $email`: $($_.Exception.Message)" -ForegroundColor Yellow }
 			}
 			$addMemberBox.Text = ''
+			if ($okList.Count) { $addMemberHint.Text = "Added $($okList -join ', '). Add another person if you want, or click Done." }
 			try { $addMemberBox.Focus() } catch {}
 		}
 		$d = New-BlockAddMemberDialog
 		try { $d.Owner = $form } catch {}
 		$addMemberBox = $d.FindName('AddMemberBox')
+		$addMemberHint = $d.FindName('AddMemberHint')
 		Enable-RecipientAutocomplete $addMemberBox 'User'
 		Set-FieldWatermark $addMemberBox 'One or more, separated by commas'
 		$d.FindName('AddMemberBtn').Add_Click({ OnTermAddMemberClick })
+		$d.FindName('AddMemberDoneBtn').Add_Click({ $d.Close() })
 		[void]$d.ShowDialog()
 	}
 
@@ -1649,7 +1671,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
 		if ($blockEmail -and -not $email) { Show-Notice 'Missing info' 'Enter the email to block.' 'Warn'; return }
 		if ($blockAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username to block.' 'Warn'; return }
-		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
 		$progressBar1.Value = 20
 		$errors = @()
 		if ($blockAd) { try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
@@ -1682,7 +1704,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
 		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
-		if ($blockEmail -and -not (Get-MgContext)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()

@@ -789,7 +789,7 @@ function Add-AuthenticationPhoneMethod {
         $u = $emailInput.Text.Trim()
         if (-not (Test-AcIsCompleteEmail $u)) { return }
         if ($u -eq $script:PmLastLoaded) { return }
-        if (-not (Get-MgContext)) { return }
+        if (-not (Test-SignedIn)) { return }
         $script:PmLastLoaded = $u
         Show-CurrentMethods $u
     })
@@ -1032,7 +1032,7 @@ function Add-AutoReply {
         $mbx = $emailInputBox.Text.Trim()
         if (-not (Test-AcIsCompleteEmail $mbx)) { return }
         if ($mbx -eq $script:ArLastLoaded) { return }
-        if (-not (Get-MgContext)) { return }
+        if (-not (Test-SignedIn)) { return }
         if (-not $script:ArShowingCurrent -and ("$($internalReplyTextBox.Text)".Trim() -or "$($externalReplyTextBox.Text)".Trim())) { return }
         $script:ArLastLoaded = $mbx
         Show-CurrentReply $mbx
@@ -1683,7 +1683,7 @@ function Invoke-CopyAccessDialog {
         $src = $srcBox.Text.Trim(); $tgt = $tgtBox.Text.Trim()
         if (-not $src -or -not $tgt) { Show-Notice 'Missing info' 'Enter both a From user and a To user.' 'Warn'; return $null }
         if ($src -eq $tgt) { Show-Notice 'Same user' 'The From and To users are the same.' 'Warn'; return $null }
-        if (-not (Get-MgContext)) { Show-Notice 'Not connected' 'Connect to the tenant first (top bar).' 'Warn'; return $null }
+        if (-not (Test-SignedIn)) { Show-Notice 'Not connected' 'Connect to the tenant first (top bar).' 'Warn'; return $null }
         $o = Get-CopyOpts
         if (-not ($o.Mailbox -or $o.Dl -or $o.Unified -or $o.Security)) { Show-Notice 'Nothing selected' 'Tick at least one kind of access to look for.' 'Warn'; return $null }
         return @{ Src = $src; Tgt = $tgt; Opts = $o }

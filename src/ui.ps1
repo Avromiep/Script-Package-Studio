@@ -483,7 +483,11 @@ function Set-FieldWatermark($TextBox, [string]$Text) {
 	$parent = $TextBox.Parent
 	if (-not ($parent -is [System.Windows.Controls.Grid])) { return }
 	try {
+		# Replace any watermark already on THIS box - repeated calls must not STACK. Stacking showed as
+		# two overlapping placeholders (e.g. "Name or email address" over "One or more, separated...").
+		foreach ($o in @($parent.Children | Where-Object { $_ -is [System.Windows.Controls.TextBlock] -and ($_.Tag -is [System.Collections.Hashtable]) -and $_.Tag['wm'] -eq $TextBox })) { [void]$parent.Children.Remove($o) }
 		$ph = New-Object System.Windows.Controls.TextBlock
+		$ph.Tag = @{ wm = $TextBox }
 		$ph.Text = $Text
 		$ph.Foreground = $script:StyleDict['TextFaintBrush']
 		$ph.IsHitTestVisible = $false
@@ -978,9 +982,30 @@ function Get-AcIndexMatches([string]$Term, [string]$Prefer, [int]$Max) {
 # search ready" once instant, amber "Live tenant search" for a tenant too large to index.
 $script:AcStatusTargets = [System.Collections.Generic.List[object]]::new()
 
+# True if connected to a tenant. GUARDED: Get-MgContext is a Graph-module cmdlet that isn't imported
+# until the first sign-in, so calling it unguarded throws "'Get-MgContext' is not recognized" - which
+# is itself the not-signed-in case. No command (module not loaded) => not signed in.
+function Test-SignedIn {
+	if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue)) { return $false }
+	try { return [bool](Get-MgContext -ErrorAction SilentlyContinue) } catch { return $false }
+}
 function Set-AcStatusTarget($t) {
 	$panel = $t.Panel; $icon = $t.Icon; $label = $t.Label; $bar = $t.Bar
 	if (-not ($panel -and $icon -and $label)) { return }
+	# Not signed in to a tenant: show a quiet inline notice in this same status strip (non-modal -
+	# nothing to close, doesn't block the fields) instead of hiding the panel. Recipient search and
+	# the M365 scripts need a tenant anyway, so this is the natural place to let the user know.
+	if (-not (Test-SignedIn)) {
+		$icon.Text = [string][char]0xEA88
+		$label.Text = 'Not signed in to a tenant'
+		$panel.ToolTip = 'Connect to a tenant from the main window (top bar) to search recipients and run this.'
+		$icon.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		$label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		if ($bar) { $bar.Visibility = 'Collapsed' }
+		$panel.Visibility = 'Visible'
+		return
+	}
+	$icon.Text = [string][char]0xEFD7   # search glyph (reset in case we'd shown the not-signed-in notice)
 	$preparing = $false
 	if ((-not (Test-AcBgEnabled)) -or (-not $script:AcWorker)) { $panel.Visibility = 'Collapsed'; if ($bar) { $bar.Visibility = 'Collapsed' }; return }
 	if (Test-AcHasIndex) {

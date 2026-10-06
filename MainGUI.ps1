@@ -1,4 +1,4 @@
-﻿$version = "v3.2.12"
+﻿$version = "v3.3.0"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -135,6 +135,7 @@ try {
 . (Join-Path $script:SrcDir 'scripts1.ps1')
 . (Join-Path $script:SrcDir 'scripts2.ps1')
 . (Join-Path $script:SrcDir 'scripts3.ps1')
+. (Join-Path $script:SrcDir 'scripts4.ps1')
 
 # ---- main window ---------------------------------------------------------------
 $mainXaml = @"
@@ -984,6 +985,7 @@ $script:ScriptCatalog = @(
 	@{ Name = 'Convert-UnifiedGroupToDistributionGroup'; Desc = 'Rebuild a Microsoft 365 group as a distribution list.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE16F }
 	@{ Name = 'Terminate-Disable-ADAndEmailAccounts'; Desc = 'Terminate a user: disable AD, convert mailbox to shared, strip licenses/2FA, optional add-members + auto-reply.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEEE3 }
 	@{ Name = 'Enable-Archive'; Desc = 'Enable, jumpstart or auto-expand mailbox archiving.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xE085 }
+	@{ Name = 'Get-UserMemberships'; Display = 'Get-UserMemberships (group & access report)'; Desc = 'List what people belong to - security groups, Teams/M365 groups, distribution lists and Send As mailboxes - side by side with counts and a copy button. Several people at once.'; SignIn = $true; Cat = 'Microsoft 365'; Icon = 0xED75 }
 	@{ Name = 'Install-RequiredModules'; Desc = 'Install the Microsoft.Graph and ExchangeOnlineManagement modules.'; SignIn = $false; Cat = 'App'; Icon = 0xE0DD }
 	@{ Name = 'New-ADAccounts'; Desc = 'Create Active Directory accounts in bulk from a CSV.'; SignIn = $false; Cat = 'Active Directory'; Icon = 0xEDBB }
 	@{ Name = 'New-ADAndEmailAccounts'; Desc = 'Create AD accounts plus licensed mailboxes in bulk.'; SignIn = $true; Cat = 'Active Directory'; Icon = 0xEDBB }
@@ -1017,6 +1019,7 @@ $script:ScriptHelp = @{
 	'Convert-UnifiedGroupToDistributionGroup' = @{ What = 'Recreates the members of a Microsoft 365 group as a plain distribution list.'; Steps = @('Type the group''s email. The new list gets the same name with ''-New'' added.'; 'Afterwards, rename or delete the old group in the admin center if you want.'); Tip = '' }
 	'Terminate-Disable-ADAndEmailAccounts' = @{ What = 'Full offboarding for someone who has left: disables their Active Directory and Microsoft 365 accounts, converts the mailbox to shared, removes licenses and 2FA, and can set an auto-reply and hand the mailbox to a manager.'; Steps = @('Type the user and choose the options (who gets the mailbox, an auto-reply).'; 'Run it.'); Tip = '' }
 	'Enable-Archive' = @{ What = 'Turns on the online archive mailbox for someone - extra storage that automatically moves their older mail out of the main inbox. Can also jump-start it or switch on auto-expanding archive.'; Steps = @('Type the mailbox, pick the option, and run.'); Tip = '' }
+	'Get-UserMemberships' = @{ What = 'Shows what a person belongs to and can act as: their security groups, Teams / Microsoft 365 groups, distribution lists, and the mailboxes they can Send As - laid out side by side, one column per type with a count on each. You can look up several people at once, and Copy gives you a tidy plain-text list to paste straight into an email.'; Steps = @('Type one or more email addresses (separate them with commas, semicolons or new lines).'; 'Click Look up - each person gets their own block with the five columns and a total.'; 'Click Copy to put a nicely formatted list on the clipboard, ready to paste into your reply.'); Tip = 'It stays fast by reading cloud groups only (Microsoft 365 / Graph) and the Send As reverse lookup - it does NOT scan every mailbox for Full Access. Dynamic (rule-based) and on-prem-synced groups are listed too, tagged, since they are still real memberships.' }
 	'Install-RequiredModules' = @{ What = 'Installs the two PowerShell components this app needs (Microsoft Graph and Exchange Online). The app usually offers to do this for you on first run.'; Steps = @('Click to install. It needs an internet connection.'); Tip = '' }
 	'New-ADAccounts' = @{ What = 'Creates many Active Directory user accounts at once from a spreadsheet.'; Steps = @('Click Open Template, fill in one row per person, and save.'; 'Run it. Tick Preview only first to check the list without creating anything.'); Tip = '' }
 	'New-ADAndEmailAccounts' = @{ What = 'Creates Active Directory accounts AND their licensed Microsoft 365 mailboxes in bulk.'; Steps = @('Enter the email domain, pick a license, fill in the template, and run.'); Tip = 'Buy enough licenses first, or the new mailboxes won''t get one assigned.' }
@@ -1164,6 +1167,7 @@ function OnRunButtonClick {
 		"Convert-UnifiedGroupToDistributionGroup" { Convert-UnifiedGroupToDistributionGroup }
 		"Terminate-Disable-ADAndEmailAccounts" { Terminate-Disable-ADAndEmailAccounts }
 		"Enable-Archive" { Enable-Archive }
+		"Get-UserMemberships" { Get-UserMemberships }
 		"Install-RequiredModules" { Install-RequiredModules }
 		"New-ADAccounts" { New-ADAccounts }
 		"New-ADAndEmailAccounts" { New-ADAndEmailAccounts }
@@ -1664,6 +1668,35 @@ if ($env:SP_SHOT) {
 			# When not signed in, a script window shows this quiet inline notice (no pop-up to close).
 			$w = New-MailboxMemberDialog
 			try { [void](Register-AcStatusTarget $w.FindName('DlgSearchStatusPanel') $w.FindName('DlgSearchStatusIcon') $w.FindName('DlgSearchStatusLabel') $w.FindName('DlgSearchStatusBar') $w.FindName('DlgSearchStatusBarTT')) } catch {}
+			$w
+		}
+		'dlg-memberships'        = {
+			# Get-UserMemberships with two example people so the columns + copy button show populated.
+			$w = New-UserMembershipsDialog
+			$rh = $w.FindName('ResultsHost')
+			$inv1 = [ordered]@{ Full = @(); SendAs = @(
+					@{ Name = 'info@contoso.com'; Id = 'info@contoso.com'; Personal = $false; Note = '' }
+					@{ Name = 'sales@contoso.com'; Id = 'sales@contoso.com'; Personal = $false; Note = '' }
+					@{ Name = 'jane.doe@contoso.com'; Id = 'jane.doe@contoso.com'; Personal = $true; Note = '' }
+				); Dl = @(
+					@{ Name = 'All Staff'; Id = 'allstaff@contoso.com'; Note = '' }
+					@{ Name = 'Front Office'; Id = 'frontoffice@contoso.com'; Note = '' }
+				); Unified = @(
+					@{ Name = 'Marketing'; Id = 'marketing@contoso.com'; Note = '' }
+					@{ Name = 'Project Falcon'; Id = 'falcon@contoso.com'; Note = '' }
+					@{ Name = 'Leadership'; Id = 'leadership@contoso.com'; Note = 'synced from on-prem' }
+				); Security = @(
+					@{ Name = 'VPN Users'; Id = ''; Note = '' }
+					@{ Name = 'Finance'; Id = ''; Note = 'dynamic - set by rule' }
+				); Skipped = @() }
+			[void](Add-MembershipPersonCard $rh 'bob.smith@contoso.com' $inv1)
+			$inv2 = [ordered]@{ Full = @(); SendAs = @(@{ Name = 'helpdesk@contoso.com'; Id = 'helpdesk@contoso.com'; Personal = $false; Note = '' });
+				Dl = @(@{ Name = 'IT Team'; Id = 'it@contoso.com'; Note = '' }); Unified = @(@{ Name = 'IT Ops'; Id = 'itops@contoso.com'; Note = '' });
+				Security = @(@{ Name = 'Local Admins'; Id = ''; Note = '' }); Skipped = @() }
+			[void](Add-MembershipPersonCard $rh 'karen.lee@contoso.com' $inv2)
+			$w.FindName('CopyBtn').IsEnabled = $true
+			$w.FindName('TotalText').Text = '16 total across 2 people'
+			$w.FindName('ResultStatus').Text = 'Done - looked up 2 people.'
 			$w
 		}
 		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }

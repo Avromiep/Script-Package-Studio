@@ -1499,6 +1499,10 @@ function Add-EmailAlias {
 # Security = @(item); Skipped = @(string) }.
 function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock]$Progress) {
     $inv = [ordered]@{ Full = @(); SendAs = @(); Dl = @(); Unified = @(); Security = @(); Skipped = @() }
+    # Mailbox gates split so a read-only report can get Send As (fast reverse lookup) WITHOUT the slow
+    # Full Access mailbox scan. Back-compat: callers that only pass Mailbox get both, as before.
+    $doSendAs = [bool]$Opts.Mailbox -or [bool]$Opts.SendAs
+    $doFull   = if ($Opts.ContainsKey('FullAccess')) { [bool]$Opts.FullAccess } else { [bool]$Opts.Mailbox }
 
     # --- group memberships (distribution / Teams-M365 / security) in one Graph call ---
     if ($Opts.Dl -or $Opts.Unified -or $Opts.Security) {
@@ -1515,21 +1519,24 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
             $mailEnabled = [bool]$ap['mailEnabled']
             $securityEnabled = [bool]$ap['securityEnabled']
             $onprem = [bool]$ap['onPremisesSyncEnabled']
-            if ($isDynamic) { $inv.Skipped += "$name (dynamic group - membership is set by rule)"; continue }
-            if ($onprem)    { $inv.Skipped += "$name (synced from on-prem - manage it on-premises)"; continue }
+            # Dynamic (rule-based) and on-prem-synced groups can't be edited from here. Copy-access skips
+            # them; a read-only report (IncludeUnmanaged) lists them, tagged, since they're real memberships.
+            $note = if ($isDynamic) { 'dynamic - set by rule' } elseif ($onprem) { 'synced from on-prem' } else { '' }
+            if ($note -and -not $Opts.IncludeUnmanaged) { $inv.Skipped += "$name ($note)"; continue }
+            $unmanaged = [bool]$note
             if ($isUnified) {
-                if ($Opts.Unified) { if ($mail) { $inv.Unified += @{ Kind = 'Unified'; Id = $mail; Name = $name; Type = 'Teams / Microsoft 365 group'; Personal = $false } } else { $inv.Skipped += "$name (Teams/M365 group has no address)" } }
+                if ($Opts.Unified) { if ($mail -or $unmanaged) { $inv.Unified += @{ Kind = 'Unified'; Id = $mail; Name = $name; Type = 'Teams / Microsoft 365 group'; Personal = $false; Unmanaged = $unmanaged; Note = $note } } else { $inv.Skipped += "$name (Teams/M365 group has no address)" } }
             } elseif ($mailEnabled) {
-                if ($Opts.Dl) { if ($mail) { $inv.Dl += @{ Kind = 'Dl'; Id = $mail; Name = $name; Type = 'distribution list'; Personal = $false } } else { $inv.Skipped += "$name (distribution list has no address)" } }
+                if ($Opts.Dl) { if ($mail -or $unmanaged) { $inv.Dl += @{ Kind = 'Dl'; Id = $mail; Name = $name; Type = 'distribution list'; Personal = $false; Unmanaged = $unmanaged; Note = $note } } else { $inv.Skipped += "$name (distribution list has no address)" } }
             } else {
-                if ($Opts.Security) { $inv.Security += @{ Kind = 'Security'; Id = $g.Id; Name = $name; Type = 'security group'; Personal = $false } }
+                if ($Opts.Security) { $inv.Security += @{ Kind = 'Security'; Id = $g.Id; Name = $name; Type = 'security group'; Personal = $false; Unmanaged = $unmanaged; Note = $note } }
             }
         }
     }
 
     # --- Send As (fast reverse lookup by trustee) - labelled by target type; personal ones come
     #     back too but are flagged Personal so Preview leaves them unchecked ---
-    if ($Opts.Mailbox) {
+    if ($doSendAs) {
         try {
             $sa = @(Get-RecipientPermission -Trustee $Source -ErrorAction Stop | Where-Object { $_.AccessControlType -eq 'Allow' -and ("$($_.AccessRights)" -match 'SendAs') })
             foreach ($p in $sa) {
@@ -1545,7 +1552,7 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
 
     # --- Full Access (no reverse lookup exists - scan mailboxes). Shared always; user mailboxes
     #     only when asked (slower). Whatever is found is labelled + flagged Personal for user ones. ---
-    if ($Opts.Mailbox) {
+    if ($doFull) {
         $rtd = if ($Opts.UserMailboxes) { @('SharedMailbox', 'UserMailbox', 'RoomMailbox', 'EquipmentMailbox') } else { @('SharedMailbox') }
         $mbxs = @()
         try { $mbxs = @(Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails $rtd -ErrorAction Stop) }

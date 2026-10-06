@@ -190,7 +190,7 @@ function New-BlockAddMemberDialog {
 <StackPanel Margin="16" Width="360">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
-			<TextBlock x:Name="AddMemberHint" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,0,0,10" Text="Give one or more people Full Access + Send As to this mailbox. Enter a person and click Add; the box clears so you can add another. Click Done when you're finished (or if you don't want to add anyone)."/>
+			<TextBlock x:Name="AddMemberHint" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,0,0,10" Text="Add a person who should get Full Access + Send As to this mailbox, then click Add - the box clears and asks again for the next one, showing who's been added so far. Click Done / Skip when you're finished (or if you don't want to add anyone)."/>
 			<Grid>
 				<Grid.ColumnDefinitions>
 					<ColumnDefinition Width="70"/><ColumnDefinition Width="*"/>
@@ -294,28 +294,27 @@ function Block-User {
 			if ($addMembersCheckBox.IsChecked -eq $true) {
 				Write-Host "addMembersCheckBox is checked, loading AddMember form..."
 				function OnAddMemberButtonClick {
-					$names = @($addMemberBox.Text -split '[;,
-]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+					$names = @($addMemberBox.Text -split '[;,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 					if (-not $names.Count) { return }
-					$okList = @()
 					foreach ($who in $names) {
 						try {
 							Add-MailboxPermission -Identity $user -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
 							Add-RecipientPermission -Identity $user -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
 							Write-Host "Gave $who access (FullAccess + SendAs) to $user." -ForegroundColor Cyan
-							$okList += $who
+							if (-not ($addedAll -contains $who)) { [void]$addedAll.Add($who) }
 						} catch { Write-Host "Couldn't give $who access to $user`: $($_.Exception.Message)" -ForegroundColor Yellow }
 					}
 					$addMemberBox.Text = ""
-					if ($okList.Count) { $addMemberHint.Text = "Added $($okList -join ', '). Add another person if you want, or click Done." }
+					if ($addedAll.Count) { $addMemberHint.Text = "Added so far ($($addedAll.Count)): $($addedAll -join ', ').`nAdd the next person below, or click Done when you're finished." }
 					try { $addMemberBox.Focus() } catch {}
 				}
 
+				$addedAll = [System.Collections.Generic.List[string]]::new()
 				$AddMemberForm = New-BlockAddMemberDialog
 				$addMemberBox = $AddMemberForm.FindName('AddMemberBox')
 				$addMemberHint = $AddMemberForm.FindName('AddMemberHint')
 				Enable-RecipientAutocomplete $addMemberBox 'User'
-				Set-FieldWatermark $addMemberBox 'One or more, separated by commas'
+				Set-FieldWatermark $addMemberBox 'Email address'
 				$AddMemberForm.FindName('AddMemberBtn').Add_Click({ OnAddMemberButtonClick })
 				$AddMemberForm.FindName('AddMemberDoneBtn').Add_Click({ $AddMemberForm.Close() })
 				Write-Host "Loaded AddMemberForm."
@@ -1636,22 +1635,23 @@ function Terminate-Disable-ADAndEmailAccounts {
 	# grants FullAccess + SendAs, same as Block-User. Replaces reusing the whole Add-MailboxMember
 	# window (which opened behind this dialog and could be missed). Add several, then Done/close.
 	function Invoke-AddMemberPrompt([string]$email) {
-		# Grant one OR several people at once (comma/semicolon/newline separated); the dialog stays
-		# open and the box clears + refocuses after each click so you can keep adding, then close it.
+		# Add people ONE AT A TIME: type an address, click Add, and it re-asks for the next one while
+		# listing everyone added so far, until you click Done / Skip. (Pasting several at once still
+		# works, but the flow is one-at-a-time.) $addedAll is a List so the nested handler can append.
+		$addedAll = [System.Collections.Generic.List[string]]::new()
 		function OnTermAddMemberClick {
 			$names = @($addMemberBox.Text -split '[;,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 			if (-not $names.Count) { return }
-			$okList = @()
 			foreach ($who in $names) {
 				try {
 					Add-MailboxPermission -Identity $email -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop | Out-Null
 					Add-RecipientPermission -Identity $email -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop | Out-Null
 					Write-Host "  gave $who access (FullAccess + SendAs) to $email." -ForegroundColor Cyan
-					$okList += $who
+					if (-not ($addedAll -contains $who)) { [void]$addedAll.Add($who) }
 				} catch { Write-Host "  couldn't give $who access to $email`: $($_.Exception.Message)" -ForegroundColor Yellow }
 			}
 			$addMemberBox.Text = ''
-			if ($okList.Count) { $addMemberHint.Text = "Added $($okList -join ', '). Add another person if you want, or click Done." }
+			if ($addedAll.Count) { $addMemberHint.Text = "Added so far ($($addedAll.Count)): $($addedAll -join ', ').`nAdd the next person below, or click Done when you're finished." }
 			try { $addMemberBox.Focus() } catch {}
 		}
 		$d = New-BlockAddMemberDialog
@@ -1659,7 +1659,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		$addMemberBox = $d.FindName('AddMemberBox')
 		$addMemberHint = $d.FindName('AddMemberHint')
 		Enable-RecipientAutocomplete $addMemberBox 'User'
-		Set-FieldWatermark $addMemberBox 'One or more, separated by commas'
+		Set-FieldWatermark $addMemberBox 'Email address'
 		$d.FindName('AddMemberBtn').Add_Click({ OnTermAddMemberClick })
 		$d.FindName('AddMemberDoneBtn').Add_Click({ $d.Close() })
 		[void]$d.ShowDialog()

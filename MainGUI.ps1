@@ -1,4 +1,4 @@
-﻿$version = "v3.2.8"
+﻿$version = "v3.2.9"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1606,7 +1606,7 @@ if ($env:SP_SHOT) {
 			# The focused add-member prompt (Terminate / Block-User): one clean watermark (no gibberish),
 			# a hint, and a "Done / Skip" button so you never have to click the X.
 			$w = New-BlockAddMemberDialog
-			try { Set-FieldWatermark ($w.FindName('AddMemberBox')) 'One or more, separated by commas' } catch {}
+			try { Set-FieldWatermark ($w.FindName('AddMemberBox')) 'Email address' } catch {}
 			$w
 		}
 		'dlg-not-signed-in'      = {

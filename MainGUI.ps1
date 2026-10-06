@@ -1602,6 +1602,19 @@ if ($env:SP_SHOT) {
 			) "Found 6 item(s) for bob.smith@contoso.com.  2 personal mailboxes are unchecked - Karen Lee is used as a shared inbox, so tick it; leave the rest."
 			$w
 		}
+		'dlg-add-member'         = {
+			# The focused add-member prompt (Terminate / Block-User): one clean watermark (no gibberish),
+			# a hint, and a "Done / Skip" button so you never have to click the X.
+			$w = New-BlockAddMemberDialog
+			try { Set-FieldWatermark ($w.FindName('AddMemberBox')) 'One or more, separated by commas' } catch {}
+			$w
+		}
+		'dlg-not-signed-in'      = {
+			# When not signed in, a script window shows this quiet inline notice (no pop-up to close).
+			$w = New-MailboxMemberDialog
+			try { [void](Register-AcStatusTarget $w.FindName('DlgSearchStatusPanel') $w.FindName('DlgSearchStatusIcon') $w.FindName('DlgSearchStatusLabel') $w.FindName('DlgSearchStatusBar') $w.FindName('DlgSearchStatusBarTT')) } catch {}
+			$w
+		}
 		'dlg-help-alias'         = { New-ScriptHelpDialog 'Add-EmailAlias' }
 		'dlg-help-removealias'   = { New-ScriptHelpDialog 'Remove-EmailAlias' }
 		'dlg-help-2fa'           = { New-ScriptHelpDialog 'Add-AuthenticationPhoneMethod' }

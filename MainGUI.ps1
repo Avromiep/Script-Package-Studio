@@ -1,4 +1,4 @@
-﻿$version = "v3.2.10"
+﻿$version = "v3.2.11"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -533,6 +533,7 @@ $script:TenantsPath = Join-Path $PSScriptRoot 'tenants.json'
 $script:Tenants = [System.Collections.Generic.List[object]]::new()
 $script:ActiveTenant = $null
 $script:SuppressTenantEvents = $false
+$script:TenantSwitching = $false
 $script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All", "User.Invite.All", "Group.ReadWrite.All", "UserAuthenticationMethod.ReadWrite.All")
 
 function Load-Tenants {
@@ -621,14 +622,6 @@ function Set-ConnectingButton {
 	$script:UI.ConnectBtn.IsEnabled = $false
 	$script:UI.ConnectBtn.ToolTip = $null
 	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
-}
-
-# Lock/unlock the script-launch controls (Run button + script list) so nothing can be
-# started while a tenant switch / sign-in is running. Re-enabled from Connect-Tenant's
-# finally, so the controls always come back even if the sign-in fails.
-function Set-ScriptsEnabled([bool]$On) {
-	try { $script:UI.RunBtn.IsEnabled = $On } catch {}
-	try { $script:UI.ScriptList.IsEnabled = $On } catch {}
 }
 
 function Update-TenantCombo {
@@ -726,8 +719,8 @@ function Connect-Exo([string]$Upn) {
 # thanks to browser SSO).
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
-	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; Set-ScriptsEnabled $true; return }
-	Set-ScriptsEnabled $false
+	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; $script:TenantSwitching = $false; return }
+	$script:TenantSwitching = $true
 	try {
 		$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 		Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
@@ -778,7 +771,7 @@ function Connect-Tenant($Tenant) {
 		Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
-	} finally { Set-ScriptsEnabled $true }
+	} finally { $script:TenantSwitching = $false }
 }
 
 # Interactive sign-in to a new account/tenant; saves it as a profile
@@ -1154,6 +1147,9 @@ function OnRunButtonClick {
 }
 
 function Invoke-ScriptByName([string]$Name) {
+	# Ignore launches while a tenant switch / sign-in is mid-flight: the scripts stay enabled,
+	# but a click does nothing, so we never run against the wrong / half-switched tenant.
+	if ($script:TenantSwitching) { return }
 	if (-not $Name) { Write-Host "No script selected."; return }
 	$script:UI.StatusText.Text = "Running $Name..."
 	$script:UI.StatusDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
@@ -1206,13 +1202,14 @@ $script:UI.TenantCombo.Add_SelectionChanged({ param($s, $e)
 	}
 	if ($script:ActiveTenant -ne $item.Tag) {
 		$tenant = $item.Tag
-		# Immediately flip to a not-connected / switching state AND lock the script controls
-		# before the 250ms defer + the UI-thread-blocking connect, so the app never looks
-		# connected to the OLD tenant (and no script can be launched) while the switch runs.
-		# Connect-Tenant re-sets the status and its finally re-enables the scripts.
+		# Immediately flip to a not-connected / switching state (and start ignoring script
+		# launches) before the 250ms defer + the UI-thread-blocking connect, so the app never
+		# looks connected to the OLD tenant while the switch runs. The scripts stay visible and
+		# clickable, but a click does nothing (see $script:TenantSwitching, checked in
+		# Invoke-ScriptByName); Connect-Tenant clears the flag in its finally and re-sets status.
 		Set-SignState $false "Not connected - switching to $($tenant.name)..."
 		Set-ConnectingButton
-		Set-ScriptsEnabled $false
+		$script:TenantSwitching = $true
 		Start-DeferredSignIn ({ Connect-Tenant $tenant }.GetNewClosure())
 	}
 })

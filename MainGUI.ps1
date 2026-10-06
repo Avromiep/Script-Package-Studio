@@ -1,4 +1,4 @@
-﻿$version = "v3.2.9"
+﻿$version = "v3.2.10"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -623,6 +623,14 @@ function Set-ConnectingButton {
 	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
 }
 
+# Lock/unlock the script-launch controls (Run button + script list) so nothing can be
+# started while a tenant switch / sign-in is running. Re-enabled from Connect-Tenant's
+# finally, so the controls always come back even if the sign-in fails.
+function Set-ScriptsEnabled([bool]$On) {
+	try { $script:UI.RunBtn.IsEnabled = $On } catch {}
+	try { $script:UI.ScriptList.IsEnabled = $On } catch {}
+}
+
 function Update-TenantCombo {
 	$script:SuppressTenantEvents = $true
 	try {
@@ -718,56 +726,59 @@ function Connect-Exo([string]$Upn) {
 # thanks to browser SSO).
 function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
-	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; return }
-	$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
-	Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
-	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
-	Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
-	$progressBar1.Value = 10
-	Set-ConnectingButton
-
-	# Silent switch: keep the previous session's cached tokens (do NOT Disconnect-MgGraph
-	# first) and reconnect with -TenantId. With a cached token this is silent and instant
-	# - no browser, no account picker. If the token isn't cached (new account, or the
-	# cache was cleared/expired), Microsoft's normal browser sign-in appears - which no
-	# longer freezes thanks to Invoke-WithoutDispatcherContext (the sync-context fix).
-	Invoke-WithoutDispatcherContext { Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes }
-	$progressBar1.Value = 40
-	CheckForErrors
-	$currentMgContext = Get-MgContext
-	if (-not $currentMgContext -or [string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
-		Write-Host "Could not connect to $($Tenant.name)." -ForegroundColor Red
-		$script:ActiveTenant = $null
-		Set-SignState $false 'Currently not signed in.'
+	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; Set-ScriptsEnabled $true; return }
+	Set-ScriptsEnabled $false
+	try {
+		$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
+		Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
+		$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
+		Write-Host "Connecting to tenant $($Tenant.name) ($($Tenant.tenantId)) as $($Tenant.account)..."
+		$progressBar1.Value = 10
+		Set-ConnectingButton
+	
+		# Silent switch: keep the previous session's cached tokens (do NOT Disconnect-MgGraph
+		# first) and reconnect with -TenantId. With a cached token this is silent and instant
+		# - no browser, no account picker. If the token isn't cached (new account, or the
+		# cache was cleared/expired), Microsoft's normal browser sign-in appears - which no
+		# longer freezes thanks to Invoke-WithoutDispatcherContext (the sync-context fix).
+		Invoke-WithoutDispatcherContext { Connect-MgGraph -TenantId $Tenant.tenantId -Scopes $script:GraphScopes }
+		$progressBar1.Value = 40
+		CheckForErrors
+		$currentMgContext = Get-MgContext
+		if (-not $currentMgContext -or [string]$currentMgContext.TenantId -ne [string]$Tenant.tenantId) {
+			Write-Host "Could not connect to $($Tenant.name)." -ForegroundColor Red
+			$script:ActiveTenant = $null
+			Set-SignState $false 'Currently not signed in.'
+			Update-TenantCombo
+			$script:UI.StatusText.Text = 'Ready'
+			$progressBar1.Value = 0
+			return
+		}
+		Write-Host "Connected to Graph"
+		if ([string]$currentMgContext.Account -and [string]$currentMgContext.Account -ne [string]$Tenant.account) {
+			Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
+		}
+	
+		# Connect-Exo passes -DisableWAM so this uses the out-of-process browser instead
+		# of the in-process WAM dialog that used to deadlock the UI thread on a switch.
+		$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
+		try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
+		Connect-Exo $Tenant.account
+		$progressBar1.Value = 80
+		CheckForErrors
+		Write-Host "Connected to Exchange"
+		# Connect the background-search worker + build the recipient index NOW (non-blocking), so by the
+		# time the user opens a search box the index is loaded and searches are instant.
+		try { Start-AcWarmup } catch {}
+	
+		$script:ActiveTenant = $Tenant
+		$Tenant.lastUsed = (Get-Date).ToString('o')
+		Save-Tenants
 		Update-TenantCombo
+		Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
-		return
-	}
-	Write-Host "Connected to Graph"
-	if ([string]$currentMgContext.Account -and [string]$currentMgContext.Account -ne [string]$Tenant.account) {
-		Write-Host "Note: Graph connected as $($currentMgContext.Account) (this tenant was saved for $($Tenant.account))." -ForegroundColor Yellow
-	}
-
-	# Connect-Exo passes -DisableWAM so this uses the out-of-process browser instead
-	# of the in-process WAM dialog that used to deadlock the UI thread on a switch.
-	$script:UI.StatusText.Text = 'Finishing sign-in (Exchange Online)...'
-	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
-	Connect-Exo $Tenant.account
-	$progressBar1.Value = 80
-	CheckForErrors
-	Write-Host "Connected to Exchange"
-	# Connect the background-search worker + build the recipient index NOW (non-blocking), so by the
-	# time the user opens a search box the index is loaded and searches are instant.
-	try { Start-AcWarmup } catch {}
-
-	$script:ActiveTenant = $Tenant
-	$Tenant.lastUsed = (Get-Date).ToString('o')
-	Save-Tenants
-	Update-TenantCombo
-	Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
-	$script:UI.StatusText.Text = 'Ready'
-	$progressBar1.Value = 0
+	} finally { Set-ScriptsEnabled $true }
 }
 
 # Interactive sign-in to a new account/tenant; saves it as a profile
@@ -1195,6 +1206,13 @@ $script:UI.TenantCombo.Add_SelectionChanged({ param($s, $e)
 	}
 	if ($script:ActiveTenant -ne $item.Tag) {
 		$tenant = $item.Tag
+		# Immediately flip to a not-connected / switching state AND lock the script controls
+		# before the 250ms defer + the UI-thread-blocking connect, so the app never looks
+		# connected to the OLD tenant (and no script can be launched) while the switch runs.
+		# Connect-Tenant re-sets the status and its finally re-enables the scripts.
+		Set-SignState $false "Not connected - switching to $($tenant.name)..."
+		Set-ConnectingButton
+		Set-ScriptsEnabled $false
 		Start-DeferredSignIn ({ Connect-Tenant $tenant }.GetNewClosure())
 	}
 })

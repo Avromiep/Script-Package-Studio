@@ -1,4 +1,4 @@
-﻿$version = "v3.3.3"
+﻿$version = "v3.3.4"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -564,6 +564,21 @@ function Get-ThroughputText([int]$Done, [int]$Total = 0) {
 # assigning $script:TpStart directly from inside a .GetNewClosure() handler, where $script: is a dead
 # dynamic-module scope and the write would go nowhere.
 function Reset-Throughput { $script:TpStart = $null; $script:TpCount = 0; $script:TpPrefix = '' }
+
+# Force the UI to actually repaint NOW in the middle of a long, UI-thread-blocking loop (a WPF
+# "DoEvents"). The progress proxy's Dispatcher.Invoke(..., Render) flushes the render queue, but when a
+# MODAL dialog (e.g. Paste List) is open over the main window, the main window's status/progress don't
+# visibly repaint until the handler returns - so a batch looks frozen ("1 of 10", bar stuck) until it
+# finishes. Pushing a short dispatcher frame runs the message loop once, so the update paints mid-loop.
+function Update-UiNow {
+	try {
+		$frame = New-Object System.Windows.Threading.DispatcherFrame
+		[System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
+			[System.Windows.Threading.DispatcherPriority]::Background,
+			[action] { $frame.Continue = $false }) | Out-Null
+		[System.Windows.Threading.Dispatcher]::PushFrame($frame)
+	} catch {}
+}
 
 # ---- tenant profiles ------------------------------------------------------------
 # Saved tenants live in tenants.json next to the app (portable, like settings.ini).

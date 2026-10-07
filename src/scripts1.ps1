@@ -400,6 +400,9 @@ function New-PasteMembersDialog {
 		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
 		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
 		Reset-Throughput   # fresh throughput clock for this batch (function: writes the real script scope)
+		# Disable the action button while the batch runs: Update-UiNow pumps the message loop, so without
+		# this a second click could re-enter this handler. The dialog closes when the batch finishes.
+		try { $win.FindName('PasteAddBtn').IsEnabled = $false } catch {}
 		foreach ($target in $targets) {
 			$ti++
 			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a long
@@ -409,6 +412,7 @@ function New-PasteMembersDialog {
 			$tpTail = if ($tpTail) { "  ($tpTail)" } else { '...' }
 			$uiStatus.Text = "$actLow target $ti of $tc`: $target$tpTail"
 			Set-LoopProgress $ti $tc 12 95
+			Update-UiNow   # actually repaint the status + bar now (the main window is behind this modal)
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName (Get-LastRecipientRaw)
 			if (-not $cat -or $cat -eq 'Other') {

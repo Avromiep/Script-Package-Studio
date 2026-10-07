@@ -1,4 +1,4 @@
-﻿$version = "v3.3.1"
+﻿$version = "v3.3.2"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -560,6 +560,10 @@ function Get-ThroughputText([int]$Done, [int]$Total = 0) {
 	if ($Total -gt $Done) { $txt = $txt + ' · ~' + (Format-TpDuration ($per * ($Total - $Done))) + ' left' }
 	return $txt
 }
+# Start a fresh throughput clock. Call this (a function, so it writes the real script scope) instead of
+# assigning $script:TpStart directly from inside a .GetNewClosure() handler, where $script: is a dead
+# dynamic-module scope and the write would go nowhere.
+function Reset-Throughput { $script:TpStart = $null; $script:TpCount = 0; $script:TpPrefix = '' }
 
 # ---- tenant profiles ------------------------------------------------------------
 # Saved tenants live in tenants.json next to the app (portable, like settings.ini).

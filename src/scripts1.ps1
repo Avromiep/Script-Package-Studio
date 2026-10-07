@@ -20,6 +20,10 @@ function Get-RecipientCategory([string]$Identity) {
 	if ($d -match 'Mailbox') { return 'Mailbox' }                                                 # User/Shared/Room/etc.
 	return 'Other'
 }
+# Read the raw type string Get-RecipientCategory just captured. Use this (a function, so it reads the
+# real script scope) from inside a .GetNewClosure() handler, where a bare $script:LastRecipientRaw is
+# a dead dynamic-module variable and comes back empty.
+function Get-LastRecipientRaw { $script:LastRecipientRaw }
 
 # Friendly, specific type name from a raw "RecipientTypeDetails RecipientType" string
 # (e.g. 'SharedMailbox UserMailbox' -> 'shared mailbox') so the summary can say exactly
@@ -362,6 +366,9 @@ function New-PasteMembersDialog {
 
 	$win.FindName('PasteCancelBtn').Add_Click({ $win.Close() }.GetNewClosure())
 
+	# Capture the status TextBlock as a local: inside the .GetNewClosure() handler below, $script:
+	# resolves to a dead dynamic-module scope, so $script:UI would be $null (and .Text would throw).
+	$uiStatus = $script:UI.StatusText
 	$win.FindName('PasteAddBtn').Add_Click({
 		$members = @(Get-EmailsFromText $previewBox.Text)
 		# targets: the preview is already the final, filtered list (emails only, or plain names) in order
@@ -392,7 +399,7 @@ function New-PasteMembersDialog {
 		$progressBar1.Value = 12
 		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
 		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
-		$script:TpStart = $null; $script:TpCount = 0   # fresh throughput clock for this batch
+		Reset-Throughput   # fresh throughput clock for this batch (function: writes the real script scope)
 		foreach ($target in $targets) {
 			$ti++
 			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a long
@@ -400,10 +407,10 @@ function New-PasteMembersDialog {
 			# throughput readout makes a slow run read as working, not stuck.
 			$tpTail = Get-ThroughputText ($ti - 1) $tc
 			$tpTail = if ($tpTail) { "  ($tpTail)" } else { '...' }
-			$script:UI.StatusText.Text = "$actLow target $ti of $tc`: $target$tpTail"
+			$uiStatus.Text = "$actLow target $ti of $tc`: $target$tpTail"
 			Set-LoopProgress $ti $tc 12 95
 			$cat = Get-RecipientCategory $target
-			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
+			$typeName = Get-RecipientTypeName (Get-LastRecipientRaw)
 			if (-not $cat -or $cat -eq 'Other') {
 				Write-Host "Skipping '$target' - couldn't determine its type (not a mailbox / list / group)." -ForegroundColor Yellow
 				$lines.Add("$target - skipped (not a mailbox, list, or group)")
@@ -1708,7 +1715,7 @@ function Invoke-CopyAccessDialog {
         $itemsHost.Children.Clear()
         $status.Text = "Generating preview for $($v.Src) - this can take a moment..."
         $progressBar1.Value = 12
-        $script:TpStart = $null; $script:TpCount = 0
+        Reset-Throughput
         $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
         Add-Section 'Full Access (mailboxes)' $inv.Full
         Add-Section 'Send As (mailboxes)' $inv.SendAs
@@ -1741,7 +1748,7 @@ function Invoke-CopyAccessDialog {
         Write-Host "Copying $(@($chosen).Count) selected item(s) to $($v.Tgt)..." -ForegroundColor Cyan
         $progressBar1.Value = 12
         $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98; $tp = Get-ThroughputText $done $total2; if ($tp) { $status.Text = "Copying... $done of $total2 · $tp" } }
-        $script:TpStart = $null; $script:TpCount = 0
+        Reset-Throughput
         $res = Copy-UserAccess $v.Tgt $chosen $applyProgress
         $progressBar1.Value = 100
         $summary = @("Copied to $($v.Tgt).", "Granted: $($res.Granted)")

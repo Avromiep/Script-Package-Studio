@@ -1,4 +1,4 @@
-# ============================ Get-UserMemberships ====================================
+﻿# ============================ Get-UserMemberships ====================================
 # Read-only report of what a person belongs to and can act as - the cloud groups that HAVE an
 # email address (distribution lists, Teams / Microsoft 365 groups, mail-enabled security groups)
 # plus the mailboxes they can Send As - shown one column per type, each a scrollable list that
@@ -241,7 +241,7 @@ function Get-UserMemberships {
 		$copyBtn.IsEnabled = $false
 		$totalText.Text = ''
 		$progressBar1.Value = 12
-		$script:TpStart = $null; $script:TpCount = 0
+		Reset-Throughput
 		$opts = @{ Dl = $true; Unified = $true; Security = $true; SendAs = $true; FullAccess = $false; IncludeUnmanaged = $true }
 
 		$blocks = [System.Collections.Generic.List[string]]::new()

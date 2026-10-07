@@ -837,6 +837,14 @@ function ConvertFrom-AutoReplyHtml([string]$Html) {
 	return $t.Trim()
 }
 
+# Validate the Scheduled auto-reply dates before calling Exchange (which errors on a missing date or a
+# backwards range). Returns a friendly message to show, or $null when the dates are fine.
+function Test-AutoReplySchedule($Start, $End) {
+	if (-not $Start -or -not $End) { return 'Pick both a start and an end date for the scheduled auto-reply, or untick "Use Start and End Date".' }
+	if ([datetime]$End -lt [datetime]$Start) { return 'The end date is before the start date - pick an end that comes after the start.' }
+	return $null
+}
+
 function New-AutoReplyDialog {
 	$win = New-StyledDialog -Title 'Add-AutoReply' -Icon '&#xEBBC;' -BodyXaml @'
 <StackPanel Margin="16" Width="520">
@@ -907,6 +915,8 @@ function Add-AutoReply {
 			Write-Host "Use schedule is checked, creating auto-reply with schedule..."
 			$startTime = $startDatePicker.SelectedDate
 			$endTime = $endDatePicker.SelectedDate
+			$schedErr = Test-AutoReplySchedule $startTime $endTime
+			if ($schedErr) { Show-Notice 'Check the dates' $schedErr 'Warn'; $progressBar1.Value = 0; return }
 			Set-MailboxAutoReplyConfiguration -Identity $mailbox -AutoReplyState Scheduled -StartTime $startTime -EndTime $endTime -InternalMessage $internalMessage -ExternalMessage $externalMessage -ExternalAudience All -Confirm:$false
 			$progressBar1.Value = 50
 		}

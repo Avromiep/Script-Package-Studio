@@ -281,7 +281,7 @@ function Block-User {
 			Revoke-MgUserSignInSession -UserId $user | Out-Null
 			Write-Host "Revoked $user's sessions."
 			Update-MgUser -UserId $user -AccountEnabled:$false
-			Write-Host "Disabled $user account" -ForegroundColor Cyan -NoNewline
+			Write-Host "Disabled $user account" -ForegroundColor Cyan
 			$progressBar1.Value = 60
 			Remove-UserLicenses $user
 			$progressBar1.Value = 70
@@ -332,6 +332,8 @@ function Block-User {
 						Write-Host "Use schedule is checked, creating auto-reply with schedule..."
 						$startTime = $startDatePicker.SelectedDate
 						$endTime = $endDatePicker.SelectedDate
+						$schedErr = Test-AutoReplySchedule $startTime $endTime
+						if ($schedErr) { Show-Notice 'Check the dates' $schedErr 'Warn'; return }
 						Set-MailboxAutoReplyConfiguration -Identity $user -AutoReplyState Scheduled -StartTime $startTime -EndTime $endTime -InternalMessage $internalMessage -ExternalMessage $externalMessage -ExternalAudience All -Confirm:$false
 					}
 					else {
@@ -1585,6 +1587,10 @@ function New-TermAutoReplyDialog([string]$Email) {
 	$useSched.Add_Unchecked({ $startP.IsEnabled = $false; $endP.IsEnabled = $false }.GetNewClosure())
 	$win.Tag = @{ Skip = $true }
 	$win.FindName('ConfirmBtn').Add_Click({
+		if ($useSched.IsChecked -eq $true) {
+			$schedErr = Test-AutoReplySchedule $startP.SelectedDate $endP.SelectedDate
+			if ($schedErr) { Show-Notice 'Check the dates' $schedErr 'Warn'; return }
+		}
 		$win.Tag = @{ Skip = $false; Internal = $internal.Text; External = $external.Text; UseSchedule = ($useSched.IsChecked -eq $true); Start = $startP.SelectedDate; End = $endP.SelectedDate }
 		$win.Close()
 	}.GetNewClosure())

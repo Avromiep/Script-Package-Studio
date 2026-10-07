@@ -1,4 +1,4 @@
-﻿$version = "v3.3.0"
+﻿$version = "v3.3.1"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1675,27 +1675,26 @@ if ($env:SP_SHOT) {
 			$w = New-UserMembershipsDialog
 			$rh = $w.FindName('ResultsHost')
 			$inv1 = [ordered]@{ Full = @(); SendAs = @(
-					@{ Name = 'info@contoso.com'; Id = 'info@contoso.com'; Personal = $false; Note = '' }
-					@{ Name = 'sales@contoso.com'; Id = 'sales@contoso.com'; Personal = $false; Note = '' }
-					@{ Name = 'jane.doe@contoso.com'; Id = 'jane.doe@contoso.com'; Personal = $true; Note = '' }
+					@{ Kind = 'SendAs'; Name = 'Info Desk'; Id = 'info@contoso.com'; Personal = $false }
+					@{ Kind = 'SendAs'; Name = 'Sales'; Id = 'sales@contoso.com'; Personal = $false }
+					@{ Kind = 'SendAs'; Name = 'Jane Doe'; Id = 'jane.doe@contoso.com'; Personal = $true }
 				); Dl = @(
-					@{ Name = 'All Staff'; Id = 'allstaff@contoso.com'; Note = '' }
-					@{ Name = 'Front Office'; Id = 'frontoffice@contoso.com'; Note = '' }
+					@{ Kind = 'Dl'; Name = 'All Staff'; Id = 'allstaff@contoso.com'; SecurityEnabled = $false; Note = '' }
+					@{ Kind = 'Dl'; Name = 'Front Office'; Id = 'frontoffice@contoso.com'; SecurityEnabled = $false; Note = '' }
+					@{ Kind = 'Dl'; Name = 'VPN Users'; Id = 'vpn@contoso.com'; SecurityEnabled = $true; Note = '' }
+					@{ Kind = 'Dl'; Name = 'Finance Secure'; Id = 'finsec@contoso.com'; SecurityEnabled = $true; Note = '' }
 				); Unified = @(
-					@{ Name = 'Marketing'; Id = 'marketing@contoso.com'; Note = '' }
-					@{ Name = 'Project Falcon'; Id = 'falcon@contoso.com'; Note = '' }
-					@{ Name = 'Leadership'; Id = 'leadership@contoso.com'; Note = 'synced from on-prem' }
-				); Security = @(
-					@{ Name = 'VPN Users'; Id = ''; Note = '' }
-					@{ Name = 'Finance'; Id = ''; Note = 'dynamic - set by rule' }
-				); Skipped = @() }
+					@{ Kind = 'Unified'; Name = 'Marketing'; Id = 'marketing@contoso.com'; Note = '' }
+					@{ Kind = 'Unified'; Name = 'Project Falcon'; Id = 'falcon@contoso.com'; Note = '' }
+					@{ Kind = 'Unified'; Name = 'Leadership'; Id = 'leadership@contoso.com'; Note = 'synced from on-prem' }
+				); Security = @(); Skipped = @() }
 			[void](Add-MembershipPersonCard $rh 'bob.smith@contoso.com' $inv1)
-			$inv2 = [ordered]@{ Full = @(); SendAs = @(@{ Name = 'helpdesk@contoso.com'; Id = 'helpdesk@contoso.com'; Personal = $false; Note = '' });
-				Dl = @(@{ Name = 'IT Team'; Id = 'it@contoso.com'; Note = '' }); Unified = @(@{ Name = 'IT Ops'; Id = 'itops@contoso.com'; Note = '' });
-				Security = @(@{ Name = 'Local Admins'; Id = ''; Note = '' }); Skipped = @() }
+			$inv2 = [ordered]@{ Full = @(); SendAs = @(@{ Kind = 'SendAs'; Name = 'Help Desk'; Id = 'helpdesk@contoso.com'; Personal = $false });
+				Dl = @(@{ Kind = 'Dl'; Name = 'IT Team'; Id = 'it@contoso.com'; SecurityEnabled = $false; Note = '' });
+				Unified = @(@{ Kind = 'Unified'; Name = 'IT Ops'; Id = 'itops@contoso.com'; Note = '' }); Security = @(); Skipped = @() }
 			[void](Add-MembershipPersonCard $rh 'karen.lee@contoso.com' $inv2)
 			$w.FindName('CopyBtn').IsEnabled = $true
-			$w.FindName('TotalText').Text = '16 total across 2 people'
+			$w.FindName('TotalText').Text = '12 total across 2 people'
 			$w.FindName('ResultStatus').Text = 'Done - looked up 2 people.'
 			$w
 		}

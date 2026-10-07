@@ -1525,11 +1525,11 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
             if ($note -and -not $Opts.IncludeUnmanaged) { $inv.Skipped += "$name ($note)"; continue }
             $unmanaged = [bool]$note
             if ($isUnified) {
-                if ($Opts.Unified) { if ($mail -or $unmanaged) { $inv.Unified += @{ Kind = 'Unified'; Id = $mail; Name = $name; Type = 'Teams / Microsoft 365 group'; Personal = $false; Unmanaged = $unmanaged; Note = $note } } else { $inv.Skipped += "$name (Teams/M365 group has no address)" } }
+                if ($Opts.Unified) { if ($mail -or $unmanaged) { $inv.Unified += @{ Kind = 'Unified'; Id = $mail; Name = $name; Type = 'Teams / Microsoft 365 group'; Personal = $false; Unmanaged = $unmanaged; Note = $note; SecurityEnabled = $securityEnabled } } else { $inv.Skipped += "$name (Teams/M365 group has no address)" } }
             } elseif ($mailEnabled) {
-                if ($Opts.Dl) { if ($mail -or $unmanaged) { $inv.Dl += @{ Kind = 'Dl'; Id = $mail; Name = $name; Type = 'distribution list'; Personal = $false; Unmanaged = $unmanaged; Note = $note } } else { $inv.Skipped += "$name (distribution list has no address)" } }
+                if ($Opts.Dl) { if ($mail -or $unmanaged) { $inv.Dl += @{ Kind = 'Dl'; Id = $mail; Name = $name; Type = 'distribution list'; Personal = $false; Unmanaged = $unmanaged; Note = $note; SecurityEnabled = $securityEnabled } } else { $inv.Skipped += "$name (distribution list has no address)" } }
             } else {
-                if ($Opts.Security) { $inv.Security += @{ Kind = 'Security'; Id = $g.Id; Name = $name; Type = 'security group'; Personal = $false; Unmanaged = $unmanaged; Note = $note } }
+                if ($Opts.Security) { $inv.Security += @{ Kind = 'Security'; Id = $g.Id; Name = $name; Type = 'security group'; Personal = $false; Unmanaged = $unmanaged; Note = $note; SecurityEnabled = $securityEnabled } }
             }
         }
     }
@@ -1542,10 +1542,11 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
             foreach ($p in $sa) {
                 $id = "$($p.Identity)"
                 if (-not $id -or $id -eq $Source -or $id -match 'NT AUTHORITY') { continue }
-                $rtd = ''
-                try { $rtd = "$((Get-Recipient -Identity $id -ErrorAction Stop | Select-Object -First 1).RecipientTypeDetails)" } catch {}
+                $rtd = ''; $dn = ''
+                try { $rcp = Get-Recipient -Identity $id -ErrorAction Stop | Select-Object -First 1; $rtd = "$($rcp.RecipientTypeDetails)"; $dn = "$($rcp.DisplayName)" } catch {}
                 $type = if ($rtd) { Get-RecipientTypeName $rtd } else { 'mailbox' }
-                $inv.SendAs += @{ Kind = 'SendAs'; Id = $id; Name = $id; Type = $type; Personal = ($rtd -eq 'UserMailbox') }
+                $nm = if ($dn) { $dn } else { $id }
+                $inv.SendAs += @{ Kind = 'SendAs'; Id = $id; Name = $nm; Type = $type; Personal = ($rtd -eq 'UserMailbox') }
             }
         } catch { $inv.Skipped += "couldn't read Send As grants: $($_.Exception.Message)" }
     }

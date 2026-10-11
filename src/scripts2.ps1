@@ -127,6 +127,10 @@ function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview,
 	$progressBar1.Value = 100
 	Show-Notice $title ($parts -join "`n`n") $kind
 	$progressBar1.Value = 0
+	# Every per-row failure is already in this summary. Bulk handlers catch their rows (which still lands
+	# the error in the automatic $Error), so clear it here - otherwise the NEXT action's CheckForErrors
+	# would pop a dialog full of this run's already-reported errors.
+	$Error.Clear()
 }
 
 # Refuse to create over an existing account. These throw a clear "already exists" message
@@ -1618,17 +1622,22 @@ function Terminate-Disable-ADAndEmailAccounts {
 		Write-Host "Disabled AD account $username." -ForegroundColor Cyan
 	}
 
-	# The full email offboarding for one mailbox. Throws if the mailbox can't be found; the
-	# individual cloud steps tolerate their own failures so one hiccup doesn't stop the rest.
+	# The full email offboarding for one mailbox. Throws if the mailbox can't be found. All steps are
+	# attempted (so licenses/MFA still get cleaned up even if an earlier one hiccups), but the three that
+	# actually LOCK THE PERSON OUT - reset password, revoke sessions, disable the cloud account - are
+	# tracked, and if any of them failed the function THROWS at the end. That way a row never reports
+	# "Disabled" while the account is really still usable (the fired-employee risk).
 	function Disable-OneEmail([string]$email) {
 		$mailbox = Get-Mailbox -Identity $email -ErrorAction Stop
 		Set-Mailbox -Identity $email -Type Shared -ErrorAction Stop
 		Write-Host "Converted $email to a shared mailbox." -ForegroundColor Cyan
-		try { $pm = Get-MgUserAuthenticationPasswordMethod -UserId $email -ErrorAction Stop; Reset-MgUserAuthenticationMethodPassword -UserId $email -AuthenticationMethodId $pm.Id -ErrorAction Stop | Out-Null; Write-Host "  reset password." } catch { Write-Host "  couldn't reset password: $($_.Exception.Message)" -ForegroundColor Yellow }
-		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow }
-		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow }
+		$critical = @()
+		try { $pm = Get-MgUserAuthenticationPasswordMethod -UserId $email -ErrorAction Stop; Reset-MgUserAuthenticationMethodPassword -UserId $email -AuthenticationMethodId $pm.Id -ErrorAction Stop | Out-Null; Write-Host "  reset password." } catch { Write-Host "  couldn't reset password: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "reset the password ($($_.Exception.Message))" }
+		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "revoke sessions ($($_.Exception.Message))" }
+		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "disable the cloud account ($($_.Exception.Message))" }
 		Remove-UserLicenses $email
 		try { $n = Clear-UserAuthMethods $email; if ($n -gt 0) { Write-Host "  removed $n MFA method(s)." } else { Write-Host "  no MFA methods to remove." } } catch { Write-Host "  couldn't clear MFA methods: $($_.Exception.Message)" -ForegroundColor Yellow }
+		if ($critical.Count) { throw "the account may NOT be fully blocked - couldn't " + ($critical -join '; ') + ". Check it in the admin center." }
 	}
 
 	function Invoke-AutoReplyPrompt([string]$email) {
@@ -1685,10 +1694,17 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if ($blockEmail -and -not $email) { Show-Notice 'Missing info' 'Enter the email to block.' 'Warn'; return }
 		if ($blockAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username to block.' 'Warn'; return }
 		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
-		if ($blockAd -and -not (Test-ADModule)) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $blockAd = $false }
+		$adSkipped = $false
+		if ($blockAd -and -not (Test-ADModule)) {
+			# Only AD selected but no AD module: one clear message, nothing to do.
+			if (-not $blockEmail) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $progressBar1.Value = 0; return }
+			$blockAd = $false; $adSkipped = $true   # do the email part; note the skip in the summary
+		}
 		$progressBar1.Value = 20
 		$errors = @()
-		if ($blockAd) { try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
+		$didEmail = $false; $didAd = $false
+		if ($adSkipped) { $errors += "AD ($adUser): skipped - the Active Directory module isn't available on this computer." }
+		if ($blockAd) { try { Disable-OneAd $adUser; $didAd = $true } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
 		$progressBar1.Value = 50
 		if ($blockEmail) {
 			try {
@@ -1696,18 +1712,19 @@ function Terminate-Disable-ADAndEmailAccounts {
 				if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $email }
 				if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $email }
 				Write-Host "Finished blocking $email." -ForegroundColor Cyan
+				$didEmail = $true
 			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
 		}
 		$progressBar1.Value = 0
-		# Name only what was ACTUALLY done ($blockAd may have been turned off above if AD is missing),
-		# so we never claim to have blocked an AD user we skipped.
-		$whoParts = @()
-		if ($blockEmail) { $whoParts += $email }
-		if ($blockAd) { $whoParts += $adUser }
-		$who = @($whoParts | Where-Object { $_ }) -join ' / '
-		if ($errors.Count) { Show-Notice 'Finished with errors' ("Blocked $who, but:`n`n" + ($errors -join "`n")) 'Warn' }
-		elseif ($who) { Show-Notice 'Done' "Blocked $who." 'Info' }
-		else { Show-Notice 'Nothing done' 'Nothing was blocked (Active Directory isn''t available and no email was selected).' 'Warn' }
+		# Report only what ACTUALLY succeeded, so a failed/skipped step never reads as "Blocked".
+		$doneParts = @()
+		if ($didEmail) { $doneParts += $email }
+		if ($didAd) { $doneParts += $adUser }
+		$done = @($doneParts | Where-Object { $_ }) -join ' / '
+		if ($done -and $errors.Count) { Show-Notice 'Finished with some errors' ("Blocked $done.`n`nBut:`n`n" + ($errors -join "`n")) 'Warn' }
+		elseif ($done) { Show-Notice 'Done' "Blocked $done." 'Info' }
+		elseif ($errors.Count) { Show-Notice "Couldn't block" ("Nothing was blocked:`n`n" + ($errors -join "`n")) 'Error' }
+		else { Show-Notice 'Nothing done' 'Nothing to block.' 'Warn' }
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10
@@ -1732,21 +1749,29 @@ function Terminate-Disable-ADAndEmailAccounts {
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()
+		$skippedRows = 0
 		foreach ($row in $rows) {
 			Step-Progress   # keep the bar climbing per item
 			$u = "$($row.Username)".Trim(); $e = "$($row.Email)".Trim()
-			$who = if ($e) { $e } elseif ($u) { $u } else { '(blank row)' }
+			if (-not $u -and -not $e) { $skippedRows++; continue }   # blank row - don't count it as disabled
+			$who = if ($e) { $e } elseif ($u) { $u }
 			Write-Host "Processing $who..."
 			try {
-				if ($blockAd -and $u) { Disable-OneAd $u }
+				# Track whether this row actually DID anything, so a row with nothing to do (e.g. only a
+				# username but Block AD is off/unavailable) isn't reported as "Disabled".
+				$ran = $false
+				if ($blockAd -and $u) { Disable-OneAd $u; $ran = $true }
 				if ($blockEmail -and $e) {
 					Disable-OneEmail $e
 					if ($addMembersCheck.IsChecked -eq $true) { Invoke-AddMemberPrompt $e }
 					if ($addAutoReplyCheck.IsChecked -eq $true) { Invoke-AutoReplyPrompt $e }
+					$ran = $true
 				}
-				$done.Add($who)
+				if ($ran) { $done.Add($who) }
+				else { $skippedRows++; Write-Host "  skipped $who - nothing selected applied to this row." -ForegroundColor Yellow }
 			} catch { Write-Host "Failed $who`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$who - $($_.Exception.Message)") }
 		}
+		if ($skippedRows) { Write-Host "Skipped $skippedRows row(s) with nothing to do." -ForegroundColor Yellow }
 		Show-AccountResults 'Disable AD & Email accounts' $done $failed -DoneWord 'Disabled' -FailWord 'Failed'
 	}
 

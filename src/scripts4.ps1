@@ -159,6 +159,16 @@ function Add-MembershipPersonCard($Container, [string]$Email, $Inv, [bool]$Looku
 	$ht.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $(if ($notFound) { 'WarnBrush' } else { 'AccentBrush' }))
 	[void]$outer.Children.Add($ht)
 
+	# If just the Send As read failed (but groups loaded), the two mailbox columns below show "None" -
+	# which would look like "no Send As access" rather than "couldn't read it". Flag that so it's clear.
+	if (-not $notFound -and @($Inv.Skipped | Where-Object { $_ -match 'Send As' }).Count) {
+		$sw = New-Object System.Windows.Controls.TextBlock
+		$sw.Text = "(couldn't read Send As - the mailbox columns may be incomplete)"
+		$sw.FontSize = 11; $sw.TextAlignment = 'Center'; $sw.Margin = '0,2,0,0'; $sw.TextWrapping = 'Wrap'
+		$sw.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'WarnBrush')
+		[void]$outer.Children.Add($sw)
+	}
+
 	$cg = New-Object System.Windows.Controls.Grid
 	$cg.Margin = '0,10,0,0'
 	for ($i = 0; $i -lt $cols.Count; $i++) {

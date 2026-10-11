@@ -70,6 +70,9 @@ function Show-BulkSummary([hashtable]$Counts, [string]$Action, $Corrected = $nul
 	$title = if ($Action -eq 'remove') { 'Bulk remove complete' } else { 'Bulk add complete' }
 	Show-Notice $title "Finished processing the list:`n`n$summary.$note" $kind
 	$progressBar1.Value = 0
+	# Failures are already counted in this summary; clear the per-row errors so they don't resurface in
+	# the next action's CheckForErrors.
+	$Error.Clear()
 }
 
 # Add or remove ONE member on ONE target, auto-routing by the target's REAL type instead of

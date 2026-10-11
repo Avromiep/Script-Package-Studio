@@ -1,4 +1,4 @@
-﻿$version = "v3.3.6"
+﻿$version = "v3.3.7"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -841,75 +841,90 @@ function Connect-Tenant($Tenant) {
 		try { Update-TenantCombo } catch {}
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
+		$Error.Clear()   # we've reported it here; don't let it pop again in the next action's CheckForErrors
 	} finally { $script:TenantSwitching = $false }
 }
 
 # Interactive sign-in to a new account/tenant; saves it as a profile
 function Add-TenantSignIn {
 	if (-not (Confirm-RequiredModules)) { return }
-	Write-Host "Signing in to a new tenant..."
-	$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
-	Set-SignState $false 'Waiting for Microsoft sign-in...'
-	$progressBar1.Value = 10
-	Set-ConnectingButton
-
-	# drop the current Graph context so the account picker appears instead of a
-	# silent reconnect to the previous account
-	try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
-	$Error.Clear()
-
-	Invoke-WithoutDispatcherContext { Connect-MgGraph -Scopes $script:GraphScopes }
-	$progressBar1.Value = 40
-	CheckForErrors
-	$currentMgContext = Get-MgContext
-	if (-not $currentMgContext) {
+	$script:TenantSwitching = $true
+	# Clear the active tenant up front (same as Connect-Tenant): "+ Add a tenant" can be used while
+	# connected, and if Exchange fails after Graph signs into the NEW account, the old tenant must not
+	# stay marked active - that would let scripts run against the new tenant while the bar names the old.
+	$script:ActiveTenant = $null
+	try {
+		Write-Host "Signing in to a new tenant..."
+		$script:UI.SignDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'AccentBrush')
+		Set-SignState $false 'Waiting for Microsoft sign-in...'
+		$progressBar1.Value = 10
+		Set-ConnectingButton
+	
+		# drop the current Graph context so the account picker appears instead of a
+		# silent reconnect to the previous account
+		try { Disconnect-MgGraph -ErrorAction Ignore | Out-Null } catch {}
+		$Error.Clear()
+	
+		Invoke-WithoutDispatcherContext { Connect-MgGraph -Scopes $script:GraphScopes }
+		$progressBar1.Value = 40
+		CheckForErrors
+		$currentMgContext = Get-MgContext
+		if (-not $currentMgContext) {
+			$script:ActiveTenant = $null
+			Set-SignState $false 'Currently not signed in.'
+			Update-TenantCombo
+			$progressBar1.Value = 0
+			return
+		}
+		Write-Host "Connected to Graph"
+	
+		$orgName = $null
+		try { $orgName = [string](Get-MgOrganization -ErrorAction Ignore | Select-Object -First 1).DisplayName } catch {}
+		if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
+		$Error.Clear()
+	
+		Set-SignState $false 'Finishing sign-in (Exchange Online)...'
+		$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
+	
+		# Drop any existing Exchange session first. Without this, adding a second
+		# tenant while one is already connected hangs Connect-ExchangeOnline (the old
+		# session is still active) and freezes the app before the tenant is saved.
+		try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
+		Connect-Exo $currentMgContext.Account
+		$progressBar1.Value = 80
+		CheckForErrors
+		Write-Host "Connected to Exchange"
+		try { Start-AcWarmup } catch {}   # connect the bg worker + build the recipient index early
+	
+		$tenantProfile = $script:Tenants | Where-Object {
+			[string]$_.tenantId -eq [string]$currentMgContext.TenantId -and [string]$_.account -eq [string]$currentMgContext.Account
+		} | Select-Object -First 1
+		if ($tenantProfile) {
+			$tenantProfile.name = $orgName
+		} else {
+			$tenantProfile = [pscustomobject]@{
+				name     = $orgName
+				account  = [string]$currentMgContext.Account
+				tenantId = [string]$currentMgContext.TenantId
+				lastUsed = ''
+			}
+			$script:Tenants.Add($tenantProfile)
+		}
+		$tenantProfile.lastUsed = (Get-Date).ToString('o')
+		$script:ActiveTenant = $tenantProfile
+		Save-Tenants
+		Update-TenantCombo
+		Set-SignState $true "Connected to $orgName as $($currentMgContext.Account)"
+		Write-Host "Saved tenant '$orgName' ($($currentMgContext.Account))." -ForegroundColor Green
+		$progressBar1.Value = 0
+	} catch {
+		Write-Host "Couldn't finish adding the tenant: $($_.Exception.Message)" -ForegroundColor Red
 		$script:ActiveTenant = $null
 		Set-SignState $false 'Currently not signed in.'
-		Update-TenantCombo
+		try { Update-TenantCombo } catch {}
 		$progressBar1.Value = 0
-		return
-	}
-	Write-Host "Connected to Graph"
-
-	$orgName = $null
-	try { $orgName = [string](Get-MgOrganization -ErrorAction Ignore | Select-Object -First 1).DisplayName } catch {}
-	if (-not $orgName) { $orgName = ([string]$currentMgContext.Account -split '@')[-1] }
-	$Error.Clear()
-
-	Set-SignState $false 'Finishing sign-in (Exchange Online)...'
-	$script:Window.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render)
-
-	# Drop any existing Exchange session first. Without this, adding a second
-	# tenant while one is already connected hangs Connect-ExchangeOnline (the old
-	# session is still active) and freezes the app before the tenant is saved.
-	try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Ignore } catch {}
-	Connect-Exo $currentMgContext.Account
-	$progressBar1.Value = 80
-	CheckForErrors
-	Write-Host "Connected to Exchange"
-	try { Start-AcWarmup } catch {}   # connect the bg worker + build the recipient index early
-
-	$tenantProfile = $script:Tenants | Where-Object {
-		[string]$_.tenantId -eq [string]$currentMgContext.TenantId -and [string]$_.account -eq [string]$currentMgContext.Account
-	} | Select-Object -First 1
-	if ($tenantProfile) {
-		$tenantProfile.name = $orgName
-	} else {
-		$tenantProfile = [pscustomobject]@{
-			name     = $orgName
-			account  = [string]$currentMgContext.Account
-			tenantId = [string]$currentMgContext.TenantId
-			lastUsed = ''
-		}
-		$script:Tenants.Add($tenantProfile)
-	}
-	$tenantProfile.lastUsed = (Get-Date).ToString('o')
-	$script:ActiveTenant = $tenantProfile
-	Save-Tenants
-	Update-TenantCombo
-	Set-SignState $true "Connected to $orgName as $($currentMgContext.Account)"
-	Write-Host "Saved tenant '$orgName' ($($currentMgContext.Account))." -ForegroundColor Green
-	$progressBar1.Value = 0
+		$Error.Clear()
+	} finally { $script:TenantSwitching = $false }
 }
 
 function Disconnect-Tenant {

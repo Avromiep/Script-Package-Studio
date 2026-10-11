@@ -1203,6 +1203,10 @@ function Add-Contacts {
             }
             Show-AccountResults 'Invite guests' $created $failed -DoneWord 'Processed' -FailWord 'Failed'
         }
+        # The per-row failures are already shown in the summary above, but a caught error still lands in
+        # $Error. Clear it so the NEXT action's CheckForErrors doesn't pop a dialog full of this run's
+        # old errors (the previous code ended with CheckForErrors, which cleared $Error for us).
+        $Error.Clear()
         $progressBar1.Value = 0
     }
     function OnOpenTemplateButtonClick {

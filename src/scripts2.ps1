@@ -1699,9 +1699,15 @@ function Terminate-Disable-ADAndEmailAccounts {
 			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
 		}
 		$progressBar1.Value = 0
-		$who = @($email, $adUser | Where-Object { $_ }) -join ' / '
+		# Name only what was ACTUALLY done ($blockAd may have been turned off above if AD is missing),
+		# so we never claim to have blocked an AD user we skipped.
+		$whoParts = @()
+		if ($blockEmail) { $whoParts += $email }
+		if ($blockAd) { $whoParts += $adUser }
+		$who = @($whoParts | Where-Object { $_ }) -join ' / '
 		if ($errors.Count) { Show-Notice 'Finished with errors' ("Blocked $who, but:`n`n" + ($errors -join "`n")) 'Warn' }
-		else { Show-Notice 'Done' "Blocked $who." 'Info' }
+		elseif ($who) { Show-Notice 'Done' "Blocked $who." 'Info' }
+		else { Show-Notice 'Nothing done' 'Nothing was blocked (Active Directory isn''t available and no email was selected).' 'Warn' }
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10

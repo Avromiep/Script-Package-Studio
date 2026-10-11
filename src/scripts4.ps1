@@ -260,13 +260,15 @@ function Get-UserMemberships {
 				Write-Host "Couldn't look up $email`: $($_.Exception.Message)" -ForegroundColor Yellow
 				$inv = [ordered]@{ Full = @(); SendAs = @(); Dl = @(); Unified = @(); Security = @(); Skipped = @("lookup failed: $($_.Exception.Message)") }
 			}
-			# "couldn't read ..." / "lookup failed" in Skipped means the address itself didn't resolve - show
-			# that instead of a misleading "0 total" (which looks like a real person with no access).
+			# A read error ("couldn't read ..." / "lookup failed") only means "not found" when NOTHING came
+			# back. If the groups loaded but (say) only the Send As read failed, keep the real results -
+			# don't drop them from the copy. Only an all-empty + failed read reads as "couldn't look up".
 			$lookupFailed = @($inv.Skipped | Where-Object { $_ -match "couldn't read|lookup failed" }).Count -gt 0
-			$grand += (Add-MembershipPersonCard $resultsHost $email $inv $lookupFailed)
+			$personTotal = Add-MembershipPersonCard $resultsHost $email $inv $lookupFailed
+			$grand += $personTotal
 			$skipped += @($inv.Skipped).Count
-			$pt = Get-MembershipPersonText $email $inv
-			if ($lookupFailed) { $pt = "$email - couldn't look this up (check the address / tenant)" }
+			if ($lookupFailed -and $personTotal -eq 0) { $pt = "$email - couldn't look this up (check the address / tenant)" }
+			else { $pt = Get-MembershipPersonText $email $inv }
 			$blocks.Add($pt)
 			Write-Host "Looked up $email." -ForegroundColor Cyan
 		}

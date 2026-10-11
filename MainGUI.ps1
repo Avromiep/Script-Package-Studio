@@ -1,4 +1,4 @@
-﻿$version = "v3.3.5"
+﻿$version = "v3.3.6"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -777,6 +777,11 @@ function Connect-Tenant($Tenant) {
 	if (-not $Tenant) { return }
 	if (-not (Confirm-RequiredModules)) { Update-TenantCombo; $script:TenantSwitching = $false; return }
 	$script:TenantSwitching = $true
+	# Clear the active tenant up front: nothing counts as connected until the switch FULLY succeeds
+	# (both Graph AND Exchange). So a failed or half-finished switch can't leave the PREVIOUS tenant
+	# marked active - which, with Test-SignedIn tied to it, would let scripts run against the old
+	# tenant. It's set again at the end only on success.
+	$script:ActiveTenant = $null
 	try {
 		$script:UI.StatusText.Text = "Connecting to $($Tenant.name)..."
 		Set-SignState $false "Connecting to $($Tenant.name) as $($Tenant.account)..."
@@ -825,6 +830,15 @@ function Connect-Tenant($Tenant) {
 		Save-Tenants
 		Update-TenantCombo
 		Set-SignState $true "Connected to $($Tenant.name) as $($currentMgContext.Account)"
+		$script:UI.StatusText.Text = 'Ready'
+		$progressBar1.Value = 0
+	} catch {
+		# Any failure (e.g. Exchange connect throws after Graph succeeded) leaves NO active tenant,
+		# rather than the previous one - so a half-finished switch can't be mistaken for connected.
+		Write-Host "Couldn't finish switching to $($Tenant.name): $($_.Exception.Message)" -ForegroundColor Red
+		$script:ActiveTenant = $null
+		Set-SignState $false 'Currently not signed in.'
+		try { Update-TenantCombo } catch {}
 		$script:UI.StatusText.Text = 'Ready'
 		$progressBar1.Value = 0
 	} finally { $script:TenantSwitching = $false }

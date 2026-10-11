@@ -846,6 +846,7 @@ function ConvertFrom-AutoReplyHtml([string]$Html) {
 function Test-AutoReplySchedule($Start, $End) {
 	if (-not $Start -or -not $End) { return 'Pick both a start and an end date for the scheduled auto-reply, or untick "Use Start and End Date".' }
 	if ([datetime]$End -lt [datetime]$Start) { return 'The end date is before the start date - pick an end that comes after the start.' }
+	if (([datetime]$End).Date -lt ([datetime]::Now).Date) { return 'The end date is in the past - the auto-reply would be over before it starts. Pick today or a future date.' }
 	return $null
 }
 
@@ -1003,6 +1004,12 @@ function Add-AutoReply {
         $progressBar1.Value = 60
         $state = [string]$cfg.AutoReplyState
         $script:ArSuppress = $true
+        # Reset the schedule / match UI so it reflects ONLY this mailbox - otherwise a previous mailbox's
+        # schedule (Scheduled + its dates) would carry over to one that has no reply or an always-on one.
+        $useScheduleCheckBox.IsChecked = $false
+        $startDatePicker.SelectedDate = [DateTime]::Now
+        $endDatePicker.SelectedDate = [DateTime]::Now
+        $matchRepliesCheckBox.IsChecked = $true
         if (-not $state -or $state -eq 'Disabled') {
             $internalReplyTextBox.Text = ''
             $externalReplyTextBox.Text = ''
@@ -1142,9 +1149,11 @@ function Add-Contacts {
     function Invoke-GuestInvite([string]$email, [string]$displayName) {
         $e = "$email".Trim()
         if (-not $e) { return }
+        $ef = $e -replace "'", "''"   # escape single quotes for the OData filter (an apostrophe in the
+                                      # address would otherwise break the lookup -> no match -> double invite)
         $existing = $null
-        try { $existing = Get-MgUser -Filter "mail eq '$e'" -ErrorAction Stop | Select-Object -First 1 } catch {}
-        if (-not $existing) { try { $existing = Get-MgUser -Filter "otherMails/any(x:x eq '$e')" -ErrorAction Stop | Select-Object -First 1 } catch {} }
+        try { $existing = Get-MgUser -Filter "mail eq '$ef'" -ErrorAction Stop | Select-Object -First 1 } catch {}
+        if (-not $existing) { try { $existing = Get-MgUser -Filter "otherMails/any(x:x eq '$ef')" -ErrorAction Stop | Select-Object -First 1 } catch {} }
         if ($existing) { Write-Host "$e is already in the directory - no invite sent." -ForegroundColor Yellow; return }
         $p = @{ InvitedUserEmailAddress = $e; InviteRedirectUrl = 'https://myapps.microsoft.com'; SendInvitationMessage = $true; ErrorAction = 'Stop' }
         if ("$displayName".Trim()) { $p.InvitedUserDisplayName = "$displayName".Trim() }
@@ -1170,22 +1179,31 @@ function Add-Contacts {
     function OnBulkContactsButtonClick {
         Write-Host "AddContactsBulk button clicked."
         $progressBar1.Value = 5
+        # Each row is tolerated on its own (New-OneMailContact / Invoke-GuestInvite use -ErrorAction Stop
+        # for the single path; wrapping per row here stops one bad row from aborting the whole batch and
+        # freezing the bar - the previous behaviour let the first failure stop everything after it).
+        $created = [System.Collections.Generic.List[string]]::new()
+        $failed  = [System.Collections.Generic.List[string]]::new()
         if ($addContactsMode.Value -eq 0) {
             # Contacts bulk: CSV with DisplayName (optional) + EmailAddress.
             Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
                 Step-Progress   # keep the bar climbing per item
-                New-OneMailContact $_.EmailAddress $_.DisplayName
+                $em = "$($_.EmailAddress)".Trim(); if (-not $em) { return }
+                try { New-OneMailContact $_.EmailAddress $_.DisplayName; $created.Add($em) }
+                catch { Write-Host "Failed on $em`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$em - $($_.Exception.Message)") }
             }
+            Show-AccountResults 'Add contacts' $created $failed -DoneWord 'Added' -FailWord 'Failed'
         } elseif ($addContactsMode.Value -eq 1) {
             # Guest bulk: a plain list of one email address per line.
             Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
                 Step-Progress   # keep the bar climbing per item
                 $e = "$_".Trim(); if (-not $e) { return }
-                Invoke-GuestInvite $e ''
+                try { Invoke-GuestInvite $e ''; $created.Add($e) }
+                catch { Write-Host "Failed on $e`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$e - $($_.Exception.Message)") }
             }
+            Show-AccountResults 'Invite guests' $created $failed -DoneWord 'Processed' -FailWord 'Failed'
         }
-        CheckForErrors
-        OperationComplete
+        $progressBar1.Value = 0
     }
     function OnOpenTemplateButtonClick {
         Write-Host "OpenTemplate button clicked."

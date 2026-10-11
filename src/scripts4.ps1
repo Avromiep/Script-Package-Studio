@@ -139,7 +139,7 @@ function New-MembershipColumn([int]$GridCol, [string]$Head, $Items) {
 }
 
 # Add a person's block (centred header + total, then the five columns) to $Container. Returns the total.
-function Add-MembershipPersonCard($Container, [string]$Email, $Inv) {
+function Add-MembershipPersonCard($Container, [string]$Email, $Inv, [bool]$LookupFailed = $false) {
 	$cols = Get-MembershipReportColumns $Inv
 	$total = 0; foreach ($c in $cols) { $total += @($c.Items).Count }
 
@@ -153,8 +153,10 @@ function Add-MembershipPersonCard($Container, [string]$Email, $Inv) {
 	$hn.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'TextBrush')
 	[void]$outer.Children.Add($hn)
 	$ht = New-Object System.Windows.Controls.TextBlock
-	$ht.Text = "$total total"; $ht.FontSize = 12; $ht.TextAlignment = 'Center'; $ht.Margin = '0,2,0,0'
-	$ht.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'AccentBrush')
+	$notFound = ($total -eq 0 -and $LookupFailed)
+	$ht.Text = if ($notFound) { "couldn't look this up - check the address and that you're on the right tenant" } else { "$total total" }
+	$ht.FontSize = 12; $ht.TextAlignment = 'Center'; $ht.Margin = '0,2,0,0'; $ht.TextWrapping = 'Wrap'
+	$ht.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $(if ($notFound) { 'WarnBrush' } else { 'AccentBrush' }))
 	[void]$outer.Children.Add($ht)
 
 	$cg = New-Object System.Windows.Controls.Grid
@@ -258,9 +260,14 @@ function Get-UserMemberships {
 				Write-Host "Couldn't look up $email`: $($_.Exception.Message)" -ForegroundColor Yellow
 				$inv = [ordered]@{ Full = @(); SendAs = @(); Dl = @(); Unified = @(); Security = @(); Skipped = @("lookup failed: $($_.Exception.Message)") }
 			}
-			$grand += (Add-MembershipPersonCard $resultsHost $email $inv)
+			# "couldn't read ..." / "lookup failed" in Skipped means the address itself didn't resolve - show
+			# that instead of a misleading "0 total" (which looks like a real person with no access).
+			$lookupFailed = @($inv.Skipped | Where-Object { $_ -match "couldn't read|lookup failed" }).Count -gt 0
+			$grand += (Add-MembershipPersonCard $resultsHost $email $inv $lookupFailed)
 			$skipped += @($inv.Skipped).Count
-			$blocks.Add((Get-MembershipPersonText $email $inv))
+			$pt = Get-MembershipPersonText $email $inv
+			if ($lookupFailed) { $pt = "$email - couldn't look this up (check the address / tenant)" }
+			$blocks.Add($pt)
 			Write-Host "Looked up $email." -ForegroundColor Cyan
 		}
 
@@ -274,11 +281,13 @@ function Get-UserMemberships {
 		$progressBar1.Value = 0
 	}
 
-	function OnMembershipsLookupOne { Invoke-MembershipLookup @($userBox.Text -split '[\s;,]+') }
+	function OnMembershipsLookupOne { Invoke-MembershipLookup @($userBox.Text -split '[;,
+]+') }
 	function OnMembershipsPaste {
 		$txt = Show-MembershipPasteDialog
 		if ($null -eq $txt) { return }
-		Invoke-MembershipLookup @($txt -split '[\s;,]+')
+		Invoke-MembershipLookup @($txt -split '[;,
+]+')
 	}
 	function OnMembershipsCopy {
 		if (-not $script:UmCopyText) { return }

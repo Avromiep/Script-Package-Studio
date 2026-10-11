@@ -986,6 +986,11 @@ $script:AcStatusTargets = [System.Collections.Generic.List[object]]::new()
 # until the first sign-in, so calling it unguarded throws "'Get-MgContext' is not recognized" - which
 # is itself the not-signed-in case. No command (module not loaded) => not signed in.
 function Test-SignedIn {
+	# Require a CONFIRMED active tenant, not just any Graph context. After a failed tenant switch the old
+	# tenant's Graph/Exchange session can linger (we keep cached tokens on purpose), but $script:ActiveTenant
+	# is cleared - so without this, a script could silently run against the PREVIOUS tenant while the top bar
+	# says "not signed in". ActiveTenant is set only after a successful connect, so this stays in sync.
+	if (-not $script:ActiveTenant) { return $false }
 	if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue)) { return $false }
 	try { return [bool](Get-MgContext -ErrorAction SilentlyContinue) } catch { return $false }
 }

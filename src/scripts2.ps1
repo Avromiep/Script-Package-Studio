@@ -253,7 +253,8 @@ function New-BlockAutoReplyDialog {
 }
 
 function Block-User {
-	if (-not (Confirm-ADAvailable)) { return }
+	# Don't gate the whole dialog on AD: you can block EMAIL only (no AD tools needed). AD availability
+	# is checked below, only when "Block AD" is actually ticked.
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Block-User.txt"
 	Write-Host "Running Block-User script..."
 	$progressBar1.Value = 10
@@ -261,13 +262,16 @@ function Block-User {
 		Write-Host "Block button clicked."
 		$progressBar1.Value = 10
 		if ($adCheckBox.IsChecked -eq $true) {
-			$user = $adNameInputBox.Text
-			$progressBar1.Value = 20
-			$samAccountName = $adNameInputBox.Text
-			Disable-ADAccount -Identity $samAccountName
-			Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
-			$progressBar1.Value = 30
-			CheckForErrors
+			if (Test-ADModule) {
+				$progressBar1.Value = 20
+				$samAccountName = $adNameInputBox.Text
+				Disable-ADAccount -Identity $samAccountName
+				Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
+				$progressBar1.Value = 30
+				CheckForErrors
+			} else {
+				Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'
+			}
 		}
 		if ($emailCheckBox.IsChecked -eq $true) {
 			$user = $emailInputBox.Text
@@ -1599,7 +1603,8 @@ function New-TermAutoReplyDialog([string]$Email) {
 }
 
 function Terminate-Disable-ADAndEmailAccounts {
-	if (-not (Confirm-ADAvailable)) { return }
+	# Don't gate the whole dialog on AD: you can terminate EMAIL only (no AD tools needed). AD
+	# availability is checked below, only when "Block AD" is actually ticked.
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Terminate-Disable-ADAndEmailAccounts.txt"
 	Write-Host "Running Terminate-Disable-ADAndEmailAccounts script..."
 	$progressBar1.Value = 10
@@ -1680,6 +1685,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if ($blockEmail -and -not $email) { Show-Notice 'Missing info' 'Enter the email to block.' 'Warn'; return }
 		if ($blockAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username to block.' 'Warn'; return }
 		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		if ($blockAd -and -not (Test-ADModule)) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $blockAd = $false }
 		$progressBar1.Value = 20
 		$errors = @()
 		if ($blockAd) { try { Disable-OneAd $adUser } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
@@ -1713,6 +1719,10 @@ function Terminate-Disable-ADAndEmailAccounts {
 		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
 		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
+		if ($blockAd -and -not (Test-ADModule)) {
+			if (-not $blockEmail) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; return }
+			Show-Notice 'Active Directory not available' ($script:ADMissingMsg + "`n`nContinuing with the email part only.") 'Warn'; $blockAd = $false
+		}
 		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()

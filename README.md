@@ -93,14 +93,14 @@ Also has options for bulk (the same number formatting applies to the CSV).
 
 ### Block-User
 
-*Requires sign in. Requires run on server with Active Directory.*  
+*Requires sign in. The **Block AD** step needs the Active Directory module (a domain controller, or a PC with the RSAT AD tools) - but you can block **email only** without it; it just won't do the AD part.*  
 For AD: This will disable the AD account of the entered user.  
 For O365: This will disable the account, convert the mailbox to type shared,  change the password to something random, remove all licenses and remove any 2FA number associated with the account. Has options for adding members to the shared mailbox and for adding an auto-reply.  
 Bulk options will be added in the future.
 
 ### Terminate-Disable-ADAndEmailAccounts
 
-*Requires sign in. Requires run on server with Active Directory.*  
+*Requires sign in. The **Block AD** step needs the Active Directory module (a domain controller, or a PC with the RSAT AD tools) - but you can disable **email only** without it; it just won't do the AD part.*  
 Full offboarding for someone who has left: disables their Active Directory and Microsoft 365 accounts, converts the mailbox to shared, removes licenses and 2FA, revokes their sessions, and can set an auto-reply and give a manager access to the mailbox. Also has a bulk (CSV) option.
 
 ### Clear-RecycleBin
@@ -119,6 +119,12 @@ If you want to change the names/addresses of the newly created distribution list
 
 *Requires sign in.*  
 Turn on archiving, jumpstart archiving or turn on auto-expanding archive for a mailbox.  
+
+### Get-UserMemberships
+
+*Requires sign in. (Shown in the list as **Get-UserMemberships (group & access report)**.)*  
+A read-only report of what a person belongs to and can act as. Enter one email (type-ahead search) and click **Look up**, or **Paste list** to do several people at once. Each person gets their own block with the **name and email on every row**, laid out in columns by type - **Shared mailboxes**, **Security groups**, **Distribution lists**, **Teams / Microsoft 365 groups**, **User mailboxes** - each with a count and scrollable just like the email search. The mailbox columns are the mailboxes the person can **Send As**. **Copy** (at the bottom) puts a tidy plain-text list, grouped by person, on the clipboard - ready to paste into an email answering "what groups is this person in?".  
+It's built to stay fast: it reads cloud groups (one lookup) and Send As only - there's **no** slow full-mailbox Full Access scan. It lists groups that **have an email address**, so mail-enabled security groups show up but pure (no-address) security groups don't; dynamic and on-prem-synced groups are listed too, tagged. A mistyped address is called out ("couldn't look this up") rather than shown as an empty person.
 
 ### Install-RequiredModules
 

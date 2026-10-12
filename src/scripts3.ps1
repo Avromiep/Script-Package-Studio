@@ -77,7 +77,7 @@ function Remove-EmailAlias {
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
 				for ($i = 0; $i -le $numericUpDown1.Value; $i++) {
-					Step-Progress
+					Step-Progress "Removing alias $aliasName$i@$aliasDomain..."
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
 					try {
 						Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias} -ErrorAction Stop
@@ -117,7 +117,7 @@ function Remove-EmailAlias {
 	}
 	function OnRemoveAliasBulkButtonClick {
 		Import-Csv ".\Templates\Remove-EmailAlias.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Removing alias $($_.Alias) from $($_.Mailbox)..."
 			$progressBar1.Value = 20
 			$mailbox = $_.Mailbox
 			$alias = $_.Alias
@@ -297,6 +297,7 @@ function Remove-UserFromAllGroups {
 			$ap = $o.AdditionalProperties
 			if ("$($ap['@odata.type'])" -notlike '*group') { continue }   # skip directory roles / admin units
 			$name = "$($ap['displayName'])"; $gt = @($ap['groupTypes']); $mail = [bool]$ap['mailEnabled']; $sec = [bool]$ap['securityEnabled']; $gmail = "$($ap['mail'])"
+			Set-ItemStatus "Removing $email from $name..."
 			if ($gt -contains 'DynamicMembership') { $failed.Add("$label $name - skipped (dynamic group; membership is rule-based)"); continue }
 			if ($ap['onPremisesSyncEnabled'] -eq $true) { $failed.Add("$label $name - skipped (synced from AD; use the Active Directory option)"); continue }
 			$cat = if ($gt -contains 'Unified') { 'M365' } elseif ($mail -and $sec) { 'MailSec' } elseif ($mail) { 'DL' } elseif ($sec) { 'Sec' } else { 'Other' }
@@ -660,7 +661,7 @@ function Set-ACLPermissions {
 			$continuousProgressBar.Value = 50
 			Reset-Throughput
 			Get-Content ".\Templates\Set-ACLPermissions.txt" | ForEach-Object {
-				Step-Progress   # per-path tick (drives the throughput readout in the status bar)
+				Step-Progress "Setting permissions on $_..."
 				$continuousProgressBar.Value = 60
 				$aclPath = $_
 				$acl = Get-Acl $aclPath

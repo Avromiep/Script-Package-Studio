@@ -1,4 +1,4 @@
-﻿$version = "v3.3.7"
+﻿$version = "v3.3.8"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -158,7 +158,7 @@ $mainXaml = @"
 				<RowDefinition Height="50"/>
 				<RowDefinition Height="*"/>
 				<RowDefinition Height="Auto"/>
-				<RowDefinition Height="36"/>
+				<RowDefinition Height="46"/>
 			</Grid.RowDefinitions>
 
 			<!-- Title bar -->
@@ -347,15 +347,22 @@ $mainXaml = @"
 						<RowDefinition Height="*"/>
 						<RowDefinition Height="Auto"/>
 					</Grid.RowDefinitions>
-					<Grid Grid.Row="0" Margin="14,0" VerticalAlignment="Center">
+					<Grid Grid.Row="0" Margin="16,0" VerticalAlignment="Center">
 						<Grid.ColumnDefinitions>
 							<ColumnDefinition Width="Auto"/>
 							<ColumnDefinition Width="*"/>
+							<ColumnDefinition Width="Auto"/>
 						</Grid.ColumnDefinitions>
-						<Ellipse x:Name="StatusDot" Grid.Column="0" Width="8" Height="8" Fill="{DynamicResource SuccessBrush}"
+						<!-- Status: a readable action line on the left (what's happening, to which email),
+						     and a dim detail on the right (progress count / throughput). -->
+						<Ellipse x:Name="StatusDot" Grid.Column="0" Width="9" Height="9" Fill="{DynamicResource SuccessBrush}"
 								 VerticalAlignment="Center"/>
-						<TextBlock x:Name="StatusText" Grid.Column="1" Text="Ready" Style="{DynamicResource Dim}"
-								   Margin="8,0,14,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+						<TextBlock x:Name="StatusText" Grid.Column="1" Text="Ready"
+								   FontFamily="{DynamicResource UiFont}" FontSize="13.5" Foreground="{DynamicResource TextBrush}"
+								   Margin="10,0,12,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+						<TextBlock x:Name="StatusDetail" Grid.Column="2" Text=""
+								   FontFamily="{DynamicResource UiFont}" FontSize="12" Foreground="{DynamicResource TextDimBrush}"
+								   VerticalAlignment="Center" TextWrapping="NoWrap"/>
 					</Grid>
 					<!-- Progress bar: determinate blue fill (real progress) with a soft shimmer that moves WITHIN
 					     the filled portion (clipped to it, so it grows with the fill) - the common animated-
@@ -400,7 +407,7 @@ foreach ($n in @('RootBorder','Root','TitleIcon','SettingsBtn','ThemeBtn','Theme
 		'SignDot','SignStatusText','TenantCombo','BlurTenantBtn','BlurIcon','ForgetTenantBtn','ConnectBtn','ConnectedGroup','DisconnectBtn',
 		'ScriptCountText','SearchBox','SearchHint','SearchClearBtn','CatChipRow','ScriptList','EmptyState','RunBtn',
 		'LogToggleBtn','LogToggleIcon','LogCountText','LogCopyBtn','LogClearBtn','LogList',
-		'StatusDot','StatusText','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
+		'StatusDot','StatusText','StatusDetail','SearchStatusPanel','SearchStatusIcon','SearchStatusLabel','SearchStatusBar','SearchStatusBarTT','MainProgress')) {
 	$el = $script:Window.FindName($n)
 	if (-not $el) { throw "XAML element '$n' not found" }
 	$script:UI[$n] = $el
@@ -485,7 +492,8 @@ $progressBar1 | Add-Member -MemberType ScriptProperty -Name Value `
 			if ($target -le 0) {
 				Stop-ProgressPulse                          # idle - stop the breathing pulse
 				$script:ProgTarget = 0                      # reset the self-advancing loop ticker
-				$script:TpStart = $null; $script:TpCount = 0; $script:TpPrefix = ''  # reset the throughput readout
+				$script:TpStart = $null; $script:TpCount = 0  # reset the throughput clock
+				try { $script:UI.StatusDetail.Text = '' } catch {}   # clear the right-side progress detail
 				$pb.BeginAnimation([System.Windows.Controls.Primitives.RangeBase]::ValueProperty, $null)
 				$pb.Value = 0
 			} else {
@@ -522,21 +530,20 @@ function Set-LoopProgress([int]$Done, [int]$Total, [int]$Lo = 12, [int]$Hi = 95)
 $script:ProgTarget = 0
 $script:TpStart  = $null   # start time of the current batch (for the throughput readout)
 $script:TpCount  = 0      # items ticked so far in this batch
-$script:TpPrefix = ''     # status-line text captured at the start of the batch
-function Step-Progress {
+function Step-Progress([string]$Item = '') {
 	if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
 	$script:ProgTarget = $script:ProgTarget + [Math]::Max(1, [int]((93 - $script:ProgTarget) * 0.16))
 	if ($script:ProgTarget -gt 93) { $script:ProgTarget = 93 }
-	# Throughput readout: on the first tick, capture the current status line as a prefix; then each
-	# tick append "N done · ~Xs each" so a long batch visibly shows it's moving and how fast per item.
-	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0; $script:TpPrefix = (("$($script:UI.StatusText.Text)") -replace '\.\.\.\s*$','').Trim() }
+	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0 }
 	$script:TpCount++
-	$tp = Get-ThroughputText ($script:TpCount - 1)
-	if ($tp) {
-		$pfx = if ($script:TpPrefix) { "$($script:TpPrefix) · " } else { '' }
-		try { $script:UI.StatusText.Text = "$pfx$($script:TpCount - 1) done · $tp" } catch {}
-	}
+	# Left side: the specific item being processed (e.g. the email), when the caller passes one.
+	if ($Item) { Set-ItemStatus $Item }
+	# Right side: a running count + throughput, so a long batch shows it's moving and how fast.
+	$done = $script:TpCount - 1
+	$tp = Get-ThroughputText $done
+	Set-StatusDetail $(if ($done -gt 0) { "$done done" + $(if ($tp) { " · $tp" } else { '' }) } else { '' })
 	$progressBar1.Value = $script:ProgTarget
+	Update-UiNow $true   # throttled repaint so the status + bar actually move during the loop
 }
 
 # Format a rough duration for the throughput readout / ETA.
@@ -563,14 +570,22 @@ function Get-ThroughputText([int]$Done, [int]$Total = 0) {
 # Start a fresh throughput clock. Call this (a function, so it writes the real script scope) instead of
 # assigning $script:TpStart directly from inside a .GetNewClosure() handler, where $script: is a dead
 # dynamic-module scope and the write would go nowhere.
-function Reset-Throughput { $script:TpStart = $null; $script:TpCount = 0; $script:TpPrefix = '' }
+function Reset-Throughput { $script:TpStart = $null; $script:TpCount = 0; try { $script:UI.StatusDetail.Text = '' } catch {} }
 
 # Force the UI to actually repaint NOW in the middle of a long, UI-thread-blocking loop (a WPF
 # "DoEvents"). The progress proxy's Dispatcher.Invoke(..., Render) flushes the render queue, but when a
 # MODAL dialog (e.g. Paste List) is open over the main window, the main window's status/progress don't
 # visibly repaint until the handler returns - so a batch looks frozen ("1 of 10", bar stuck) until it
 # finishes. Pushing a short dispatcher frame runs the message loop once, so the update paints mid-loop.
-function Update-UiNow {
+$script:LastPumpTick = -100000
+function Update-UiNow([bool]$Throttle = $false) {
+	# $Throttle skips the pump if we painted very recently, so a fast loop that ticks every item doesn't
+	# push a message frame hundreds of times a second. ~70ms = a smooth ~14 repaints/sec.
+	if ($Throttle) {
+		$now = [Environment]::TickCount
+		if (($now - $script:LastPumpTick) -lt 70) { return }
+	}
+	$script:LastPumpTick = [Environment]::TickCount
 	try {
 		$frame = New-Object System.Windows.Threading.DispatcherFrame
 		[System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
@@ -578,6 +593,18 @@ function Update-UiNow {
 			[action] { $frame.Continue = $false }) | Out-Null
 		[System.Windows.Threading.Dispatcher]::PushFrame($frame)
 	} catch {}
+}
+
+# The two halves of the bottom status bar. Set-ItemStatus is the readable LEFT line (what's happening,
+# to which email); it's a function so $script:UI resolves even from inside a .GetNewClosure() handler,
+# and it repaints live (throttled) even when a modal script dialog sits over the main window.
+# Set-StatusDetail is the dim RIGHT line (progress count / throughput).
+function Set-ItemStatus([string]$Text) {
+	try { $script:UI.StatusText.Text = $Text } catch {}
+	Update-UiNow $true
+}
+function Set-StatusDetail([string]$Text) {
+	try { $script:UI.StatusDetail.Text = $Text } catch {}
 }
 
 # ---- tenant profiles ------------------------------------------------------------
@@ -1246,6 +1273,7 @@ function Invoke-ScriptByName([string]$Name) {
 		OnRunButtonClick $Name
 	} finally {
 		$script:UI.StatusText.Text = if ($known) { "$Name finished at $(Get-Date -Format 'h:mm tt')" } else { 'Ready' }
+		try { $script:UI.StatusDetail.Text = '' } catch {}   # clear the right-side progress detail
 		$script:UI.StatusDot.SetResourceReference([System.Windows.Shapes.Ellipse]::FillProperty, 'SuccessBrush')
 	}
 }

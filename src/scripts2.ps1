@@ -567,7 +567,7 @@ function Convert-UnifiedGroupToDistributionGroup {
 		$progressBar1.Value = 2
 		Reset-Throughput
 		Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | ForEach-Object {
-			Step-Progress   # per-group tick (drives the throughput readout)
+			Step-Progress "Converting $_..."
 			$progressBar1.Value = 5
 			$OldGroupName = $_ -Split "@"
 			$DistGroupName = $OldGroupName[0] + "-New"
@@ -779,7 +779,7 @@ function New-ADAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Creating $($row.SamAccountName)..."
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -994,7 +994,7 @@ function New-ADAndEmailAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		foreach ($row in $csvFile) {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Creating $($row.SamAccountName)..."
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -1196,7 +1196,7 @@ function New-EmailAccounts {
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$preview = ($previewCheck.IsChecked -eq $true)
 		Import-Csv ".\Templates\New-EmailAccounts.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Creating $($_.EmailAddress)..."
 			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
 			try {
 			$progressBar1.Value = 10
@@ -1336,7 +1336,7 @@ function Reset-MFA {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Reset-MFA.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Resetting MFA for $($_.Email)..."
 			$u = "$($_.Email)".Trim()
 			if (-not $u) { return }
 			try { $n = Clear-MfaFor $u; $created.Add("$u ($n cleared)") }
@@ -1474,7 +1474,7 @@ function Set-License {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Set-License.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Updating license for $($_.Email)..."
 			$u = "$($_.Email)".Trim()
 			if (-not $u) { return }
 			if ($preview) { $created.Add("$u ($mode)"); return }
@@ -1755,6 +1755,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 			$u = "$($row.Username)".Trim(); $e = "$($row.Email)".Trim()
 			if (-not $u -and -not $e) { $skippedRows++; continue }   # blank row - don't count it as disabled
 			$who = if ($e) { $e } elseif ($u) { $u }
+			Set-ItemStatus "Disabling $who..."
 			Write-Host "Processing $who..."
 			try {
 				# Track whether this row actually DID anything, so a row with nothing to do (e.g. only a

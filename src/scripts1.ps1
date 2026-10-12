@@ -94,6 +94,9 @@ function Invoke-MemberRoute {
 		[hashtable]$Cache = $null
 	)
 	$isRemove = ($Action -eq 'remove')
+	# Live status: this is the single chokepoint for every member add/remove (single and bulk, across
+	# distribution lists / Teams-M365 groups / mailboxes), so show which person is being added/removed here.
+	Set-ItemStatus "$(if ($isRemove) { 'Removing' } else { 'Adding' }) $Member $(if ($isRemove) { 'from' } else { 'to' }) $Target..."
 	if ($Cache -and $Cache.ContainsKey($Target)) {
 		$cat = $Cache[$Target].Cat; $typeName = $Cache[$Target].Name
 	} else {
@@ -369,9 +372,6 @@ function New-PasteMembersDialog {
 
 	$win.FindName('PasteCancelBtn').Add_Click({ $win.Close() }.GetNewClosure())
 
-	# Capture the status TextBlock as a local: inside the .GetNewClosure() handler below, $script:
-	# resolves to a dead dynamic-module scope, so $script:UI would be $null (and .Text would throw).
-	$uiStatus = $script:UI.StatusText
 	$win.FindName('PasteAddBtn').Add_Click({
 		$members = @(Get-EmailsFromText $previewBox.Text)
 		# targets: the preview is already the final, filtered list (emails only, or plain names) in order
@@ -408,14 +408,13 @@ function New-PasteMembersDialog {
 		try { $win.FindName('PasteAddBtn').IsEnabled = $false } catch {}
 		foreach ($target in $targets) {
 			$ti++
-			# Show exactly where it is holding and move the bar one slot per target (per mailbox), so a long
-			# run (e.g. 44 targets) climbs steadily instead of sitting still; the "· ~Xs each / ~Ys left"
-			# throughput readout makes a slow run read as working, not stuck.
-			$tpTail = Get-ThroughputText ($ti - 1) $tc
-			$tpTail = if ($tpTail) { "  ($tpTail)" } else { '...' }
-			$uiStatus.Text = "$actLow target $ti of $tc`: $target$tpTail"
+			# Left line: which target we're on (the email). Right detail: N of M + throughput. Set-ItemStatus
+			# is a function, so $script:UI resolves even in this .GetNewClosure() handler, and it repaints
+			# live (throttled) even though the main window is behind this modal dialog.
+			$tp = Get-ThroughputText ($ti - 1) $tc
+			Set-ItemStatus "$actLow $target"
+			Set-StatusDetail ("$ti of $tc" + $(if ($tp) { " · $tp" } else { '' }))
 			Set-LoopProgress $ti $tc 12 95
-			Update-UiNow   # actually repaint the status + bar now (the main window is behind this modal)
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName (Get-LastRecipientRaw)
 			if (-not $cat -or $cat -eq 'Other') {
@@ -689,7 +688,7 @@ function Add-AuthenticationPhoneMethod {
 		Write-Host "AddBulkPhone button clicked."
 		$progressBar1.Value = 10
 		Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Adding phone for $($_.Email)..."
 			$progressBar1.Value = 20
 			$user = $_.Email
 			$phoneNumber = Format-PhoneForMfa $_.Phone   # same normalization as the single add
@@ -1190,7 +1189,7 @@ function Add-Contacts {
         if ($addContactsMode.Value -eq 0) {
             # Contacts bulk: CSV with DisplayName (optional) + EmailAddress.
             Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
-                Step-Progress   # keep the bar climbing per item
+                Step-Progress "Adding contact $($_.EmailAddress)..."
                 $em = "$($_.EmailAddress)".Trim(); if (-not $em) { return }
                 try { New-OneMailContact $_.EmailAddress $_.DisplayName; $created.Add($em) }
                 catch { Write-Host "Failed on $em`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$em - $($_.Exception.Message)") }
@@ -1199,7 +1198,7 @@ function Add-Contacts {
         } elseif ($addContactsMode.Value -eq 1) {
             # Guest bulk: a plain list of one email address per line.
             Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
-                Step-Progress   # keep the bar climbing per item
+                Step-Progress "Inviting $(("$_").Trim())..."
                 $e = "$_".Trim(); if (-not $e) { return }
                 try { Invoke-GuestInvite $e ''; $created.Add($e) }
                 catch { Write-Host "Failed on $e`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$e - $($_.Exception.Message)") }
@@ -1419,7 +1418,7 @@ function Add-EmailAlias {
 			$created = [System.Collections.Generic.List[string]]::new()
 			$failed  = [System.Collections.Generic.List[string]]::new()
 			for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
-				Step-Progress
+				Step-Progress "Adding alias $aliasName$i@$aliasDomain..."
 				$completeAlias = "$aliasName$i@$aliasDomain"
 				$r = Add-OneAlias $mailbox $completeAlias $false $accepted
 				if ($r.Status -eq 'done') { $created.Add($completeAlias) }
@@ -1455,7 +1454,7 @@ function Add-EmailAlias {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		Import-Csv ".\Templates\Add-EmailAlias.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+			Step-Progress "Adding alias $($_.Alias) to $($_.Mailbox)..."
 			$progressBar1.Value = 40
 			$mailbox = "$($_.Mailbox)".Trim(); $alias = "$($_.Alias)".Trim()
 			$label = "$alias -> $mailbox"
@@ -2031,7 +2030,7 @@ function Add-TrustedSender {
 		$trustedSender = $trustedSenderInputBox.Text
 		$progressBar1.Value = 10
 		Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited | ForEach-Object {
-			Step-Progress
+			Step-Progress "Configuring $($_.Name)..."
 			$progressBar1.Value = 30
 			Set-MailboxJunkEmailConfiguration $_.Name -TrustedSendersAndDomains @{Add=$trustedSender}
 			$progressBar1.Value = 80

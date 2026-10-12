@@ -21,13 +21,14 @@ function Remove-DistributionListMember {
 	}
 	function OnRemoveBulkMembersButtonClick {
 		Write-Host "RemoveBulkMembers button clicked."
-		$progressBar1.Value = 10
 		$typeCache = @{}
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
-		Import-Csv ".\Templates\Remove-DistributionListMember.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
-			$progressBar1.Value = 20
+		$rows = @(Import-Csv ".\Templates\Remove-DistributionListMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm8
+		$rows | ForEach-Object {
+			$i++; Step-Progress '' $i $tot
 			$member = $_.Member
 			$group = $_.Group
 			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'remove' -Cache $typeCache -Corrected $corrected) {
@@ -38,6 +39,7 @@ function Remove-DistributionListMember {
 			}
 		}
 		Show-BulkSummary $counts 'remove' $corrected
+		Unlock-ScriptWindow
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
@@ -202,13 +204,14 @@ function Remove-UnifiedGroupMember {
 	}
 	function OnRemoveBulkMembersButtonClick {
 		Write-Host "RemoveBulkMembers button clicked."
-		$progressBar1.Value = 10
 		$typeCache = @{}
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
-		Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
-			$progressBar1.Value = 20
+		$rows = @(Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm8
+		$rows | ForEach-Object {
+			$i++; Step-Progress '' $i $tot
 			$member = $_.Member
 			$group = $_.Group
 			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'remove' -Cache $typeCache -Corrected $corrected) {
@@ -219,6 +222,7 @@ function Remove-UnifiedGroupMember {
 			}
 		}
 		Show-BulkSummary $counts 'remove' $corrected
+		Unlock-ScriptWindow
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
@@ -297,11 +301,11 @@ function Remove-UserFromAllGroups {
 			$ap = $o.AdditionalProperties
 			if ("$($ap['@odata.type'])" -notlike '*group') { continue }   # skip directory roles / admin units
 			$name = "$($ap['displayName'])"; $gt = @($ap['groupTypes']); $mail = [bool]$ap['mailEnabled']; $sec = [bool]$ap['securityEnabled']; $gmail = "$($ap['mail'])"
-			Set-ItemStatus "Removing $email from $name..."
 			if ($gt -contains 'DynamicMembership') { $failed.Add("$label $name - skipped (dynamic group; membership is rule-based)"); continue }
 			if ($ap['onPremisesSyncEnabled'] -eq $true) { $failed.Add("$label $name - skipped (synced from AD; use the Active Directory option)"); continue }
 			$cat = if ($gt -contains 'Unified') { 'M365' } elseif ($mail -and $sec) { 'MailSec' } elseif ($mail) { 'DL' } elseif ($sec) { 'Sec' } else { 'Other' }
 			if (-not $types[$cat]) { continue }   # this type not selected
+			Set-ItemStatus "$(if ($preview) { 'Would remove' } else { 'Removing' }) $email from $name..."
 			if ($preview) { $done.Add("$label $name ($cat)"); continue }
 			try {
 				switch ($cat) {
@@ -324,11 +328,12 @@ function Remove-UserFromAllGroups {
 		if (-not $email) { Show-Notice 'Missing info' 'Enter the user email.' 'Warn'; return }
 		if (-not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar)." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
-		$progressBar1.Value = 30
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
+		Lock-ScriptWindow $form
 		Remove-CloudGroups $email $types $preview $done $failed ''
-		$progressBar1.Value = 0
+		$progressBar1.Value = 100
 		Show-AccountResults "Remove $email from groups" $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
+		Unlock-ScriptWindow
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10
@@ -347,16 +352,16 @@ function Remove-UserFromAllGroups {
 		if (-not ($types.Values -contains $true)) { Show-Notice 'Nothing selected' 'Tick at least one group type.' 'Warn'; return }
 		if (-not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first." 'Warn'; return }
 		$preview = ($previewCheck.IsChecked -eq $true)
-		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
-		foreach ($row in $rows) {
-			Step-Progress   # keep the bar climbing per item
+		$people = @($rows | Where-Object { "$($_.Email)".Trim() })
+		Lock-ScriptWindow $form
+		foreach ($row in $people) {
 			$email = "$($row.Email)".Trim()
-			if (-not $email) { continue }
 			Write-Host "Processing $email..."
 			Remove-CloudGroups $email $types $preview $done $failed "${email}:"
 		}
 		Show-AccountResults 'Remove users from groups' $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
+		Unlock-ScriptWindow
 	}
 
 	$form = New-RemoveGroupsDialog

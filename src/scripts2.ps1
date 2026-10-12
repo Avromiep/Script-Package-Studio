@@ -1332,17 +1332,19 @@ function Reset-MFA {
 	}
 	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Reset-MFA.csv"; $progressBar1.Value = 0; CheckForErrors }
 	function OnBulkButtonClick {
-		$progressBar1.Value = 10
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
-		Import-Csv ".\Templates\Reset-MFA.csv" | ForEach-Object {
-			Step-Progress "Resetting MFA for $($_.Email)..."
-			$u = "$($_.Email)".Trim()
-			if (-not $u) { return }
+		$rows = @(Import-Csv ".\Templates\Reset-MFA.csv" | Where-Object { "$($_.Email)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $form
+		$rows | ForEach-Object {
+			$i++; $u = "$($_.Email)".Trim()
+			Step-Progress "Resetting MFA for $u..." $i $tot
 			try { $n = Clear-MfaFor $u; $created.Add("$u ($n cleared)") }
 			catch { Write-Host "Failed on $u`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$u - $($_.Exception.Message)") }
 		}
 		Show-AccountResults 'Reset MFA' $created $failed -DoneWord 'Reset' -FailWord 'Failed'
+		Unlock-ScriptWindow
 	}
 
 	$form = New-ResetMfaDialog
@@ -1470,18 +1472,22 @@ function Set-License {
 	function OnBulkButtonClick {
 		$mode = Get-Mode; $skus = Resolve-Skus $mode
 		$preview = ($previewCheck.IsChecked -eq $true)
-		$progressBar1.Value = 10
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
-		Import-Csv ".\Templates\Set-License.csv" | ForEach-Object {
-			Step-Progress "Updating license for $($_.Email)..."
-			$u = "$($_.Email)".Trim()
-			if (-not $u) { return }
-			if ($preview) { $created.Add("$u ($mode)"); return }
-			try { Set-OneLicense $u $skus.Add $skus.Remove; $created.Add("$u ($mode)") }
-			catch { $fe = Format-LicenseError "$($_.Exception.Message)"; Write-Host "Failed on $u`: $fe" -ForegroundColor Red; $failed.Add("$u - $fe") }
+		$rows = @(Import-Csv ".\Templates\Set-License.csv" | Where-Object { "$($_.Email)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $form
+		$rows | ForEach-Object {
+			$i++; $u = "$($_.Email)".Trim()
+			Step-Progress "Updating license for $u..." $i $tot
+			if ($preview) { $created.Add("$u ($mode)") }
+			else {
+				try { Set-OneLicense $u $skus.Add $skus.Remove; $created.Add("$u ($mode)") }
+				catch { $fe = Format-LicenseError "$($_.Exception.Message)"; Write-Host "Failed on $u`: $fe" -ForegroundColor Red; $failed.Add("$u - $fe") }
+			}
 		}
 		Show-AccountResults "Set-License ($mode)" $created $failed -Preview:$preview -DoneWord 'Updated' -FailWord 'Failed'
+		Unlock-ScriptWindow
 	}
 
 	$form = New-SetLicenseDialog
@@ -1746,16 +1752,17 @@ function Terminate-Disable-ADAndEmailAccounts {
 			if (-not $blockEmail) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; return }
 			Show-Notice 'Active Directory not available' ($script:ADMissingMsg + "`n`nContinuing with the email part only.") 'Warn'; $blockAd = $false
 		}
-		$progressBar1.Value = 10
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()
 		$skippedRows = 0
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $form
 		foreach ($row in $rows) {
-			Step-Progress   # keep the bar climbing per item
+			$i++
 			$u = "$($row.Username)".Trim(); $e = "$($row.Email)".Trim()
 			if (-not $u -and -not $e) { $skippedRows++; continue }   # blank row - don't count it as disabled
 			$who = if ($e) { $e } elseif ($u) { $u }
-			Set-ItemStatus "Disabling $who..."
+			Step-Progress "Disabling $who..." $i $tot
 			Write-Host "Processing $who..."
 			try {
 				# Track whether this row actually DID anything, so a row with nothing to do (e.g. only a
@@ -1774,6 +1781,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		}
 		if ($skippedRows) { Write-Host "Skipped $skippedRows row(s) with nothing to do." -ForegroundColor Yellow }
 		Show-AccountResults 'Disable AD & Email accounts' $done $failed -DoneWord 'Disabled' -FailWord 'Failed'
+		Unlock-ScriptWindow
 	}
 
 	$form = New-DisableAccountsDialog

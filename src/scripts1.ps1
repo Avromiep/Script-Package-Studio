@@ -68,6 +68,7 @@ function Show-BulkSummary([hashtable]$Counts, [string]$Action, $Corrected = $nul
 	}
 	$kind  = if ($Counts.failed -gt 0) { 'Warn' } else { 'Info' }
 	$title = if ($Action -eq 'remove') { 'Bulk remove complete' } else { 'Bulk add complete' }
+	$progressBar1.Value = 100
 	Show-Notice $title "Finished processing the list:`n`n$summary.$note" $kind
 	$progressBar1.Value = 0
 	# Failures are already counted in this summary; clear the per-row errors so they don't resurface in
@@ -403,9 +404,12 @@ function New-PasteMembersDialog {
 		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
 		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
 		Reset-Throughput   # fresh throughput clock for this batch (function: writes the real script scope)
-		# Disable the action button while the batch runs: Update-UiNow pumps the message loop, so without
-		# this a second click could re-enter this handler. The dialog closes when the batch finishes.
-		try { $win.FindName('PasteAddBtn').IsEnabled = $false } catch {}
+		# Grey out the dialog while the batch runs: Update-UiNow pumps the message loop, so without this a
+		# second click could re-enter this handler. Unlock before $win.Close() (the lock blocks closing too).
+		Lock-ScriptWindow $win
+		# Cache external-address resolution per click, so the same person isn't re-looked-up / re-invited
+		# for every target they're added to (a big saver when adding to many lists at once).
+		$extContactCache = @{}; $extGuestCache = @{}
 		foreach ($target in $targets) {
 			$ti++
 			# Left line: which target we're on (the email). Right detail: N of M + throughput. Set-ItemStatus
@@ -439,8 +443,8 @@ function New-PasteMembersDialog {
 						}
 					} else {
 						switch ($cat) {
-							'DistributionList' { $mm = $m; if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; $mm = Resolve-OrCreateMailContact $m }; Add-DistributionGroupMember -Identity $target -Member $mm -ErrorAction Stop }
-							'UnifiedGroup'     { if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; $gid = Resolve-OrInviteGuest $m; Add-GuestToUnifiedGroup $target $gid } else { Add-UnifiedGroupLinks -Identity $target -LinkType Members -Links $m -ErrorAction Stop } }
+							'DistributionList' { $mm = $m; if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; if (-not $extContactCache.ContainsKey($m)) { $extContactCache[$m] = Resolve-OrCreateMailContact $m }; $mm = $extContactCache[$m] }; Add-DistributionGroupMember -Identity $target -Member $mm -ErrorAction Stop }
+							'UnifiedGroup'     { if ($externalSet.Contains($m)) { if ($externalMode -ne 'bring-in') { throw 'SP_SKIP' }; if (-not $extGuestCache.ContainsKey($m)) { $extGuestCache[$m] = Resolve-OrInviteGuest $m }; $gid = $extGuestCache[$m]; Add-GuestToUnifiedGroup $target $gid } else { Add-UnifiedGroupLinks -Identity $target -LinkType Members -Links $m -ErrorAction Stop } }
 							'Mailbox'          {
 								if ($externalSet.Contains($m)) { throw 'SP_SKIP_MB' }
 								Add-MailboxPermission -Identity $target -User $m -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
@@ -470,6 +474,7 @@ function New-PasteMembersDialog {
 			Write-Host $lineText -ForegroundColor Cyan
 		}
 		$result.Counts = $counts; $result.Lines = $lines; $result.AnyFailed = $anyFailed; $result.TargetCount = $targets.Count
+		Unlock-ScriptWindow   # release before closing (the lock also guards against close while running)
 		$win.Close()
 	}.GetNewClosure())
 
@@ -1283,13 +1288,14 @@ function Add-DistributionListMember {
 	}
 	function OnAddBulkMembersButtonClick {
 		Write-Host "AddBulkMembersButton clicked."
-		$progressBar1.Value = 10
 		$typeCache = @{}
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
-		Import-Csv ".\Templates\Add-DistributionListMember.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
-			$progressBar1.Value = 20
+		$rows = @(Import-Csv ".\Templates\Add-DistributionListMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm8
+		$rows | ForEach-Object {
+			$i++; Step-Progress '' $i $tot   # accurate fill by row; Invoke-MemberRoute names the person
 			$member = $_.Member
 			$group = $_.Group
 			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'add' -Cache $typeCache -Corrected $corrected) {
@@ -1300,6 +1306,7 @@ function Add-DistributionListMember {
 			}
 		}
 		Show-BulkSummary $counts 'add' $corrected
+		Unlock-ScriptWindow
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste
@@ -1603,13 +1610,17 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
         $mbxs = @()
         try { $mbxs = @(Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails $rtd -ErrorAction Stop) }
         catch { $inv.Skipped += "couldn't list mailboxes to scan for Full Access: $($_.Exception.Message)" }
+        # Get-EXOMailboxPermission is the faster REST-based cmdlet (newer ExchangeOnlineManagement);
+        # fall back to Get-MailboxPermission when it isn't present. Same identity/user filter either way.
+        $useExoPerm = [bool](Get-Command Get-EXOMailboxPermission -ErrorAction SilentlyContinue)
         $i = 0; $tot = $mbxs.Count
         foreach ($mb in $mbxs) {
             $i++
             if ($Progress) { & $Progress $i $tot }
             if ("$($mb.PrimarySmtpAddress)" -eq $Source) { continue }   # their own mailbox
             try {
-                $perm = @(Get-MailboxPermission -Identity $mb.Identity -User $Source -ErrorAction SilentlyContinue | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ("$($_.AccessRights)" -match 'FullAccess') })
+                $raw = if ($useExoPerm) { Get-EXOMailboxPermission -Identity $mb.Identity -User $Source -ErrorAction SilentlyContinue } else { Get-MailboxPermission -Identity $mb.Identity -User $Source -ErrorAction SilentlyContinue }
+                $perm = @($raw | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ("$($_.AccessRights)" -match 'FullAccess') })
                 if ($perm.Count) {
                     $mrtd = "$($mb.RecipientTypeDetails)"
                     $inv.Full += @{ Kind = 'Full'; Id = "$($mb.PrimarySmtpAddress)"; Name = "$($mb.DisplayName)"; Type = (Get-RecipientTypeName $mrtd); Personal = ($mrtd -eq 'UserMailbox') }
@@ -1938,17 +1949,18 @@ function Add-MailboxMember {
 		CheckForErrors
 	}
 	function OnBulkMembersButtonClick {
-		$progressBar1.Value = 10
 		$typeCache = @{}
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
 		$csv = if ($mailboxMemberMode -eq 0) { ".\Templates\Add-MailboxMember.csv" } else { ".\Templates\Remove-MailboxMember.csv" }
-		Import-Csv $csv | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
+		$rows = @(Import-Csv $csv | Where-Object { "$($_.Member)".Trim() -and "$($_.Mailbox)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm1
+		$rows | ForEach-Object {
+			$i++; Step-Progress '' $i $tot
 			$member = $_.Member
 			$mailbox = $_.Mailbox
-			$progressBar1.Value = 40
 			switch (Invoke-BulkMemberRow -Target $mailbox -Member $member -Expected 'Mailbox' -Action $act -Cache $typeCache -Corrected $corrected -MailboxRight 'FullAndSendAs') {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
@@ -1957,6 +1969,7 @@ function Add-MailboxMember {
 			}
 		}
 		Show-BulkSummary $counts $act $corrected
+		Unlock-ScriptWindow
 	}
 
 	$scriptForm1 = New-MailboxMemberDialog
@@ -2076,13 +2089,14 @@ function Add-UnifiedGroupMember {
 	}
 	function OnAddBulkMembersButtonClick {
 		Write-Host "AddBulkMembers button clicked."
-		$progressBar1.Value = 10
 		$typeCache = @{}
 		$corrected = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
-		Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | ForEach-Object {
-			Step-Progress   # keep the bar climbing per item
-			$progressBar1.Value = 30
+		$rows = @(Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
+		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm8
+		$rows | ForEach-Object {
+			$i++; Step-Progress '' $i $tot
 			$member = $_.Member
 			$group = $_.Group
 			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'add' -Cache $typeCache -Corrected $corrected) {
@@ -2093,6 +2107,7 @@ function Add-UnifiedGroupMember {
 			}
 		}
 		Show-BulkSummary $counts 'add' $corrected
+		Unlock-ScriptWindow
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-UnifiedGroupMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste

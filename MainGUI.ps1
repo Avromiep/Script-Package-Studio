@@ -1,4 +1,4 @@
-﻿$version = "v3.3.8"
+﻿$version = "v3.3.9"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -437,6 +437,8 @@ try {
 # feedback. Skipped in screenshot mode so automated runs never block on a modal.
 if (-not $env:SP_SHOT) {
 	$script:Window.Dispatcher.Add_UnhandledException({ param($s, $e)
+		try { Unlock-ScriptWindow } catch {}   # a run that threw must never leave a dialog greyed out
+		try { $progressBar1.Value = 0 } catch {}
 		try {
 			Write-Host "Error: $($e.Exception.Message)" -ForegroundColor Red
 			[void](New-ErrorDialog (($e.Exception | Out-String).Trim())).ShowDialog()
@@ -530,19 +532,27 @@ function Set-LoopProgress([int]$Done, [int]$Total, [int]$Lo = 12, [int]$Hi = 95)
 $script:ProgTarget = 0
 $script:TpStart  = $null   # start time of the current batch (for the throughput readout)
 $script:TpCount  = 0      # items ticked so far in this batch
-function Step-Progress([string]$Item = '') {
-	if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
-	$script:ProgTarget = $script:ProgTarget + [Math]::Max(1, [int]((93 - $script:ProgTarget) * 0.16))
-	if ($script:ProgTarget -gt 93) { $script:ProgTarget = 93 }
+function Step-Progress([string]$Item = '', [int]$Index = 0, [int]$Total = 0) {
 	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0 }
 	$script:TpCount++
 	# Left side: the specific item being processed (e.g. the email), when the caller passes one.
 	if ($Item) { Set-ItemStatus $Item }
-	# Right side: a running count + throughput, so a long batch shows it's moving and how fast.
-	$done = $script:TpCount - 1
-	$tp = Get-ThroughputText $done
-	Set-StatusDetail $(if ($done -gt 0) { "$done done" + $(if ($tp) { " · $tp" } else { '' }) } else { '' })
-	$progressBar1.Value = $script:ProgTarget
+	if ($Total -gt 0) {
+		# Known total (a counted loop): fill the bar ACCURATELY by $Index of $Total - it climbs straight
+		# to the real fraction done and never jumps backward. Right side shows "N of M · ~Xs each · ~Ys left".
+		Set-LoopProgress $Index $Total
+		$tp = Get-ThroughputText ($Index - 1) $Total
+		Set-StatusDetail ("$Index of $Total" + $(if ($tp) { " · $tp" } else { '' }))
+	} else {
+		# Unknown total: the self-advancing nudge toward ~93% + a "N done · ~Xs each" readout.
+		if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
+		$script:ProgTarget = $script:ProgTarget + [Math]::Max(1, [int]((93 - $script:ProgTarget) * 0.16))
+		if ($script:ProgTarget -gt 93) { $script:ProgTarget = 93 }
+		$done = $script:TpCount - 1
+		$tp = Get-ThroughputText $done
+		Set-StatusDetail $(if ($done -gt 0) { "$done done" + $(if ($tp) { " · $tp" } else { '' }) } else { '' })
+		$progressBar1.Value = $script:ProgTarget
+	}
 	Update-UiNow $true   # throttled repaint so the status + bar actually move during the loop
 }
 
@@ -605,6 +615,32 @@ function Set-ItemStatus([string]$Text) {
 }
 function Set-StatusDetail([string]$Text) {
 	try { $script:UI.StatusDetail.Text = $Text } catch {}
+}
+
+# Lock a script dialog while a batch runs. Update-UiNow pumps the message loop in the middle of a loop,
+# so without this a SECOND click on the same button (or closing the window) could start a second run
+# inside the first. Disabling the whole window content makes those clicks no-ops; a Closing handler also
+# refuses to close while locked. Always pair with Unlock-ScriptWindow in a finally. The reference is kept
+# in $script:LockedWindow so the global error handler can release it if a run throws.
+$script:LockedWindow = $null
+$script:CloseGuarded = [System.Collections.Generic.HashSet[object]]::new()
+function Lock-ScriptWindow($Window) {
+	$script:LockedWindow = $Window
+	if ($Window) {
+		try { $Window.Content.IsEnabled = $false } catch {}
+		try {
+			# Add a Closing guard once per window (tracked in a set, so we never touch the window's Tag,
+			# which some dialogs use for their result). It refuses to close while that window is locked.
+			if (-not $script:CloseGuarded.Contains($Window)) {
+				[void]$script:CloseGuarded.Add($Window)
+				$Window.Add_Closing({ param($s, $e) if ($script:LockedWindow -eq $s) { $e.Cancel = $true } })
+			}
+		} catch {}
+	}
+}
+function Unlock-ScriptWindow {
+	$w = $script:LockedWindow; $script:LockedWindow = $null
+	if ($w) { try { $w.Content.IsEnabled = $true } catch {} }
 }
 
 # ---- tenant profiles ------------------------------------------------------------

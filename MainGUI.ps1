@@ -1,4 +1,4 @@
-﻿$version = "v3.3.9"
+﻿$version = "v3.3.10"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -46,6 +46,7 @@ $script:Settings = @{
 	blurTenant      = $false
 	recipientSearch = $true
 	bgSearch        = $true
+	rolledBackFrom  = ''   # if set, the version we rolled back FROM (so Check for updates can offer to return)
 }
 
 function Read-AppSettings {
@@ -59,6 +60,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*BlurTenant\s*=\s*(0|1)\s*$') { $script:Settings.blurTenant = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*RecipientSearch\s*=\s*(0|1)\s*$') { $script:Settings.recipientSearch = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*BackgroundSearch\s*=\s*(0|1)\s*$') { $script:Settings.bgSearch = $Matches[1] -eq '1' }
+		elseif ($line -match '^\s*RolledBackFrom\s*=\s*(.*)$') { $script:Settings.rolledBackFrom = $Matches[1].Trim() }
 	}
 }
 
@@ -73,6 +75,7 @@ function Save-AppSettings {
 			BlurTenant   = if ($script:Settings.blurTenant) { '1' } else { '0' }
 			RecipientSearch = if ($script:Settings.recipientSearch) { '1' } else { '0' }
 			BackgroundSearch = if ($script:Settings.bgSearch) { '1' } else { '0' }
+			RolledBackFrom = [string]$script:Settings.rolledBackFrom
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -1524,6 +1527,14 @@ function New-SettingsDialog {
 				<Button x:Name="UpdateBtn" Style="{DynamicResource BtnPrimary}" Content="Check for updates" HorizontalAlignment="Left" MinWidth="150"/>
 				<Button x:Name="RelaunchBtn" Style="{DynamicResource BtnPrimary}" Content="Relaunch now" HorizontalAlignment="Right" MinWidth="130" Visibility="Collapsed"/>
 			</Grid>
+			<Border Height="1" Background="{DynamicResource StrokeSoftBrush}" Margin="0,16,0,0"/>
+			<TextBlock Text="Go back to an earlier version" FontWeight="SemiBold" Margin="0,14,0,0" Foreground="{DynamicResource TextBrush}"/>
+			<TextBlock Text="If a recent update caused a problem, pick an earlier version and reinstall it. You can always return to the newest with Check for updates." Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+			<Grid Margin="0,8,0,0">
+				<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+				<ComboBox x:Name="RollbackCombo" VerticalAlignment="Center" MinHeight="30"/>
+				<Button x:Name="RollbackBtn" Grid.Column="1" Style="{DynamicResource BtnSecondary}" Content="Install" MinWidth="90" Margin="8,0,0,0" IsEnabled="False"/>
+			</Grid>
 		</StackPanel>
 	</Border>
 </StackPanel>
@@ -1543,6 +1554,38 @@ function Complete-Relaunch {
 	} catch {}
 	[System.Environment]::Exit(0)
 }
+# Fetch recent release version tags from GitHub, newest first (e.g. 'v3.3.8'). Returns @() on failure.
+function Get-ReleaseTags {
+	try {
+		try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+		$rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/Avromiep/Script-Package-Studio/releases?per_page=12' -Headers @{ 'User-Agent' = 'Script-Package-Studio'; 'Accept' = 'application/vnd.github+json' }
+		return @($rel | ForEach-Object { "$($_.tag_name)".Trim() } | Where-Object { $_ })
+	} catch { return @() }
+}
+
+# Download a specific version's installer and run it silently into $AppRoot. $Set is the status-setter
+# scriptblock, $Prog the progress bar. Returns $true on success. Shared by Check-for-updates and rollback.
+function Install-AppVersion([string]$Tag, $Set, $Prog, [string]$AppRoot) {
+	& $Set "Downloading $Tag..."; try { $Prog.Value = 45 } catch {}
+	$tmp = "$env:TEMP\Script-Package-Studio-Setup.exe"
+	Remove-Item -Path $tmp -Force -ErrorAction Ignore
+	$url = "https://github.com/Avromiep/Script-Package-Studio/releases/download/$Tag/Script-Package-Studio-Setup.exe"
+	Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+	if (-not (Test-Path $tmp)) { & $Set 'Download failed - opening the releases page.'; Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/tag/$Tag"; return $false }
+	# Integrity guard: a real Windows installer starts with 'MZ' and is a sane size (not a truncated/HTML file).
+	$looksOk = $false
+	try { if ((Get-Item $tmp).Length -gt 500KB) { $fsx = [System.IO.File]::OpenRead($tmp); $hdr = New-Object byte[] 2; [void]$fsx.Read($hdr, 0, 2); $fsx.Close(); $looksOk = ($hdr[0] -eq 0x4D -and $hdr[1] -eq 0x5A) } } catch { $looksOk = $false }
+	if (-not $looksOk) { & $Set "That download didn't look like a valid installer - opening the releases page instead."; Remove-Item $tmp -Force -ErrorAction Ignore; Start-Process "https://github.com/Avromiep/Script-Package-Studio/releases/tag/$Tag"; return $false }
+	try { $Prog.Value = 75 } catch {}; & $Set "Installing $Tag..."
+	Start-Process $tmp -ArgumentList '/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$AppRoot`"" -Wait
+	try { $Prog.Value = 100 } catch {}
+	return $true
+}
+
+# Persist the "rolled back from" marker. A FUNCTION (not a bare $script: in the Settings click handlers,
+# which are .GetNewClosure() scopes where $script:Settings reads as $null). Pass '' to clear it.
+function Set-RolledBack([string]$FromVersion) { $script:Settings.rolledBackFrom = $FromVersion; Save-AppSettings }
+
 function Show-Settings {
 	$win = New-SettingsDialog
 	$rc = $win.FindName('RecipientSearchCheck')
@@ -1556,14 +1599,45 @@ function Show-Settings {
 
 	$status = $win.FindName('UpdateStatus'); $prog = $win.FindName('UpdateProg')
 	$updateBtn = $win.FindName('UpdateBtn'); $relaunchBtn = $win.FindName('RelaunchBtn')
-	$status.Text = "You're on $version."
+	$rollCombo = $win.FindName('RollbackCombo'); $rollBtn = $win.FindName('RollbackBtn')
 	# GetNewClosure() gives the click handler its own module scope, where $script:*
 	# and inherited script vars read as $null. Snapshot them into locals first so the
 	# closure captures real values (otherwise Split-Path $script:SrcDir got $null).
 	$curVersion = $version
+	$rolledBackFrom = [string]$script:Settings.rolledBackFrom
 	$appRoot = Split-Path $script:SrcDir -Parent
 	if (-not $appRoot) { $appRoot = $PSScriptRoot }
 	$setStatus = { param($t) $status.Text = $t; try { $status.Dispatcher.Invoke([action] {}, [System.Windows.Threading.DispatcherPriority]::Render) } catch {} }.GetNewClosure()
+	# If we rolled back earlier, make that obvious and nudge toward Check for updates.
+	$status.Text = if ($rolledBackFrom -and $rolledBackFrom -ne $curVersion) { "You're on $curVersion - you went back from $rolledBackFrom. Click Check for updates to return to the newest." } else { "You're on $curVersion." }
+
+	# Populate the rollback list after the dialog shows (one quick GitHub call), newest first, excluding
+	# the version you're already on. Lazy so opening Settings doesn't wait on the network.
+	$rollCombo.Items.Clear(); [void]$rollCombo.Items.Add('Loading recent versions...'); $rollCombo.SelectedIndex = 0
+	$win.Add_ContentRendered({
+		if ($rollCombo.Tag -eq 'loaded') { return }
+		$rollCombo.Tag = 'loaded'
+		$tags = @(@(Get-ReleaseTags) | Where-Object { $_ -and $_ -ne $curVersion } | Select-Object -First 6)
+		$rollCombo.Items.Clear()
+		if ($tags.Count) { foreach ($t in $tags) { [void]$rollCombo.Items.Add($t) }; $rollCombo.SelectedIndex = -1 }
+		else { [void]$rollCombo.Items.Add("(couldn't load the version list)"); $rollCombo.SelectedIndex = 0 }
+	}.GetNewClosure())
+	$rollCombo.Add_SelectionChanged({ $rollBtn.IsEnabled = ("$($rollCombo.SelectedItem)" -match '^v\d') }.GetNewClosure())
+
+	$rollBtn.Add_Click({
+		$sel = "$($rollCombo.SelectedItem)".Trim()
+		if ($sel -notmatch '^v\d') { return }
+		if (-not (Confirm-YesNo 'Go back to an earlier version' "Reinstall $sel? This replaces the current version ($curVersion). You can return to the newest later with Check for updates.")) { return }
+		$rollBtn.IsEnabled = $false; $updateBtn.IsEnabled = $false; $rollCombo.IsEnabled = $false
+		$prog.Visibility = 'Visible'; $prog.Value = 10
+		try {
+			if (Install-AppVersion $sel $setStatus $prog $appRoot) {
+				Set-RolledBack $curVersion   # remember what we came from, so Check for updates can offer to return
+				& $setStatus "$sel installed. Click Relaunch now to finish."
+				$updateBtn.Visibility = 'Collapsed'; $rollBtn.Visibility = 'Collapsed'; $relaunchBtn.Visibility = 'Visible'
+			} else { $prog.Visibility = 'Collapsed'; $rollBtn.IsEnabled = $true; $updateBtn.IsEnabled = $true; $rollCombo.IsEnabled = $true }
+		} catch { & $setStatus "Couldn't install $sel`: $($_.Exception.Message)"; $prog.Visibility = 'Collapsed'; $rollBtn.IsEnabled = $true; $updateBtn.IsEnabled = $true; $rollCombo.IsEnabled = $true }
+	}.GetNewClosure())
 
 	$updateBtn.Add_Click({
 		$updateBtn.IsEnabled = $false
@@ -1576,7 +1650,14 @@ function Show-Settings {
 			$remote = if ($tag) { ($tag -split 'tag/')[1] } else { '' }
 			$prog.Value = 30
 			if (-not $remote) { & $setStatus "Couldn't check for updates - try again later."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; return }
-			if ($remote -eq $curVersion) { & $setStatus "You're on the latest version ($curVersion)."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; $updateBtn.Content = 'Check for updates'; return }
+			if ($remote -eq $curVersion) { Set-RolledBack ''; & $setStatus "You're on the latest version ($curVersion)."; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true; $updateBtn.Content = 'Check for updates'; return }
+			# If we got here after a rollback, confirm before jumping back to the newest (that's the whole
+			# point of rolling back - don't silently undo it).
+			if ($rolledBackFrom) {
+				$prog.Visibility = 'Collapsed'
+				if (-not (Confirm-YesNo 'Update available' "You went back from $rolledBackFrom earlier. Update to the newest version ($remote) now?")) { & $setStatus "Staying on $curVersion. Use Check for updates whenever you're ready."; $updateBtn.IsEnabled = $true; return }
+				$prog.Visibility = 'Visible'
+			}
 			& $setStatus "Downloading $remote..."; $prog.Value = 50
 			$tmp = "$env:TEMP\Script-Package-Studio-Setup.exe"
 			Remove-Item -Path $tmp -Force -ErrorAction Ignore
@@ -1593,6 +1674,7 @@ function Show-Settings {
 			# from prompting or restarting Windows while we handle the relaunch ourselves.
 			Start-Process $tmp -ArgumentList '/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$appRoot`"" -Wait
 			$prog.Value = 100
+			Set-RolledBack ''   # back on the newest - clear the rollback marker
 			& $setStatus "Update to $remote installed. Click Relaunch now to finish."
 			$updateBtn.Visibility = 'Collapsed'; $relaunchBtn.Visibility = 'Visible'
 		} catch { & $setStatus "Update failed: $($_.Exception.Message)"; $prog.Visibility = 'Collapsed'; $updateBtn.IsEnabled = $true }
@@ -1867,7 +1949,7 @@ if ($env:SP_SHOT) {
 		'dlg-remove-groups'      = { New-RemoveGroupsDialog }
 		'dlg-term-autoreply'     = { New-TermAutoReplyDialog 'user@contoso.com' }
 		'dlg-set-license'        = { New-SetLicenseDialog }
-		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('BgSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $w }
+		'dlg-settings'           = { $w = New-SettingsDialog; $w.FindName('RecipientSearchCheck').IsChecked = $true; $w.FindName('BgSearchCheck').IsChecked = $true; $w.FindName('UpdateStatus').Text = "You're on $version."; $rc = $w.FindName('RollbackCombo'); foreach ($t in @('v3.3.8','v3.3.7','v3.3.6','v3.3.5','v3.3.4','v3.3.3')) { [void]$rc.Items.Add($t) }; $rc.SelectedIndex = 0; $w.FindName('RollbackBtn').IsEnabled = $true; $w }
 		'dlg-notice-blur'        = { New-NoticeDialog 'Add complete' "allstaff@contoso.com (distribution list):`n  added (2): john@contoso.com, jane@contoso.com`n  already there (1): bob@contoso.com" 'Info' }
 		'dlg-ac-empty'           = {
 			$w = New-StyledDialog -Title 'Type a name OR an email' -Icon '&#xE721;' -BodyXaml @'

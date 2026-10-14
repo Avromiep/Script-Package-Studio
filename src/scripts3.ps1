@@ -50,7 +50,7 @@ function Remove-DistributionListMember {
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
-	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' })
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' -TargetKind 'DistributionList' })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0
@@ -232,7 +232,7 @@ function Remove-UnifiedGroupMember {
 	$scriptForm8.FindName('ActionBtn').Add_Click({ OnRemoveMemberButtonClick })
 	$scriptForm8.FindName('OpenTemplateBtn').Add_Click({ OnOpenTemplateButtonClick })
 	$scriptForm8.FindName('BulkBtn').Add_Click({ OnRemoveBulkMembersButtonClick })
-	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' })
+	$scriptForm8.FindName('PasteBtn').Add_Click({ Show-PasteMembersDialog -TargetPrefill $groupInputBox.Text -Action 'remove' -TargetKind 'UnifiedGroup' })
 
 	Write-Host "Loaded ScriptForm8."
 	$progressBar1.Value = 0

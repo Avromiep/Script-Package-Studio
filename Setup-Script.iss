@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Script-Package Studio"
-#define MyAppVersion "3.3.10"
+#define MyAppVersion "3.3.11"
 #define MyAppPublisher "Avromiep"
 #define MyAppExeName "Script-Package-Studio.bat"
 #define DesktopIconName "Script-Package Studio"
@@ -37,7 +37,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: ".\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\MainGUI.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: ".\Templates\*"; DestDir: "{app}\Templates"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: ".\Templates\*"; DestDir: "{app}\Templates"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: ".\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\Images\*"; DestDir: "{app}\Images"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: ".\Fonts\*"; DestDir: "{app}\Fonts"; Flags: ignoreversion recursesubdirs createallsubdirs

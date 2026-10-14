@@ -692,14 +692,13 @@ function Add-AuthenticationPhoneMethod {
 	function OnAddBulkPhoneButtonClick {
 		Write-Host "AddBulkPhone button clicked."
 		$progressBar1.Value = 10
-		Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | ForEach-Object {
-			Step-Progress "Adding phone for $($_.Email)..."
-			$progressBar1.Value = 20
+		$rows = @(Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | Where-Object { "$($_.Email)".Trim() })
+		$tot = $rows.Count; $i = 0
+		$rows | ForEach-Object {
+			$i++; Step-Progress "Adding phone for $($_.Email)..." $i $tot
 			$user = $_.Email
 			$phoneNumber = Format-PhoneForMfa $_.Phone   # same normalization as the single add
-			$progressBar1.Value = 40
 			New-MgUserAuthenticationPhoneMethod -UserId $user -phoneType "mobile" -phoneNumber $phoneNumber
-			$progressBar1.Value = 80
 			Write-Host "Added $phoneNumber to $user."
 		}
 		CheckForErrors
@@ -1193,18 +1192,22 @@ function Add-Contacts {
         $failed  = [System.Collections.Generic.List[string]]::new()
         if ($addContactsMode.Value -eq 0) {
             # Contacts bulk: CSV with DisplayName (optional) + EmailAddress.
-            Import-Csv ".\Templates\Add-Contacts.csv" | ForEach-Object {
-                Step-Progress "Adding contact $($_.EmailAddress)..."
-                $em = "$($_.EmailAddress)".Trim(); if (-not $em) { return }
+            $rows = @(Import-Csv ".\Templates\Add-Contacts.csv" | Where-Object { "$($_.EmailAddress)".Trim() })
+            $tot = $rows.Count; $i = 0
+            $rows | ForEach-Object {
+                $i++; Step-Progress "Adding contact $($_.EmailAddress)..." $i $tot
+                $em = "$($_.EmailAddress)".Trim()
                 try { New-OneMailContact $_.EmailAddress $_.DisplayName; $created.Add($em) }
                 catch { Write-Host "Failed on $em`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$em - $($_.Exception.Message)") }
             }
             Show-AccountResults 'Add contacts' $created $failed -DoneWord 'Added' -FailWord 'Failed'
         } elseif ($addContactsMode.Value -eq 1) {
             # Guest bulk: a plain list of one email address per line.
-            Get-Content ".\Templates\Add-Contacts.txt" | ForEach-Object {
-                Step-Progress "Inviting $(("$_").Trim())..."
-                $e = "$_".Trim(); if (-not $e) { return }
+            $lines = @(Get-Content ".\Templates\Add-Contacts.txt" | Where-Object { "$_".Trim() })
+            $tot = $lines.Count; $i = 0
+            $lines | ForEach-Object {
+                $i++; Step-Progress "Inviting $(("$_").Trim())..." $i $tot
+                $e = "$_".Trim()
                 try { Invoke-GuestInvite $e ''; $created.Add($e) }
                 catch { Write-Host "Failed on $e`: $($_.Exception.Message)" -ForegroundColor Red; $failed.Add("$e - $($_.Exception.Message)") }
             }
@@ -1424,8 +1427,9 @@ function Add-EmailAlias {
 			$aliasName = $splitAlias[0]; $aliasDomain = $splitAlias[1]
 			$created = [System.Collections.Generic.List[string]]::new()
 			$failed  = [System.Collections.Generic.List[string]]::new()
-			for ($i = 1; $i -le $numericUpDown1.Value; $i++) {
-				Step-Progress "Adding alias $aliasName$i@$aliasDomain..."
+			$tot = [int]$numericUpDown1.Value
+			for ($i = 1; $i -le $tot; $i++) {
+				Step-Progress "Adding alias $aliasName$i@$aliasDomain..." $i $tot
 				$completeAlias = "$aliasName$i@$aliasDomain"
 				$r = Add-OneAlias $mailbox $completeAlias $false $accepted
 				if ($r.Status -eq 'done') { $created.Add($completeAlias) }
@@ -1460,9 +1464,10 @@ function Add-EmailAlias {
 		$preview = ($previewCheckBox.IsChecked -eq $true)
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
-		Import-Csv ".\Templates\Add-EmailAlias.csv" | ForEach-Object {
-			Step-Progress "Adding alias $($_.Alias) to $($_.Mailbox)..."
-			$progressBar1.Value = 40
+		$rows = @(Import-Csv ".\Templates\Add-EmailAlias.csv" | Where-Object { "$($_.Mailbox)".Trim() -and "$($_.Alias)".Trim() })
+		$tot = $rows.Count; $i = 0
+		$rows | ForEach-Object {
+			$i++; Step-Progress "Adding alias $($_.Alias) to $($_.Mailbox)..." $i $tot
 			$mailbox = "$($_.Mailbox)".Trim(); $alias = "$($_.Alias)".Trim()
 			$label = "$alias -> $mailbox"
 			if ($preview) {
@@ -2042,11 +2047,11 @@ function Add-TrustedSender {
 	function OnTrustedSenderButtonClick {
 		$trustedSender = $trustedSenderInputBox.Text
 		$progressBar1.Value = 10
-		Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited | ForEach-Object {
-			Step-Progress "Configuring $($_.Name)..."
-			$progressBar1.Value = 30
+			$mbxs = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited)
+			$tot = $mbxs.Count; $i = 0
+			$mbxs | ForEach-Object {
+				$i++; Step-Progress "Configuring $($_.Name)..." $i $tot
 			Set-MailboxJunkEmailConfiguration $_.Name -TrustedSendersAndDomains @{Add=$trustedSender}
-			$progressBar1.Value = 80
 			Write-Host "Configured $($_.Name)"
 		}
 		Write-Host "Finished configuring mailboxes."

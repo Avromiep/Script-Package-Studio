@@ -78,14 +78,14 @@ function Remove-EmailAlias {
 				$aliasName = $splitAlias[0]
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
+					$tot = [int]$numericUpDown1.Value + 1
 				for ($i = 0; $i -le $numericUpDown1.Value; $i++) {
-					Step-Progress "Removing alias $aliasName$i@$aliasDomain..."
+						Step-Progress "Removing alias $aliasName$i@$aliasDomain..." ($i + 1) $tot
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
 					try {
 						Set-Mailbox $mailbox -EmailAddresses @{Remove= $completeAlias} -ErrorAction Stop
 						Write-Host "Removed $completeAlias from $mailbox."
 					} catch { Write-Host "  $completeAlias wasn't present - skipped." -ForegroundColor DarkGray }
-					$progressBar1.Value = 90
 				}
 				$progressBar1.Value = 90
 				CheckForErrors
@@ -118,15 +118,14 @@ function Remove-EmailAlias {
 		$progressBar1.Value = 0
 	}
 	function OnRemoveAliasBulkButtonClick {
-		Import-Csv ".\Templates\Remove-EmailAlias.csv" | ForEach-Object {
-			Step-Progress "Removing alias $($_.Alias) from $($_.Mailbox)..."
-			$progressBar1.Value = 20
+		$rows = @(Import-Csv ".\Templates\Remove-EmailAlias.csv" | Where-Object { "$($_.Mailbox)".Trim() -and "$($_.Alias)".Trim() })
+		$tot = $rows.Count; $i = 0
+		$rows | ForEach-Object {
+			$i++; Step-Progress "Removing alias $($_.Alias) from $($_.Mailbox)..." $i $tot
 			$mailbox = $_.Mailbox
 			$alias = $_.Alias
-			$progressBar1.Value = 50
 			Set-Mailbox $mailbox -EmailAddresses @{Remove= $alias}
 			Write-Host "Removed $alias from $mailbox."
-			$progressBar1.Value = 80
 		}
 		CheckForErrors
 		OperationComplete
@@ -297,7 +296,7 @@ function Remove-UserFromAllGroups {
 		$objs = @()
 		try { $objs = Get-MgUserMemberOf -UserId $email -All -ErrorAction Stop } catch { $failed.Add("$label memberOf lookup - $($_.Exception.Message)"); return }
 		foreach ($o in $objs) {
-			Step-Progress   # keep the bar climbing per item
+			if (-not $label) { Step-Progress }   # single op climbs the bar per item; in bulk the outer loop owns the accurate fill
 			$ap = $o.AdditionalProperties
 			if ("$($ap['@odata.type'])" -notlike '*group') { continue }   # skip directory roles / admin units
 			$name = "$($ap['displayName'])"; $gt = @($ap['groupTypes']); $mail = [bool]$ap['mailEnabled']; $sec = [bool]$ap['securityEnabled']; $gmail = "$($ap['mail'])"
@@ -355,8 +354,10 @@ function Remove-UserFromAllGroups {
 		$done = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
 		$people = @($rows | Where-Object { "$($_.Email)".Trim() })
 		Lock-ScriptWindow $form
+		$tot = $people.Count; $i = 0
 		foreach ($row in $people) {
 			$email = "$($row.Email)".Trim()
+			$i++; Step-Progress '' $i $tot
 			Write-Host "Processing $email..."
 			Remove-CloudGroups $email $types $preview $done $failed "${email}:"
 		}
@@ -665,15 +666,16 @@ function Set-ACLPermissions {
 			}
 			$continuousProgressBar.Value = 50
 			Reset-Throughput
-			Get-Content ".\Templates\Set-ACLPermissions.txt" | ForEach-Object {
-				Step-Progress "Setting permissions on $_..."
-				$continuousProgressBar.Value = 60
+			$paths = @(Get-Content ".\Templates\Set-ACLPermissions.txt" | Where-Object { "$_".Trim() })
+			$tot = $paths.Count; $i = 0
+			$paths | ForEach-Object {
+				$i++; Step-Progress "Setting permissions on $_..." $i $tot
+				$continuousProgressBar.Value = 50 + [int](45 * $i / $tot)
 				$aclPath = $_
 				$acl = Get-Acl $aclPath
 				$rule = New-Object System.Security.AccessControl.FileSystemAccessRule("$identity","$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
 				$acl.AddAccessRule($rule)
 				Set-Acl $aclPath $acl
-				$continuousProgressBar.Value = 80
 			}
 			$continuousProgressBar.Value = 100
 			$continuousProgressBar.Value = 0

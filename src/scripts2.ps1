@@ -566,14 +566,14 @@ function Convert-UnifiedGroupToDistributionGroup {
 		Write-Host "Create bulk button clicked."
 		$progressBar1.Value = 2
 		Reset-Throughput
-		Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | ForEach-Object {
-			Step-Progress "Converting $_..."
-			$progressBar1.Value = 5
+			$groups = @(Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | Where-Object { "$_".Trim() })
+			$tot = $groups.Count; $i = 0
+			$groups | ForEach-Object {
+				$i++; Step-Progress "Converting $_..." $i $tot
 			$OldGroupName = $_ -Split "@"
 			$DistGroupName = $OldGroupName[0] + "-New"
 			New-DistributionGroup -Name $DistGroupName
 			Write-Host "Created $DistGroupName"
-			$progressBar1.Value = 10
 			$M365GroupMembers = Get-UnifiedGroup -Identity $_ | Get-UnifiedGroupLinks -LinkType Member | Select-Object -expandproperty PrimarySmtpAddress
 			Foreach ($member in $M365GroupMembers) {
 				Write-Host "Adding $member..."
@@ -772,14 +772,15 @@ function New-ADAccounts {
 		Write-Host "Importing template csv..."
 		$progressBar1.Value = 10
 		$preview = ($previewCheck.IsChecked -eq $true)
-		$csvFile = Import-Csv -Path ".\Templates\New-ADAccounts.csv"
+		$csvFile = @(Import-Csv -Path ".\Templates\New-ADAccounts.csv" | Where-Object { "$($_.SamAccountName)".Trim() })
 		$progressBar1.Value = 20
 		CheckForErrors
 
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
+		$tot = $csvFile.Count; $i = 0
 		foreach ($row in $csvFile) {
-			Step-Progress "Creating $($row.SamAccountName)..."
+			$i++; Step-Progress "Creating $($row.SamAccountName)..." $i $tot
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -801,13 +802,11 @@ function New-ADAccounts {
 			$displayName = $row.GivenName + " " + $row.Surname
 			$userPrincipalName = $row.SamAccountName + "@$forest"
 			$samAccountName = $row.SamAccountName
-			$progressBar1.Value = 30
 
 			Write-Host "Creating new user $samAccountName..."
 			Assert-ADUserNotExists $samAccountName $userPrincipalName
 			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $samAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
-			$progressBar1.Value = 40
 
 			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName)'"
 
@@ -817,7 +816,6 @@ function New-ADAccounts {
 			Set-ADUser -Identity $row.SamAccountName -ScriptPath $sourceUser.ScriptPath
 			Set-ADUser -Identity $row.SamAccountName -PasswordNeverExpires $sourceUser.PasswordNeverExpires
 			Set-ADUser -Identity $row.SamAccountName -CannotChangePassword $sourceUser.CannotChangePassword
-			$progressBar1.Value = 50
 
 			Write-Host "Checking if source user $($sourceUser.SamAccountName) has a Home Directory..."
 			# Check if the source user has a HomeDirectory
@@ -841,7 +839,6 @@ function New-ADAccounts {
 				$rule = New-Object System.Security.AccessControl.FileSystemAccessRule("$identity","$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
 				$acl.AddAccessRule($rule)
 				Set-Acl $aclPath $acl
-				$progressBar1.Value = 60
 
 				# Add HomeDirectory and HomeDrive
 				Set-ADUser -Identity $row.SamAccountName -HomeDrive $sourceUser.HomeDrive
@@ -849,7 +846,6 @@ function New-ADAccounts {
 			} else {
 				Write-Host "Source user $($sourceUser.SamAccountName) does not have a HomeDirectory. Skipping HomeDirectory creation for the new user $($newUser.SamAccountName)."
 			}
-			$progressBar1.Value = 70
 
 			Write-Host "Copying group membership from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy security group memberships
@@ -988,13 +984,14 @@ function New-ADAndEmailAccounts {
 		Write-Host "Importing template csv..."
 		$progressBar1.Value = 10
 		$preview = ($previewCheck.IsChecked -eq $true)
-		$csvFile = Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv"
+		$csvFile = @(Import-Csv -Path ".\Templates\New-ADAndEmailAccounts.csv" | Where-Object { "$($_.SamAccountName)".Trim() })
 		$progressBar1.Value = 30
 		CheckForErrors
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
+		$tot = $csvFile.Count; $i = 0
 		foreach ($row in $csvFile) {
-			Step-Progress "Creating $($row.SamAccountName)..."
+			$i++; Step-Progress "Creating $($row.SamAccountName)..." $i $tot
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
 			try {
 			Write-Host "Gathering info..."
@@ -1017,14 +1014,12 @@ function New-ADAndEmailAccounts {
 			$samAccountName = $row.SamAccountName
 			$userPrincipalName = $row.SamAccountName + "@$forest"
 			$emailAddress = $row.SamAccountName + "@" + ($emailDomainInput.Text.Trim())
-			$progressBar1.Value = 30
 
 			Write-Host "Creating new user $samAccountName..."
 			Assert-ADUserNotExists $row.SamAccountName $userPrincipalName
 			Assert-MgUserNotExists $emailAddress
 			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $row.SamAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
-			$progressBar1.Value = 40
 
 			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName)'"
 
@@ -1034,7 +1029,6 @@ function New-ADAndEmailAccounts {
 			Set-ADUser -Identity $row.SamAccountName -ScriptPath $sourceUser.ScriptPath
 			Set-ADUser -Identity $row.SamAccountName -PasswordNeverExpires $sourceUser.PasswordNeverExpires
 			Set-ADUser -Identity $row.SamAccountName -CannotChangePassword $sourceUser.CannotChangePassword
-			$progressBar1.Value = 50
 
 			Write-Host "Checking if source user $($sourceUser.SamAccountName) has a Home Directory..."
 			# Check if the source user has a HomeDirectory
@@ -1058,7 +1052,6 @@ function New-ADAndEmailAccounts {
 				$rule = New-Object System.Security.AccessControl.FileSystemAccessRule("$identity","$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
 				$acl.AddAccessRule($rule)
 				Set-Acl $aclPath $acl
-				$progressBar1.Value = 60
 
 				# Add HomeDirectory and HomeDrive
 				Set-ADUser -Identity $row.SamAccountName -HomeDrive $sourceUser.HomeDrive
@@ -1066,7 +1059,6 @@ function New-ADAndEmailAccounts {
 			} else {
 				Write-Host "Source user $($sourceUser.SamAccountName) does not have a HomeDirectory. Skipping HomeDirectory creation for the new user $($newUser.SamAccountName)."
 			}
-			$progressBar1.Value = 70
 
 			Write-Host "Copying group membership from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy security group memberships
@@ -1080,7 +1072,6 @@ function New-ADAndEmailAccounts {
 					Add-ADGroupMember -Identity $group.DistinguishedName -Members $row.SamAccountName
 				}
 			}
-			$progressBar1.Value = 80
 
 			# Create mailbox
 			$passwordProfile = @{
@@ -1089,7 +1080,6 @@ function New-ADAndEmailAccounts {
 			}
 
 			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $row.GivenName -Surname $row.Surname -UserPrincipalName $emailAddress -MailNickname $row.SamAccountName -UsageLocation $(if ("$($row.UsageLocation)".Trim()) { "$($row.UsageLocation)".Trim() } else { 'US' })
-			$progressBar1.Value = 90
 
 			# Set license
 			switch ($licenseComboBox.Text) {
@@ -1195,11 +1185,12 @@ function New-EmailAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$preview = ($previewCheck.IsChecked -eq $true)
-		Import-Csv ".\Templates\New-EmailAccounts.csv" | ForEach-Object {
-			Step-Progress "Creating $($_.EmailAddress)..."
+		$rows = @(Import-Csv ".\Templates\New-EmailAccounts.csv" | Where-Object { "$($_.EmailAddress)".Trim() })
+		$tot = $rows.Count; $i = 0
+		$rows | ForEach-Object {
+			$i++; Step-Progress "Creating $($_.EmailAddress)..." $i $tot
 			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
 			try {
-			$progressBar1.Value = 10
 			$firstName = $_.FirstName
 			$lastName = $_.LastName
 			$displayName = $firstName + " " + $lastName
@@ -1213,12 +1204,10 @@ function New-EmailAccounts {
 				Password = $password
 			}
 
-			$progressBar1.Value = 30
 
 			Assert-MgUserNotExists $emailAddress
 			if ($preview) { $created.Add($who); return }
 			New-MgUser -AccountEnabled -PasswordProfile $passwordProfile -DisplayName $displayName -GivenName $firstName -Surname $lastName -UserPrincipalName $emailAddress -MailNickname $mailNickname -UsageLocation $(if ("$($_.UsageLocation)".Trim()) { "$($_.UsageLocation)".Trim() } else { 'US' })
-			$progressBar1.Value = 60
 
 			# Set license
 			switch ($licenseComboBox.Text) {
@@ -1252,7 +1241,6 @@ function New-EmailAccounts {
 				}
 				Default { Write-Host "No license selected or invalid entry." }
 			}
-			$progressBar1.Value = 90
 			$created.Add($who)
 			} catch {
 				$msg = "$($_.Exception.Message)".Trim()

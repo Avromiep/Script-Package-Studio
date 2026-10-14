@@ -402,23 +402,15 @@ function New-PasteMembersDialog {
 		if ($members.Count -eq 0) { Show-Notice 'Nothing to do' "No people to $verbLow - paste some text with email addresses at the top." 'Warn'; return }
 		if ($targets.Count -eq 0) { Show-Notice 'Nothing to do' 'Add at least one target (distribution list, shared mailbox, or Teams / M365 group) at the bottom.' 'Warn'; return }
 		# Swap guard: the top box should hold PEOPLE; the bottom box should hold the lists / groups /
-		# mailboxes they go into. If a "person" is really a list/group, or a "target" is a regular user
-		# mailbox, the boxes were probably filled the wrong way round - ask before running anything.
+		# mailboxes they go into. If a "person" is really a list/group, the boxes were probably filled
+		# the wrong way round - ask before running anything.
 		$swapPeople = [System.Collections.Generic.List[string]]::new()
 		foreach ($sm in @($members | Select-Object -First 25)) {   # cap the lookups
 			$smc = Get-RecipientCategory $sm
 			if ($smc -eq 'DistributionList' -or $smc -eq 'UnifiedGroup') { [void]$swapPeople.Add($sm) }
 		}
-		$swapTargets = [System.Collections.Generic.List[string]]::new()
-		foreach ($stg in $targets) {
-			[void](Get-RecipientCategory $stg)
-			if ((Get-LastRecipientRaw) -match 'UserMailbox\s+UserMailbox') { [void]$swapTargets.Add($stg) }   # a regular user mailbox, not Shared/Room/etc.
-		}
-		if ($swapPeople.Count -or $swapTargets.Count) {
-			$swapParts = @()
-			if ($swapPeople.Count) { $swapParts += "$($swapPeople -join ', ') in the PEOPLE box $(if ($swapPeople.Count -eq 1) { 'is a list/group' } else { 'are lists/groups' })" }
-			if ($swapTargets.Count) { $swapParts += "$($swapTargets -join ', ') in the WHERE box $(if ($swapTargets.Count -eq 1) { 'is a regular user' } else { 'are regular users' })" }
-			$swapMsg = "These look swapped: " + ($swapParts -join ', and ') + ".`n`nDid you mean to put them in the other box?`n`nYes = go back and fix.  No = continue anyway."
+		if ($swapPeople.Count) {
+			$swapMsg = "These look swapped: $($swapPeople -join ', ') in the PEOPLE box are lists/groups. Did you mean to put them in the other box? Yes = go back and fix, No = continue anyway."
 			if (Confirm-YesNo 'These look swapped' $swapMsg '&#xEA88;') { return }
 		}
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }

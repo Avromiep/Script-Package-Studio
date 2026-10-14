@@ -413,7 +413,7 @@ function New-PasteMembersDialog {
 		if ($swapPeople.Count) {
 			$shownNames = if ($swapPeople.Count -gt 10) { (($swapPeople | Select-Object -First 10) -join ', ') + ", ...and $($swapPeople.Count - 10) more" } else { $swapPeople -join ', ' }
 			$swapMsg = "These look swapped: $shownNames in the PEOPLE box are lists/groups. Did you mean to put them in the other box? Yes = go back and fix, No = continue anyway."
-			if (Confirm-YesNo 'These look swapped' $swapMsg '&#xEA88;') { return }
+			if (Confirm-YesNo 'These look swapped' $swapMsg '&#xEA88;') { Set-ItemStatus 'Ready'; return }
 		}
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$lines = [System.Collections.Generic.List[string]]::new()

@@ -311,7 +311,7 @@ function New-PasteMembersDialog {
 	$kindText = switch ($TargetKind) {
 		'DistributionList' { 'distribution list(s)' }
 		'UnifiedGroup'     { 'Teams / M365 group(s)' }
-		'Mailbox'          { 'shared mailbox(es) (gives Full Access + Send As)' }
+		'Mailbox'          { if ($isRemove) { 'shared mailbox(es) (removes Full Access + Send As)' } else { 'shared mailbox(es) (gives Full Access + Send As)' } }
 		default            { 'distribution list, Teams / M365 group or shared mailbox' }
 	}
 	$tgtLabel = "STEP 2 - ${step2Verb}: paste the $kindText - you can mix types."
@@ -405,12 +405,14 @@ function New-PasteMembersDialog {
 		# mailboxes they go into. If a "person" is really a list/group, the boxes were probably filled
 		# the wrong way round - ask before running anything.
 		$swapPeople = [System.Collections.Generic.List[string]]::new()
+		Set-ItemStatus 'Checking boxes...'
 		foreach ($sm in @($members | Select-Object -First 25)) {   # cap the lookups
 			$smc = Get-RecipientCategory $sm
 			if ($smc -eq 'DistributionList' -or $smc -eq 'UnifiedGroup') { [void]$swapPeople.Add($sm) }
 		}
 		if ($swapPeople.Count) {
-			$swapMsg = "These look swapped: $($swapPeople -join ', ') in the PEOPLE box are lists/groups. Did you mean to put them in the other box? Yes = go back and fix, No = continue anyway."
+			$shownNames = if ($swapPeople.Count -gt 10) { (($swapPeople | Select-Object -First 10) -join ', ') + ", ...and $($swapPeople.Count - 10) more" } else { $swapPeople -join ', ' }
+			$swapMsg = "These look swapped: $shownNames in the PEOPLE box are lists/groups. Did you mean to put them in the other box? Yes = go back and fix, No = continue anyway."
 			if (Confirm-YesNo 'These look swapped' $swapMsg '&#xEA88;') { return }
 		}
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }

@@ -1803,7 +1803,7 @@ function Invoke-CopyAccessDialog {
         if (-not ($o.Mailbox -or $o.Dl -or $o.Unified -or $o.Security)) { Show-Notice 'Nothing selected' 'Tick at least one kind of access to look for.' 'Warn'; return $null }
         return @{ Src = $src; Tgt = $tgt; Opts = $o }
     }
-    $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 90; $tp = Get-ThroughputText $done $total; if ($tp) { $status.Text = "Scanning access... $done of $total · $tp" } }
+    $scanProgress = { param($done, $total) Set-LoopProgress $done $total 12 90; $tp = Get-ThroughputText $done $total; $status.Text = "Scanning access... $done of $total" + $(if ($tp) { " · $tp" } else { '' }); Update-UiNow $true }
 
     function OnLoadClick {
         $v = Get-Validated; if (-not $v) { return }
@@ -1843,7 +1843,7 @@ function Invoke-CopyAccessDialog {
         }
         Write-Host "Copying $(@($chosen).Count) selected item(s) to $($v.Tgt)..." -ForegroundColor Cyan
         $progressBar1.Value = 12
-        $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98; $tp = Get-ThroughputText $done $total2; if ($tp) { $status.Text = "Copying... $done of $total2 · $tp" } }
+        $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98; $tp = Get-ThroughputText $done $total2; $status.Text = "Copying... $done of $total2" + $(if ($tp) { " · $tp" } else { '' }); Update-UiNow $true }
         Reset-Throughput
         $res = Copy-UserAccess $v.Tgt $chosen $applyProgress
         $progressBar1.Value = 100

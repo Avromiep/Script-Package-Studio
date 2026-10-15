@@ -264,6 +264,7 @@ function Get-UserMemberships {
 			$tail = if ($tp) { "  ($tp)" } else { '...' }
 			$status.Text = "Looking up $n of $tc`: $email$tail"
 			Set-LoopProgress $n $tc 12 95
+			Update-UiNow $true
 			$inv = $null
 			try { $inv = Get-UserAccessInventory $email $opts $null }
 			catch {

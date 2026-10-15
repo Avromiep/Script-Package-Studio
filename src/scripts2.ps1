@@ -575,11 +575,11 @@ function Convert-UnifiedGroupToDistributionGroup {
 			New-DistributionGroup -Name $DistGroupName
 			Write-Host "Created $DistGroupName"
 			$M365GroupMembers = Get-UnifiedGroup -Identity $_ | Get-UnifiedGroupLinks -LinkType Member | Select-Object -expandproperty PrimarySmtpAddress
+			$mi = 0; $mc = @($M365GroupMembers).Count
 			Foreach ($member in $M365GroupMembers) {
+				$mi++; Set-ItemStatus "Converting $_ - adding $member ($mi of $mc)..."
 				Write-Host "Adding $member..."
-				$progressBar1.Value = 20
 				Add-DistributionGroupMember -Identity $DistGroupName -Member $member
-				$progressBar1.Value = 80
 			}
 		}
 		Write-Host "Done cycling through text file."
@@ -851,7 +851,7 @@ function New-ADAccounts {
 			# Copy security group memberships
 			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
-				Step-Progress
+				Set-ItemStatus "Copying groups for $($row.SamAccountName): $($group.Name)..."
 				# Check if the new user is already a member of the group
 				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {
@@ -1064,7 +1064,7 @@ function New-ADAndEmailAccounts {
 			# Copy security group memberships
 			$sourceGroups = Get-ADPrincipalGroupMembership -Identity $sourceUser.DistinguishedName
 			foreach ($group in $sourceGroups) {
-				Step-Progress
+				Set-ItemStatus "Copying groups for $($row.SamAccountName): $($group.Name)..."
 				# Check if the new user is already a member of the group
 				$isMember = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive | Where-Object { $_.SamAccountName -eq $row.SamAccountName }
 				if ($null -eq $isMember) {

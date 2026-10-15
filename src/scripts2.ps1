@@ -529,7 +529,7 @@ function Get-ConvPairInfo([string]$From, [string]$To) {
 		return @{
 			Summary = 'Creates a distribution list whose members are the people who can use this shared mailbox today, so email is delivered straight to their own inboxes.'
 			Stays   = @('Everyone with Full Access or Send As becomes a member', 'The email address (when you move it)')
-			Lost    = @('The existing mail, calendar and contacts are NOT copied - they stay in the old renamed mailbox, so export them first if you need them', 'A single shared inbox everyone opens (a distribution list only forwards email)')
+			Lost    = @('The existing mail, calendar and contacts are NOT copied - they stay in the old renamed mailbox, so export them first if you need them', 'A single shared inbox everyone opens (a distribution list only forwards email)', 'People with Send on behalf only')
 		}
 	}
 	if ($From -eq 'distribution list' -and $To -eq 'Microsoft 365 group') {
@@ -543,7 +543,7 @@ function Get-ConvPairInfo([string]$From, [string]$To) {
 		return @{
 			Summary = 'Creates a shared mailbox and gives everyone in this distribution list access to it, so they share one inbox instead of each getting their own copy.'
 			Stays   = @('The members get Full Access (and Send As when you choose it)', 'The email address (when you move it)')
-			Lost    = @('Past emails - a distribution list keeps no copy to move', 'Moderation and delivery restrictions')
+			Lost    = @('Past emails - a distribution list keeps no copy to move', 'Moderation and delivery restrictions', "Contacts and guests in the list (they can't open a mailbox)")
 		}
 	}
 	return $null
@@ -567,92 +567,107 @@ function Get-ConvAdminUpn {
 	return $null
 }
 
-# Move the real email address off the OLD item onto a "...-old" alias and hide it from the
-# address book, so the NEW item can take the real address. Returns a record used to undo this.
-function Move-ConvAddressAway($Rec, [string]$From) {
-	$addr = "$($Rec.PrimarySmtpAddress)"
-	$parts = $addr -split '@', 2
-	$oldAddr = $parts[0] + '-old@' + $parts[1]
-	$display = "$($Rec.DisplayName)"
-	$id = "$($Rec.Identity)"
-	switch ($From) {
-		'Microsoft 365 group' {
-			Set-UnifiedGroup -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
-			Set-UnifiedGroup -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
-			Set-UnifiedGroup -Identity $oldAddr -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
-		}
-		'distribution list' {
-			Set-DistributionGroup -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
-			Set-DistributionGroup -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
-			Set-DistributionGroup -Identity $oldAddr -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
-		}
-		'shared mailbox' {
-			Set-Mailbox -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
-			Set-Mailbox -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
-			Set-Mailbox -Identity $id -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
-		}
-	}
-	return @{ From = $From; Addr = $addr; OldAddr = $oldAddr; Display = $display }
-}
-
-# Undo Move-ConvAddressAway (used when creating the new item fails).
+# Undo Move-ConvAddressAway. Identified by the object's immutable Guid so a half-renamed item is
+# still found. Returns $true only when the original address/name are fully back in place.
 function Restore-ConvAddress($R) {
-	if (-not $R) { return }
+	if (-not $R) { return $true }
 	try {
+		$guid = $R.Guid
 		switch ($R.From) {
 			'Microsoft 365 group' {
-				Set-UnifiedGroup -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
-				Set-UnifiedGroup -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
-				Set-UnifiedGroup -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+				try { Set-UnifiedGroup -Identity $guid -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop } catch {}
+				Set-UnifiedGroup -Identity $guid -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-UnifiedGroup -Identity $guid -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -Alias $R.OrigAlias -ErrorAction Stop
 			}
 			'distribution list' {
-				Set-DistributionGroup -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
-				Set-DistributionGroup -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
-				Set-DistributionGroup -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+				try { Set-DistributionGroup -Identity $guid -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop } catch {}
+				Set-DistributionGroup -Identity $guid -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-DistributionGroup -Identity $guid -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -Name $R.OrigName -Alias $R.OrigAlias -ErrorAction Stop
 			}
 			'shared mailbox' {
-				Set-Mailbox -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
-				Set-Mailbox -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
-				Set-Mailbox -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+				try { Set-Mailbox -Identity $guid -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop } catch {}
+				Set-Mailbox -Identity $guid -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -Name $R.OrigName -ErrorAction Stop
 			}
 		}
 		Write-Host "Put things back the way they were for $($R.Addr)." -ForegroundColor Yellow
+		return $true
 	} catch {
 		Write-Host "Couldn't fully undo the address move for $($R.Addr): $($_.Exception.Message)" -ForegroundColor Red
+		return $false
 	}
 }
 
-# ---- the four conversions -------------------------------------------------
-function Convert-M365ToDistList($Rec, [bool]$MoveAddr) {
+# Move the real email address off the OLD item onto a renamed, hidden "-old" item, so the NEW item
+# can take the real address, name and alias. $RenameBase is the local-part/alias the old item is
+# renamed to. Every step after the first is wrapped: on failure the move is rolled back, then it
+# rethrows (or rethrows a plain "ADDRESS NOT RESTORED" message if the rollback itself failed).
+function Move-ConvAddressAway($Rec, [string]$From, [string]$RenameBase) {
 	$addr = "$($Rec.PrimarySmtpAddress)"
-	$alias = ($addr -split '@')[0]
-	$members = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Members -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
-	$owners  = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Owners -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
-	$restore = $null
-	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'Microsoft 365 group'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr }
-	else { $newName = "$alias-New"; $newAddr = $null }
+	$parts = $addr -split '@', 2
+	$base = if ("$RenameBase".Trim()) { "$RenameBase".Trim() } else { $parts[0] + '-old' }
+	$oldAddr = "$base@$($parts[1])"
+	$display = "$($Rec.DisplayName)"
+	$guid = "$($Rec.ExchangeObjectId)"; if (-not $guid) { $guid = "$($Rec.Guid)" }
+	$record = @{ From = $From; Addr = $addr; OldAddr = $oldAddr; Display = $display; Guid = $guid; OrigName = "$($Rec.Name)"; OrigAlias = "$($Rec.Alias)" }
+	# Step 1 - add the new alias. If this fails nothing has changed, so just let it throw.
+	switch ($From) {
+		'Microsoft 365 group' { Set-UnifiedGroup -Identity $guid -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop }
+		'distribution list'   { Set-DistributionGroup -Identity $guid -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop }
+		'shared mailbox'      { Set-Mailbox -Identity $guid -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop }
+	}
 	try {
-		if ($newAddr) { $new = New-DistributionGroup -Name $newName -PrimarySmtpAddress $newAddr -ErrorAction Stop }
-		else { $new = New-DistributionGroup -Name $newName -ErrorAction Stop }
-	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
-	foreach ($m in $members) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $m -ErrorAction Stop } catch { Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
-	if ($owners.Count) { try { Set-DistributionGroup -Identity $new.Identity -ManagedBy $owners -ErrorAction Stop } catch { Write-Host "  couldn't set owners: $($_.Exception.Message)" -ForegroundColor Yellow } }
+		switch ($From) {
+			'Microsoft 365 group' {
+				Set-UnifiedGroup -Identity $guid -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+				Set-UnifiedGroup -Identity $guid -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -Alias $base -ErrorAction Stop
+			}
+			'distribution list' {
+				Set-DistributionGroup -Identity $guid -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+				Set-DistributionGroup -Identity $guid -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -Name $base -Alias $base -ErrorAction Stop
+			}
+			'shared mailbox' {
+				Set-Mailbox -Identity $guid -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -Name $base -ErrorAction Stop
+			}
+		}
+	} catch {
+		$orig = "$($_.Exception.Message)"
+		$restored = Restore-ConvAddress $record
+		if (-not $restored) { throw "ADDRESS NOT RESTORED - $addr may now be on neither item; check $oldAddr in the admin center." }
+		throw $orig
+	}
+	return $record
 }
 
-function Convert-SharedToDistList($Rec, [bool]$MoveAddr) {
-	$addr = "$($Rec.PrimarySmtpAddress)"
-	$alias = ($addr -split '@')[0]
-	$fa = @(Get-MailboxPermission -Identity $addr -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.User -notlike 'NT AUTHORITY*' -and $_.User -notlike 'S-1-5*' -and $_.AccessRights -contains 'FullAccess' } | Select-Object -ExpandProperty User)
-	$sa = @(Get-RecipientPermission -Identity $addr -ErrorAction Stop | Where-Object { $_.AccessRights -contains 'SendAs' -and $_.Trustee -notlike 'NT AUTHORITY*' } | Select-Object -ExpandProperty Trustee)
-	$people = @(@($fa) + @($sa) | Where-Object { "$_".Trim() } | Select-Object -Unique)
-	$restore = $null
-	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'shared mailbox'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr }
-	else { $newName = "$alias-New"; $newAddr = $null }
+# Create the new item, retrying when Exchange hasn't yet freed the moved address (up to 6 tries,
+# 10 s apart). Only retries errors that mention the address/alias/proxy being in use or the object
+# not being found yet; repaints "Waiting for Exchange to free <address>..." before each wait.
+function Invoke-ConvCreate([scriptblock]$Create, [string]$Address) {
+	for ($try = 1; $try -le 6; $try++) {
+		try { return (& $Create) }
+		catch {
+			$m = "$($_.Exception.Message)"
+			if ($try -lt 6 -and ($m -match 'address|proxy|alias|already|in use|not found|could not be found|couldn''t be found')) {
+				Set-ItemStatus "Waiting for Exchange to free $Address... (try $try of 6)"
+				Update-UiNow $true
+				Start-Sleep -Seconds 10
+			} else { throw }
+		}
+	}
+}
+
+# Give the new item the old item's LegacyExchangeDN as an X500 address, so replies from cached
+# Outlook addresses still work. Logs and carries on if it fails. $Type is the NEW item's type.
+function Add-ConvX500([string]$Type, $NewIdentity, [string]$LegacyDn) {
+	if (-not "$LegacyDn".Trim()) { return }
 	try {
-		if ($newAddr) { $new = New-DistributionGroup -Name $newName -PrimarySmtpAddress $newAddr -ErrorAction Stop }
-		else { $new = New-DistributionGroup -Name $newName -ErrorAction Stop }
-	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
-	foreach ($p in $people) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $p -ErrorAction Stop } catch { Write-Host "  couldn't add $p : $($_.Exception.Message)" -ForegroundColor Yellow } }
+		switch ($Type) {
+			'distribution list'   { Set-DistributionGroup -Identity $NewIdentity -EmailAddresses @{ Add = "X500:$LegacyDn" } -ErrorAction Stop }
+			'Microsoft 365 group' { Set-UnifiedGroup -Identity $NewIdentity -EmailAddresses @{ Add = "X500:$LegacyDn" } -ErrorAction Stop }
+			'shared mailbox'      { Set-Mailbox -Identity $NewIdentity -EmailAddresses @{ Add = "X500:$LegacyDn" } -ErrorAction Stop }
+		}
+	} catch { Write-Host "  couldn't add the old X500 address to the new item: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
 # Expand a distribution list's members to individual people (recursing into nested lists).
@@ -675,62 +690,98 @@ function Expand-ConvListMembers([string]$Address) {
 	return $out
 }
 
-function Convert-DistListToM365($Rec, [bool]$MoveAddr) {
+# ---- the four conversions (each returns how many member/permission/owner copies failed) ----
+function Convert-M365ToDistList($Rec, [bool]$MoveAddr, [string]$RenameBase) {
 	$addr = "$($Rec.PrimarySmtpAddress)"
 	$alias = ($addr -split '@')[0]
+	$legacy = "$($Rec.LegacyExchangeDN)"
+	$members = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Members -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
+	$owners  = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Owners -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
+	$fails = 0
+	if ($MoveAddr) {
+		$restore = Move-ConvAddressAway $Rec 'Microsoft 365 group' $RenameBase
+		try { $new = Invoke-ConvCreate { New-DistributionGroup -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
+		catch { [void](Restore-ConvAddress $restore); throw }
+		Add-ConvX500 'distribution list' $new.Identity $legacy
+	} else {
+		$new = New-DistributionGroup -Name "$alias-New" -ErrorAction Stop
+	}
+	foreach ($m in $members) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $m -ErrorAction Stop } catch { $fails++; Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	if ($owners.Count) { try { Set-DistributionGroup -Identity $new.Identity -ManagedBy $owners -ErrorAction Stop } catch { $fails++; Write-Host "  couldn't set owners: $($_.Exception.Message)" -ForegroundColor Yellow } }
+	return $fails
+}
+
+function Convert-SharedToDistList($Rec, [bool]$MoveAddr, [string]$RenameBase) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$legacy = "$($Rec.LegacyExchangeDN)"
+	$fa = @(Get-MailboxPermission -Identity $addr -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.User -notlike 'NT AUTHORITY*' -and $_.User -notlike 'S-1-5*' -and $_.AccessRights -contains 'FullAccess' } | Select-Object -ExpandProperty User)
+	$sa = @(Get-RecipientPermission -Identity $addr -ErrorAction Stop | Where-Object { $_.AccessRights -contains 'SendAs' -and $_.Trustee -notlike 'NT AUTHORITY*' } | Select-Object -ExpandProperty Trustee)
+	$people = @(@($fa) + @($sa) | Where-Object { "$_".Trim() } | Select-Object -Unique)
+	$fails = 0
+	if ($MoveAddr) {
+		$restore = Move-ConvAddressAway $Rec 'shared mailbox' $RenameBase
+		try { $new = Invoke-ConvCreate { New-DistributionGroup -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
+		catch { [void](Restore-ConvAddress $restore); throw }
+		Add-ConvX500 'distribution list' $new.Identity $legacy
+	} else {
+		$new = New-DistributionGroup -Name "$alias-New" -ErrorAction Stop
+	}
+	foreach ($p in $people) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $p -ErrorAction Stop } catch { $fails++; Write-Host "  couldn't add $p : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	return $fails
+}
+
+function Convert-DistListToM365($Rec, [bool]$MoveAddr, [string]$RenameBase) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$legacy = "$($Rec.LegacyExchangeDN)"
 	$dl = Get-DistributionGroup -Identity $addr -ErrorAction Stop
 	$owners = @($dl.ManagedBy)
-	$directMembers = @(Get-DistributionGroupMember -Identity $addr -ResultSize Unlimited -ErrorAction Stop)
-	$hasGroupMember = @($directMembers | Where-Object { "$($_.RecipientTypeDetails)" -match 'Group' }).Count -gt 0
-	# Prefer Microsoft's built-in upgrade when the list qualifies.
-	$canUpgrade = (Get-Command Upgrade-DistributionGroup -ErrorAction Ignore) -and ($owners.Count -ge 1) -and (-not $hasGroupMember)
-	if ($canUpgrade) {
-		try {
-			Upgrade-DistributionGroup -DlIdentities $addr -ErrorAction Stop
-			$deadline = (Get-Date).AddMinutes(10); $ok = $false
-			while ((Get-Date) -lt $deadline) {
-				Set-ItemStatus "Waiting for Microsoft to finish the upgrade..."
-				Update-UiNow $true
-				Start-Sleep -Seconds 15
-				$ug = $null; try { $ug = Get-UnifiedGroup -Identity $addr -ErrorAction Stop } catch {}
-				if ($ug) { $ok = $true; break }
-			}
-			if (-not $ok) { $script:ConvNote = "Microsoft is still working on $addr - check back in a few minutes." ; Write-Host $script:ConvNote -ForegroundColor Yellow }
-			return
-		} catch {
-			Write-Host "Microsoft's built-in upgrade didn't take $addr ($($_.Exception.Message)); doing it by hand instead." -ForegroundColor Yellow
-		}
-	}
-	# Manual rebuild (the email address is always moved for this direction).
 	$people = @(Expand-ConvListMembers $addr | Select-Object -ExpandProperty PrimarySmtpAddress | Where-Object { "$_".Trim() } | Select-Object -Unique)
 	$ownerAddrs = @($owners | ForEach-Object { try { (Get-Recipient -Identity $_ -ErrorAction Stop | Select-Object -First 1).PrimarySmtpAddress } catch {} } | Where-Object { "$_".Trim() })
 	$usedAdmin = $false
 	if (-not $ownerAddrs.Count) { $me = Get-ConvAdminUpn; if ($me) { $ownerAddrs = @($me); $usedAdmin = $true } }
-	$restore = Move-ConvAddressAway $Rec 'distribution list'
-	try {
-		$new = New-UnifiedGroup -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -AccessType Private -ErrorAction Stop
-	} catch { Restore-ConvAddress $restore; throw }
-	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Members -Links $m -ErrorAction Stop } catch { Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
-	foreach ($o in $ownerAddrs) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Owners -Links $o -ErrorAction Stop } catch { Write-Host "  couldn't set owner $o : $($_.Exception.Message)" -ForegroundColor Yellow } }
-	try { Set-UnifiedGroup -Identity $addr -AutoSubscribeNewMembers:$true -ErrorAction Stop } catch {}
-	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Subscribers -Links $m -ErrorAction SilentlyContinue } catch {} }
+	$fails = 0
+	if ($MoveAddr) {
+		$restore = Move-ConvAddressAway $Rec 'distribution list' $RenameBase
+		try { $new = Invoke-ConvCreate { New-UnifiedGroup -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -AccessType Private -ErrorAction Stop } $addr }
+		catch { [void](Restore-ConvAddress $restore); throw }
+		$newId = $addr
+		Add-ConvX500 'Microsoft 365 group' $newId $legacy
+	} else {
+		$new = New-UnifiedGroup -DisplayName "$($Rec.DisplayName)" -Alias "$alias-New" -AccessType Private -ErrorAction Stop
+		$newId = "$($new.PrimarySmtpAddress)"
+	}
+	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $newId -LinkType Members -Links $m -ErrorAction Stop } catch { $fails++; Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	foreach ($o in $ownerAddrs) { try { Add-UnifiedGroupLinks -Identity $newId -LinkType Owners -Links $o -ErrorAction Stop } catch { $fails++; Write-Host "  couldn't set owner $o : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	try { Set-UnifiedGroup -Identity $newId -AutoSubscribeNewMembers:$true -ErrorAction Stop } catch {}
+	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $newId -LinkType Subscribers -Links $m -ErrorAction SilentlyContinue } catch {} }
 	if ($usedAdmin) { $script:ConvNote = "The old list had no owner, so you were set as the owner of $addr." }
+	return $fails
 }
 
-function Convert-DistListToShared($Rec, [bool]$MoveAddr, [bool]$SendAs) {
+function Convert-DistListToShared($Rec, [bool]$MoveAddr, [bool]$SendAs, [string]$RenameBase) {
 	$addr = "$($Rec.PrimarySmtpAddress)"
 	$alias = ($addr -split '@')[0]
+	$legacy = "$($Rec.LegacyExchangeDN)"
 	$members = @(Expand-ConvListMembers $addr)
-	$restore = $null
-	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'distribution list'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr; $newAlias = $alias }
-	else { $newName = "$alias-New"; $newAddr = $null; $newAlias = "$alias-New" }
-	try {
-		if ($newAddr) { $new = New-Mailbox -Shared -Name $newName -DisplayName "$($Rec.DisplayName)" -Alias $newAlias -PrimarySmtpAddress $newAddr -ErrorAction Stop }
-		else { $new = New-Mailbox -Shared -Name $newName -DisplayName "$($Rec.DisplayName)" -Alias $newAlias -ErrorAction Stop }
-	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
+	$fails = 0
+	if ($MoveAddr) {
+		$restore = Move-ConvAddressAway $Rec 'distribution list' $RenameBase
+		try { $new = Invoke-ConvCreate { New-Mailbox -Shared -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
+		catch { [void](Restore-ConvAddress $restore); throw }
+		Add-ConvX500 'shared mailbox' $new.Identity $legacy
+	} else {
+		$new = New-Mailbox -Shared -Name "$alias-New" -DisplayName "$($Rec.DisplayName)" -Alias "$alias-New" -ErrorAction Stop
+	}
 	# Wait for the new mailbox to show up before granting access.
 	$mbx = $null; $deadline = (Get-Date).AddMinutes(2)
-	while ((Get-Date) -lt $deadline) { try { $mbx = Get-Mailbox -Identity $new.Identity -ErrorAction Stop; if ($mbx) { break } } catch {}; Start-Sleep -Seconds 5 }
+	while ((Get-Date) -lt $deadline) {
+		try { $mbx = Get-Mailbox -Identity $new.Identity -ErrorAction Stop; if ($mbx) { break } } catch {}
+		Set-ItemStatus "Waiting for Exchange to create the shared mailbox..."
+		Update-UiNow $true
+		Start-Sleep -Seconds 5
+	}
 	$target = if ($mbx) { "$($mbx.Identity)" } else { "$($new.Identity)" }
 	foreach ($m in $members) {
 		$rtd = "$($m.RecipientTypeDetails)"
@@ -739,15 +790,16 @@ function Convert-DistListToShared($Rec, [bool]$MoveAddr, [bool]$SendAs) {
 			try {
 				Add-MailboxPermission -Identity $target -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
 				if ($SendAs) { Add-RecipientPermission -Identity $target -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
-			} catch { Write-Host "  couldn't give $who access: $($_.Exception.Message)" -ForegroundColor Yellow }
+			} catch { $fails++; Write-Host "  couldn't give $who access: $($_.Exception.Message)" -ForegroundColor Yellow }
 		} else {
 			Write-Host "  skipped $who - a $(Get-RecipientTypeName $rtd) can't open a mailbox." -ForegroundColor Yellow
 		}
 	}
+	return $fails
 }
 
 # Validate one source and run the right conversion. Returns Status + Reason.
-function Convert-ConvOne([string]$Address, [string]$From, [string]$To, [bool]$MoveAddr, [bool]$SendAs) {
+function Convert-ConvOne([string]$Address, [string]$From, [string]$To, [bool]$MoveAddr, [bool]$SendAs, [string]$RenameBase) {
 	$rec = $null
 	try { $rec = Get-Recipient -Identity $Address -ErrorAction Stop | Select-Object -First 1 } catch {}
 	if (-not $rec) { return @{ Status = 'skipped'; Reason = "couldn't find that address." } }
@@ -755,20 +807,33 @@ function Convert-ConvOne([string]$Address, [string]$From, [string]$To, [bool]$Mo
 		$actual = Get-RecipientTypeName "$($rec.RecipientTypeDetails) $($rec.RecipientType)"
 		return @{ Status = 'skipped'; Reason = "that address is a $actual, not a $From." }
 	}
+	$rtd = "$($rec.RecipientTypeDetails)"
+	# A dynamic distribution list's membership is rule-based, so it can't be converted - any direction.
+	if ($rtd -match 'Dynamic') { return @{ Status = 'skipped'; Reason = "this is a dynamic distribution list, whose membership is set by a rule, so it can't be converted." } }
 	if ($From -eq 'distribution list' -and $To -eq 'Microsoft 365 group') {
-		$rtd = "$($rec.RecipientTypeDetails)"
 		if ($rtd -eq 'MailUniversalSecurityGroup') { return @{ Status = 'skipped'; Reason = "this distribution list is also a security group that may control access to files or apps, so it can't safely become a Microsoft 365 group." } }
-		if ($rtd -match 'Dynamic') { return @{ Status = 'skipped'; Reason = "this is a dynamic distribution list, whose membership is set by a rule, so it can't be converted." } }
 		if ($rec.IsDirSynced) { return @{ Status = 'skipped'; Reason = "this list is managed from your on-premises server." } }
 	}
+	# When moving the address, make sure the renamed "-old" item's name/address isn't already taken.
+	if ($MoveAddr) {
+		$src = "$($rec.PrimarySmtpAddress)"; $p = $src -split '@', 2
+		$base = if ("$RenameBase".Trim()) { "$RenameBase".Trim() } else { $p[0] + '-old' }
+		$oldAddr = "$base@$($p[1])"
+		$taken = $null
+		try { $taken = Get-Recipient -Identity $oldAddr -ErrorAction Stop | Select-Object -First 1 } catch {}
+		if (-not $taken) { try { $taken = Get-Recipient -Identity $base -ErrorAction Stop | Select-Object -First 1 } catch {} }
+		if ($taken -and ("$($taken.ExchangeObjectId)" -ne "$($rec.ExchangeObjectId)")) { return @{ Status = 'skipped'; Reason = "an item named $base already exists." } }
+	}
 	try {
-		switch ("$From|$To") {
-			'Microsoft 365 group|distribution list' { Convert-M365ToDistList $rec $MoveAddr }
-			'shared mailbox|distribution list'      { Convert-SharedToDistList $rec $MoveAddr }
-			'distribution list|Microsoft 365 group' { Convert-DistListToM365 $rec $MoveAddr }
-			'distribution list|shared mailbox'      { Convert-DistListToShared $rec $MoveAddr $SendAs }
+		$fails = switch ("$From|$To") {
+			'Microsoft 365 group|distribution list' { Convert-M365ToDistList $rec $MoveAddr $RenameBase }
+			'shared mailbox|distribution list'      { Convert-SharedToDistList $rec $MoveAddr $RenameBase }
+			'distribution list|Microsoft 365 group' { Convert-DistListToM365 $rec $MoveAddr $RenameBase }
+			'distribution list|shared mailbox'      { Convert-DistListToShared $rec $MoveAddr $SendAs $RenameBase }
 			default { return @{ Status = 'skipped'; Reason = "can't convert a $From to a $To." } }
 		}
+		$fails = [int]($fails | Select-Object -Last 1)
+		if ($fails -gt 0) { return @{ Status = 'done'; Reason = "converted, but $fails member(s)/permission(s) couldn't be copied (see log)" } }
 		return @{ Status = 'done'; Reason = '' }
 	} catch {
 		return @{ Status = 'failed'; Reason = "$($_.Exception.Message)".Trim() }
@@ -800,7 +865,12 @@ function New-ConvertMailboxOrGroupDialog {
 					<TextBlock x:Name="LostText" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,8,0,0"/>
 				</StackPanel>
 			</Border>
-			<CheckBox x:Name="MoveAddrCheck" Content="Move the email address to the new item" Margin="0,12,0,0"/>
+			<CheckBox x:Name="MoveAddrCheck" Content="Give the new item this email address" Margin="0,12,0,0"/>
+			<TextBlock Text="The new item takes over the address; the old one is kept, renamed, and hidden from the address book. Untick to leave the old one as it is and give the new one a '-New' address. Members are copied either way." Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+			<StackPanel x:Name="RenamePanel" Margin="0,8,0,0" Visibility="Collapsed">
+				<TextBlock Text="Rename the old item to" Style="{DynamicResource Dim}"/>
+				<TextBox x:Name="RenameOldInput" Margin="0,4,0,0"/>
+			</StackPanel>
 			<CheckBox x:Name="SendAsCheck" Content="Also give Send As" IsChecked="True" Visibility="Collapsed" Margin="0,6,0,0"/>
 			<Border Style="{DynamicResource Divider}"/>
 			<StackPanel Orientation="Horizontal">
@@ -841,6 +911,20 @@ function Convert-MailboxOrGroup {
 	function Get-ConvTo {
 		if ($toM365.IsChecked) { 'Microsoft 365 group' } elseif ($toShared.IsChecked) { 'shared mailbox' } elseif ($toDL.IsChecked) { 'distribution list' } else { $null }
 	}
+	# The local-part/alias the old item will be renamed to for the typed address (default "<name>-old").
+	function Get-ConvRenameBase {
+		$a = "$($sourceInputBox.Text)".Trim()
+		$local = if ($a -match '@') { ($a -split '@')[0] } else { $a }
+		$edited = "$($renameOldInput.Text)".Trim()
+		if ($edited) { return $edited }
+		if ($local) { return "$local-old" }
+		return ''
+	}
+	function Set-ConvRenameDefault {
+		$a = "$($sourceInputBox.Text)".Trim()
+		$local = if ($a -match '@') { ($a -split '@')[0] } else { $a }
+		$renameOldInput.Text = if ($local) { "$local-old" } else { '' }
+	}
 
 	# Show only the valid targets for the chosen From, auto-select one, and refresh the text.
 	function Update-ConvUi {
@@ -868,6 +952,8 @@ function Convert-MailboxOrGroup {
 			# Keep the old "-New" behaviour for Microsoft 365 group -> distribution list (off by default);
 			# move the address by default for the other pairs.
 			$moveAddrCheck.IsChecked = ($from -ne 'Microsoft 365 group')
+			$renamePanel.Visibility = if ($moveAddrCheck.IsChecked) { 'Visible' } else { 'Collapsed' }
+			if ($moveAddrCheck.IsChecked) { Set-ConvRenameDefault }
 			$sendAsCheck.Visibility = if ($to -eq 'shared mailbox') { 'Visible' } else { 'Collapsed' }
 		} finally { $script:ConvSync = $false }
 	}
@@ -882,11 +968,23 @@ function Convert-MailboxOrGroup {
 		$Error.Clear()
 	}
 
+	# The "what happens to the old item" sentence, matching whether the address is being moved.
+	function Get-ConvMoveSentence([string]$From) {
+		if ($moveAddrCheck.IsChecked -eq $true) {
+			$rb = Get-ConvRenameBase
+			if (-not $rb) { $rb = '<name>-old' }
+			return "The old $From is renamed to '$rb' and hidden from the address book. Nothing is deleted."
+		}
+		return "The old $From is left as it is; the new one gets a '-New' name and address."
+	}
+
 	function Run-ConvBatch($Items) {
 		$list = @($Items | Where-Object { "$($_.Address)".Trim() })
 		$tot = $list.Count
 		if (-not $tot) { Show-Notice 'Nothing to convert' 'There were no addresses to convert.' 'Warn'; return }
-		if (-not (Confirm-YesNo 'Convert these items?' "About to convert $tot item(s).`n`nNothing is deleted. Each old item is renamed to its address with -old on the end and hidden from the address book.`n`nContinue?" '&#xF561;')) { return }
+		if ($moveAddrCheck.IsChecked -eq $true) { $tail = "Each old item is renamed (its address gets your rename, ending in -old by default) and hidden from the address book. Nothing is deleted." }
+		else { $tail = "Each old item is left as it is; the new one gets a '-New' name and address." }
+		if (-not (Confirm-YesNo 'Convert these items?' "About to convert $tot item(s).`n`n$tail`n`nContinue?" '&#xF561;')) { return }
 		Reset-Throughput
 		Lock-ScriptWindow $scriptForm6
 		$counts = @{ done = 0; skipped = 0; failed = 0 }
@@ -899,9 +997,9 @@ function Convert-MailboxOrGroup {
 			$to   = if ("$($it.To)".Trim())   { "$($it.To)".Trim() }   else { Get-ConvTo }
 			Step-Progress "Converting $addr to a $to..." $i $tot
 			if (-not (Get-ConvPairInfo $from $to)) { $counts.skipped++; $lines.Add("$addr - skipped: can't convert a $from to a $to."); continue }
-			$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true)
+			$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true) ''
 			switch ($r.Status) {
-				'done'    { $counts.done++;    $lines.Add("$addr - converted to a $to.") }
+				'done'    { $counts.done++;    $lines.Add($(if ($r.Reason) { "$addr - $($r.Reason)" } else { "$addr - converted to a $to." })) }
 				'skipped' { $counts.skipped++; $lines.Add("$addr - skipped: $($r.Reason)") }
 				'failed'  { $counts.failed++;  $lines.Add("$addr - failed: $($r.Reason)") }
 			}
@@ -918,20 +1016,20 @@ function Convert-MailboxOrGroup {
 		$from = Get-ConvFrom; $to = Get-ConvTo
 		$info = Get-ConvPairInfo $from $to
 		if (-not $info) { Show-Notice "Can't convert that" "Can't convert a $from to a $to." 'Warn'; return }
-		$warn = "$($info.Summary)`n`nWhat's lost:`n" + (($info.Lost | ForEach-Object { "  - $_" }) -join "`n") + "`n`nNothing is deleted. The old $from is renamed to its address with -old on the end and hidden from the address book.`n`nConvert now?"
+		$warn = "$($info.Summary)`n`nWhat's lost:`n" + (($info.Lost | ForEach-Object { "  - $_" }) -join "`n") + "`n`n$(Get-ConvMoveSentence $from)`n`nConvert now?"
 		if (-not (Confirm-YesNo 'Convert now?' $warn '&#xF561;')) { return }
 		Reset-Throughput
 		Lock-ScriptWindow $scriptForm6
 		$progressBar1.Value = 20
 		Set-ItemStatus "Converting $addr to a $to..."
 		Update-UiNow $true
-		$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true)
+		$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true) (Get-ConvRenameBase)
 		$progressBar1.Value = 100
 		Unlock-ScriptWindow
 		$counts = @{ done = 0; skipped = 0; failed = 0 }
 		$lines = [System.Collections.Generic.List[string]]::new()
 		switch ($r.Status) {
-			'done'    { $counts.done = 1;    $lines.Add("$addr - converted to a $to.") }
+			'done'    { $counts.done = 1;    $lines.Add($(if ($r.Reason) { "$addr - $($r.Reason)" } else { "$addr - converted to a $to." })) }
 			'skipped' { $counts.skipped = 1; $lines.Add("$addr - skipped: $($r.Reason)") }
 			'failed'  { $counts.failed = 1;  $lines.Add("$addr - failed: $($r.Reason)") }
 		}
@@ -969,7 +1067,7 @@ function Convert-MailboxOrGroup {
 			<Grid Margin="0,12,0,0">
 				<Button x:Name="PasteCancel" Style="{DynamicResource BtnGhost}" Content="Cancel" HorizontalAlignment="Left" MinWidth="90"/>
 				<Button x:Name="PasteGo" Style="{DynamicResource BtnPrimary}" Content="Convert all" HorizontalAlignment="Right" MinWidth="120"/>
-			</StackPanel>
+			</Grid>
 		</StackPanel>
 	</Border>
 </StackPanel>
@@ -992,10 +1090,14 @@ function Convert-MailboxOrGroup {
 	$toDL = $scriptForm6.FindName('ToDL'); $toM365 = $scriptForm6.FindName('ToM365'); $toShared = $scriptForm6.FindName('ToShared')
 	$summaryText = $scriptForm6.FindName('SummaryText'); $staysText = $scriptForm6.FindName('StaysText'); $lostText = $scriptForm6.FindName('LostText')
 	$moveAddrCheck = $scriptForm6.FindName('MoveAddrCheck'); $sendAsCheck = $scriptForm6.FindName('SendAsCheck')
+	$renamePanel = $scriptForm6.FindName('RenamePanel'); $renameOldInput = $scriptForm6.FindName('RenameOldInput')
 	$sourceInputBox = $scriptForm6.FindName('SourceInput')
 	Enable-RecipientAutocomplete $sourceInputBox 'Any'
 	$singlePanel = $scriptForm6.FindName('SinglePanel'); $bulkPanel = $scriptForm6.FindName('BulkPanel')
 	foreach ($r in @($fromM365, $fromDL, $fromShared, $toDL, $toM365, $toShared)) { $r.Add_Checked({ Update-ConvUi }) }
+	$moveAddrCheck.Add_Checked({ $renamePanel.Visibility = 'Visible'; Set-ConvRenameDefault })
+	$moveAddrCheck.Add_Unchecked({ $renamePanel.Visibility = 'Collapsed' })
+	$sourceInputBox.Add_TextChanged({ if ($moveAddrCheck.IsChecked -eq $true) { Set-ConvRenameDefault } })
 	$scriptForm6.FindName('SingleChip').Add_Checked({ $singlePanel.Visibility = 'Visible'; $bulkPanel.Visibility = 'Collapsed' })
 	$scriptForm6.FindName('BulkChip').Add_Checked({ $singlePanel.Visibility = 'Collapsed'; $bulkPanel.Visibility = 'Visible' })
 	$scriptForm6.FindName('ConvertBtn').Add_Click({ OnConvertButtonClick })

@@ -1655,6 +1655,7 @@ function OperationComplete {
 	$progressBar1.Value = 100
 	Write-Host "Operation complete."
 	[void](New-OperationCompleteDialog).ShowDialog()
+	$progressBar1.Value = 0
 }
 
 # Simple modal message popup with one OK button. $Kind = 'Info' | 'Warn' | 'Error'.

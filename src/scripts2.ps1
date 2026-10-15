@@ -138,18 +138,18 @@ function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview,
 # runs, so an existing user is never overwritten / re-provisioned / password-reset.
 function Assert-ADUserNotExists([string]$SamAccountName, [string]$UserPrincipalName) {
 	$existing = $null
-	try { $existing = Get-ADUser -Filter "SamAccountName -eq '$SamAccountName'" -ErrorAction Stop | Select-Object -First 1 } catch { $existing = $null }
+	try { $existing = Get-ADUser -Filter "SamAccountName -eq '$($SamAccountName -replace "'", "''")'" -ErrorAction Stop | Select-Object -First 1 } catch { $existing = $null }
 	if ($existing) { throw "an AD account named '$SamAccountName' already exists - skipped so it isn't overwritten" }
 	if ($UserPrincipalName) {
 		$byUpn = $null
-		try { $byUpn = Get-ADUser -Filter "UserPrincipalName -eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $byUpn = $null }
+		try { $byUpn = Get-ADUser -Filter "UserPrincipalName -eq '$($UserPrincipalName -replace "'", "''")'" -ErrorAction Stop | Select-Object -First 1 } catch { $byUpn = $null }
 		if ($byUpn) { throw "an AD account with sign-in name '$UserPrincipalName' already exists - skipped so it isn't overwritten" }
 	}
 }
 function Assert-MgUserNotExists([string]$UserPrincipalName) {
 	$u = $null
-	try { $u = Get-MgUser -Filter "userPrincipalName eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
-	if (-not $u) { try { $u = Get-MgUser -Filter "mail eq '$UserPrincipalName'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
+	try { $u = Get-MgUser -Filter "userPrincipalName eq '$($UserPrincipalName -replace "'", "''")'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
+	if (-not $u) { try { $u = Get-MgUser -Filter "mail eq '$($UserPrincipalName -replace "'", "''")'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
 	if ($u) { throw "an account with the email '$UserPrincipalName' already exists in the tenant - skipped so it isn't overwritten" }
 }
 
@@ -587,7 +587,7 @@ function Restore-ConvAddress($R) {
 			'shared mailbox' {
 				try { Set-Mailbox -Identity $guid -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop } catch {}
 				Set-Mailbox -Identity $guid -PrimarySmtpAddress $R.Addr -ErrorAction Stop
-				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -Name $R.OrigName -ErrorAction Stop
+				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -Name $R.OrigName -Alias $R.OrigAlias -ErrorAction Stop
 			}
 		}
 		Write-Host "Put things back the way they were for $($R.Addr)." -ForegroundColor Yellow
@@ -628,7 +628,7 @@ function Move-ConvAddressAway($Rec, [string]$From, [string]$RenameBase) {
 			}
 			'shared mailbox' {
 				Set-Mailbox -Identity $guid -PrimarySmtpAddress $oldAddr -ErrorAction Stop
-				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -Name $base -ErrorAction Stop
+				Set-Mailbox -Identity $guid -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -Name $base -Alias $base -ErrorAction Stop
 			}
 		}
 	} catch {
@@ -701,7 +701,7 @@ function Convert-M365ToDistList($Rec, [bool]$MoveAddr, [string]$RenameBase) {
 	if ($MoveAddr) {
 		$restore = Move-ConvAddressAway $Rec 'Microsoft 365 group' $RenameBase
 		try { $new = Invoke-ConvCreate { New-DistributionGroup -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
-		catch { [void](Restore-ConvAddress $restore); throw }
+		catch { $orig = "$($_.Exception.Message)"; if (-not (Restore-ConvAddress $restore)) { throw "ADDRESS NOT RESTORED - $($restore.Addr) may now be on neither item; check $($restore.OldAddr) in the admin center. (Create error: $orig)" }; throw $orig }
 		Add-ConvX500 'distribution list' $new.Identity $legacy
 	} else {
 		$new = New-DistributionGroup -Name "$alias-New" -ErrorAction Stop
@@ -722,7 +722,7 @@ function Convert-SharedToDistList($Rec, [bool]$MoveAddr, [string]$RenameBase) {
 	if ($MoveAddr) {
 		$restore = Move-ConvAddressAway $Rec 'shared mailbox' $RenameBase
 		try { $new = Invoke-ConvCreate { New-DistributionGroup -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
-		catch { [void](Restore-ConvAddress $restore); throw }
+		catch { $orig = "$($_.Exception.Message)"; if (-not (Restore-ConvAddress $restore)) { throw "ADDRESS NOT RESTORED - $($restore.Addr) may now be on neither item; check $($restore.OldAddr) in the admin center. (Create error: $orig)" }; throw $orig }
 		Add-ConvX500 'distribution list' $new.Identity $legacy
 	} else {
 		$new = New-DistributionGroup -Name "$alias-New" -ErrorAction Stop
@@ -745,7 +745,7 @@ function Convert-DistListToM365($Rec, [bool]$MoveAddr, [string]$RenameBase) {
 	if ($MoveAddr) {
 		$restore = Move-ConvAddressAway $Rec 'distribution list' $RenameBase
 		try { $new = Invoke-ConvCreate { New-UnifiedGroup -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -AccessType Private -ErrorAction Stop } $addr }
-		catch { [void](Restore-ConvAddress $restore); throw }
+		catch { $orig = "$($_.Exception.Message)"; if (-not (Restore-ConvAddress $restore)) { throw "ADDRESS NOT RESTORED - $($restore.Addr) may now be on neither item; check $($restore.OldAddr) in the admin center. (Create error: $orig)" }; throw $orig }
 		$newId = $addr
 		Add-ConvX500 'Microsoft 365 group' $newId $legacy
 	} else {
@@ -769,7 +769,7 @@ function Convert-DistListToShared($Rec, [bool]$MoveAddr, [bool]$SendAs, [string]
 	if ($MoveAddr) {
 		$restore = Move-ConvAddressAway $Rec 'distribution list' $RenameBase
 		try { $new = Invoke-ConvCreate { New-Mailbox -Shared -Name "$($Rec.DisplayName)" -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -ErrorAction Stop } $addr }
-		catch { [void](Restore-ConvAddress $restore); throw }
+		catch { $orig = "$($_.Exception.Message)"; if (-not (Restore-ConvAddress $restore)) { throw "ADDRESS NOT RESTORED - $($restore.Addr) may now be on neither item; check $($restore.OldAddr) in the admin center. (Create error: $orig)" }; throw $orig }
 		Add-ConvX500 'shared mailbox' $new.Identity $legacy
 	} else {
 		$new = New-Mailbox -Shared -Name "$alias-New" -DisplayName "$($Rec.DisplayName)" -Alias "$alias-New" -ErrorAction Stop
@@ -818,6 +818,7 @@ function Convert-ConvOne([string]$Address, [string]$From, [string]$To, [bool]$Mo
 	if ($MoveAddr) {
 		$src = "$($rec.PrimarySmtpAddress)"; $p = $src -split '@', 2
 		$base = if ("$RenameBase".Trim()) { "$RenameBase".Trim() } else { $p[0] + '-old' }
+		if ($base -notmatch '^[A-Za-z0-9._-]{1,64}$') { return @{ Status = 'skipped'; Reason = "the rename '$base' isn't a valid address name - use letters, numbers, dots, dashes or underscores." } }
 		$oldAddr = "$base@$($p[1])"
 		$taken = $null
 		try { $taken = Get-Recipient -Identity $oldAddr -ErrorAction Stop | Select-Object -First 1 } catch {}
@@ -904,6 +905,8 @@ function Convert-MailboxOrGroup {
 	$progressBar1.Value = 10
 	$script:ConvNote = ''
 	$script:ConvSync = $false
+	$script:ConvRenameEdited = $false
+	$script:ConvRenameLastDefault = ''
 
 	function Get-ConvFrom {
 		if ($fromDL.IsChecked) { 'distribution list' } elseif ($fromShared.IsChecked) { 'shared mailbox' } else { 'Microsoft 365 group' }
@@ -913,17 +916,20 @@ function Convert-MailboxOrGroup {
 	}
 	# The local-part/alias the old item will be renamed to for the typed address (default "<name>-old").
 	function Get-ConvRenameBase {
-		$a = "$($sourceInputBox.Text)".Trim()
-		$local = if ($a -match '@') { ($a -split '@')[0] } else { $a }
 		$edited = "$($renameOldInput.Text)".Trim()
 		if ($edited) { return $edited }
-		if ($local) { return "$local-old" }
+		# No usable local-part until the address has an '@' - return '' so Convert-ConvOne builds the
+		# default ("<name>-old") from the resolved PrimarySmtpAddress instead.
+		$a = "$($sourceInputBox.Text)".Trim()
+		if ($a -match '@') { return (($a -split '@')[0] + '-old') }
 		return ''
 	}
 	function Set-ConvRenameDefault {
 		$a = "$($sourceInputBox.Text)".Trim()
-		$local = if ($a -match '@') { ($a -split '@')[0] } else { $a }
-		$renameOldInput.Text = if ($local) { "$local-old" } else { '' }
+		$def = if ($a -match '@') { ($a -split '@')[0] + '-old' } else { '' }
+		$script:ConvRenameLastDefault = $def
+		$script:ConvRenameEdited = $false
+		$renameOldInput.Text = $def
 	}
 
 	# Show only the valid targets for the chosen From, auto-select one, and refresh the text.
@@ -1097,7 +1103,8 @@ function Convert-MailboxOrGroup {
 	foreach ($r in @($fromM365, $fromDL, $fromShared, $toDL, $toM365, $toShared)) { $r.Add_Checked({ Update-ConvUi }) }
 	$moveAddrCheck.Add_Checked({ $renamePanel.Visibility = 'Visible'; Set-ConvRenameDefault })
 	$moveAddrCheck.Add_Unchecked({ $renamePanel.Visibility = 'Collapsed' })
-	$sourceInputBox.Add_TextChanged({ if ($moveAddrCheck.IsChecked -eq $true) { Set-ConvRenameDefault } })
+	$renameOldInput.Add_TextChanged({ if ("$($renameOldInput.Text)".Trim() -ne $script:ConvRenameLastDefault) { $script:ConvRenameEdited = $true } })
+	$sourceInputBox.Add_TextChanged({ if ($moveAddrCheck.IsChecked -eq $true -and -not $script:ConvRenameEdited) { Set-ConvRenameDefault } })
 	$scriptForm6.FindName('SingleChip').Add_Checked({ $singlePanel.Visibility = 'Visible'; $bulkPanel.Visibility = 'Collapsed' })
 	$scriptForm6.FindName('BulkChip').Add_Checked({ $singlePanel.Visibility = 'Collapsed'; $bulkPanel.Visibility = 'Visible' })
 	$scriptForm6.FindName('ConvertBtn').Add_Click({ OnConvertButtonClick })
@@ -1315,7 +1322,7 @@ function New-ADAccounts {
 			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $samAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 
-			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName)'"
+			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName -replace "'", "''")'"
 
 			Write-Host "Copying attributes from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy additional attributes from the source user
@@ -1528,7 +1535,7 @@ function New-ADAndEmailAccounts {
 			if ($preview) { $created.Add($who); continue }
 			New-ADUser -SamAccountName $row.SamAccountName -Name $displayName -UserPrincipalName $userPrincipalName -DisplayName $displayName -AccountPassword (ConvertTo-SecureString $row.Password -AsPlainText -Force) -Enabled $true -Path $ou.DistinguishedName -GivenName $row.GivenName -Surname $row.Surname
 
-			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName)'"
+			$newUser = Get-ADUser -Filter "SamAccountName -eq '$($row.SamAccountName -replace "'", "''")'"
 
 			Write-Host "Copying attributes from source user $($sourceUser.SamAccountName) to new user $($newUser.SamAccountName)..."
 			# Copy additional attributes from the source user

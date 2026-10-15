@@ -277,8 +277,8 @@ function Resolve-OrCreateMailContact([string]$Email) {
 # existing guest if one is already present, otherwise sends an invitation. Throws on failure.
 function Resolve-OrInviteGuest([string]$Email) {
 	$u = $null
-	try { $u = Get-MgUser -Filter "mail eq '$Email'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
-	if (-not $u) { try { $u = Get-MgUser -Filter "otherMails/any(x:x eq '$Email')" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
+	try { $u = Get-MgUser -Filter "mail eq '$($Email -replace "'", "''")'" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null }
+	if (-not $u) { try { $u = Get-MgUser -Filter "otherMails/any(x:x eq '$($Email -replace "'", "''")')" -ErrorAction Stop | Select-Object -First 1 } catch { $u = $null } }
 	if ($u) { return $u.Id }
 	$inv = New-MgInvitation -InvitedUserEmailAddress $Email -InviteRedirectUrl 'https://myapps.microsoft.com' -SendInvitationMessage:$true -ErrorAction Stop
 	return $inv.InvitedUser.Id

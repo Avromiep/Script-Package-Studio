@@ -501,11 +501,308 @@ function Clear-RecycleBin {
 }
 
 # ---------------------------------------------------------------------------
-function New-ConvertGroupDialog {
-	New-StyledDialog -Title 'Convert-UnifiedGroupToDistributionGroup' -Icon '&#xE16F;' -BodyXaml @'
-<StackPanel Margin="16" Width="360">
+# Convert between a Microsoft 365 group, a distribution list and a shared mailbox.
+# User-facing type names are ALWAYS the full names below - never abbreviations -
+# and these same strings are the From/To values and the CSV column values.
+$script:ConvNote = ''
+
+# Which "To" types are valid for a given "From" type.
+function Get-ConvTargets([string]$From) {
+	switch ($From) {
+		'Microsoft 365 group' { ,@('distribution list') }
+		'distribution list'   { ,@('Microsoft 365 group', 'shared mailbox') }
+		'shared mailbox'      { ,@('distribution list') }
+		default               { ,@() }
+	}
+}
+
+# One plain-English summary plus "what stays" / "what's lost" for a From -> To pair.
+function Get-ConvPairInfo([string]$From, [string]$To) {
+	if ($From -eq 'Microsoft 365 group' -and $To -eq 'distribution list') {
+		return @{
+			Summary = 'Rebuilds this Microsoft 365 group as a plain distribution list with the same members and owners, so email still reaches everyone.'
+			Stays   = @('The members and owners', 'The email address (when you move it)')
+			Lost    = @('Group conversations and the shared inbox', "The group's files and SharePoint site", 'Planner plans', 'Any connected Team')
+		}
+	}
+	if ($From -eq 'shared mailbox' -and $To -eq 'distribution list') {
+		return @{
+			Summary = 'Creates a distribution list whose members are the people who can use this shared mailbox today, so email is delivered straight to their own inboxes.'
+			Stays   = @('Everyone with Full Access or Send As becomes a member', 'The email address (when you move it)')
+			Lost    = @('The existing mail, calendar and contacts are NOT copied - they stay in the old renamed mailbox, so export them first if you need them', 'A single shared inbox everyone opens (a distribution list only forwards email)')
+		}
+	}
+	if ($From -eq 'distribution list' -and $To -eq 'Microsoft 365 group') {
+		return @{
+			Summary = 'Turns this distribution list into a Microsoft 365 group, which adds a shared inbox, calendar and files on top of the mailing-list behaviour.'
+			Stays   = @('The members and owners', 'The email address (when you move it)', 'Everyone still gets email in their own inbox')
+			Lost    = @('Moderation and delivery restrictions', 'Send on behalf permissions', 'Nested lists - the people inside them are added individually')
+		}
+	}
+	if ($From -eq 'distribution list' -and $To -eq 'shared mailbox') {
+		return @{
+			Summary = 'Creates a shared mailbox and gives everyone in this distribution list access to it, so they share one inbox instead of each getting their own copy.'
+			Stays   = @('The members get Full Access (and Send As when you choose it)', 'The email address (when you move it)')
+			Lost    = @('Past emails - a distribution list keeps no copy to move', 'Moderation and delivery restrictions')
+		}
+	}
+	return $null
+}
+
+# True when the recipient's real type matches the chosen "From" type.
+function Test-ConvSourceType($Rec, [string]$From) {
+	$rtd = "$($Rec.RecipientTypeDetails)"
+	switch ($From) {
+		'Microsoft 365 group' { return ($rtd -eq 'GroupMailbox') }
+		'shared mailbox'      { return ($rtd -eq 'SharedMailbox') }
+		'distribution list'   { return ($rtd -match 'MailUniversalDistributionGroup|MailUniversalSecurityGroup|MailNonUniversalGroup|RoomList|DynamicDistributionGroup') }
+		default               { return $false }
+	}
+}
+
+# The signed-in admin's address, used as a fallback owner when a list has none.
+function Get-ConvAdminUpn {
+	try { $c = Get-ConnectionInformation -ErrorAction Stop | Select-Object -First 1; if ($c) { return "$($c.UserPrincipalName)" } } catch {}
+	try { if ($script:ActiveTenant -and $script:ActiveTenant.account) { return "$($script:ActiveTenant.account)" } } catch {}
+	return $null
+}
+
+# Move the real email address off the OLD item onto a "...-old" alias and hide it from the
+# address book, so the NEW item can take the real address. Returns a record used to undo this.
+function Move-ConvAddressAway($Rec, [string]$From) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$parts = $addr -split '@', 2
+	$oldAddr = $parts[0] + '-old@' + $parts[1]
+	$display = "$($Rec.DisplayName)"
+	$id = "$($Rec.Identity)"
+	switch ($From) {
+		'Microsoft 365 group' {
+			Set-UnifiedGroup -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
+			Set-UnifiedGroup -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+			Set-UnifiedGroup -Identity $oldAddr -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
+		}
+		'distribution list' {
+			Set-DistributionGroup -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
+			Set-DistributionGroup -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+			Set-DistributionGroup -Identity $oldAddr -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
+		}
+		'shared mailbox' {
+			Set-Mailbox -Identity $id -EmailAddresses @{ Add = $oldAddr } -ErrorAction Stop
+			Set-Mailbox -Identity $id -PrimarySmtpAddress $oldAddr -ErrorAction Stop
+			Set-Mailbox -Identity $id -EmailAddresses @{ Remove = $addr } -HiddenFromAddressListsEnabled $true -DisplayName "$display (old)" -ErrorAction Stop
+		}
+	}
+	return @{ From = $From; Addr = $addr; OldAddr = $oldAddr; Display = $display }
+}
+
+# Undo Move-ConvAddressAway (used when creating the new item fails).
+function Restore-ConvAddress($R) {
+	if (-not $R) { return }
+	try {
+		switch ($R.From) {
+			'Microsoft 365 group' {
+				Set-UnifiedGroup -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
+				Set-UnifiedGroup -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-UnifiedGroup -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+			}
+			'distribution list' {
+				Set-DistributionGroup -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
+				Set-DistributionGroup -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-DistributionGroup -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+			}
+			'shared mailbox' {
+				Set-Mailbox -Identity $R.OldAddr -EmailAddresses @{ Add = $R.Addr } -ErrorAction Stop
+				Set-Mailbox -Identity $R.OldAddr -PrimarySmtpAddress $R.Addr -ErrorAction Stop
+				Set-Mailbox -Identity $R.Addr -EmailAddresses @{ Remove = $R.OldAddr } -HiddenFromAddressListsEnabled $false -DisplayName $R.Display -ErrorAction Stop
+			}
+		}
+		Write-Host "Put things back the way they were for $($R.Addr)." -ForegroundColor Yellow
+	} catch {
+		Write-Host "Couldn't fully undo the address move for $($R.Addr): $($_.Exception.Message)" -ForegroundColor Red
+	}
+}
+
+# ---- the four conversions -------------------------------------------------
+function Convert-M365ToDistList($Rec, [bool]$MoveAddr) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$members = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Members -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
+	$owners  = @(Get-UnifiedGroupLinks -Identity $addr -LinkType Owners -ResultSize Unlimited -ErrorAction Stop | Select-Object -ExpandProperty PrimarySmtpAddress)
+	$restore = $null
+	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'Microsoft 365 group'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr }
+	else { $newName = "$alias-New"; $newAddr = $null }
+	try {
+		if ($newAddr) { $new = New-DistributionGroup -Name $newName -PrimarySmtpAddress $newAddr -ErrorAction Stop }
+		else { $new = New-DistributionGroup -Name $newName -ErrorAction Stop }
+	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
+	foreach ($m in $members) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $m -ErrorAction Stop } catch { Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	if ($owners.Count) { try { Set-DistributionGroup -Identity $new.Identity -ManagedBy $owners -ErrorAction Stop } catch { Write-Host "  couldn't set owners: $($_.Exception.Message)" -ForegroundColor Yellow } }
+}
+
+function Convert-SharedToDistList($Rec, [bool]$MoveAddr) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$fa = @(Get-MailboxPermission -Identity $addr -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.User -notlike 'NT AUTHORITY*' -and $_.User -notlike 'S-1-5*' -and $_.AccessRights -contains 'FullAccess' } | Select-Object -ExpandProperty User)
+	$sa = @(Get-RecipientPermission -Identity $addr -ErrorAction Stop | Where-Object { $_.AccessRights -contains 'SendAs' -and $_.Trustee -notlike 'NT AUTHORITY*' } | Select-Object -ExpandProperty Trustee)
+	$people = @(@($fa) + @($sa) | Where-Object { "$_".Trim() } | Select-Object -Unique)
+	$restore = $null
+	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'shared mailbox'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr }
+	else { $newName = "$alias-New"; $newAddr = $null }
+	try {
+		if ($newAddr) { $new = New-DistributionGroup -Name $newName -PrimarySmtpAddress $newAddr -ErrorAction Stop }
+		else { $new = New-DistributionGroup -Name $newName -ErrorAction Stop }
+	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
+	foreach ($p in $people) { try { Add-DistributionGroupMember -Identity $new.Identity -Member $p -ErrorAction Stop } catch { Write-Host "  couldn't add $p : $($_.Exception.Message)" -ForegroundColor Yellow } }
+}
+
+# Expand a distribution list's members to individual people (recursing into nested lists).
+function Expand-ConvListMembers([string]$Address) {
+	$out = [System.Collections.Generic.List[object]]::new()
+	$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+	function Walk([string]$a) {
+		$rows = @(Get-DistributionGroupMember -Identity $a -ResultSize Unlimited -ErrorAction SilentlyContinue)
+		foreach ($r in $rows) {
+			$rtd = "$($r.RecipientTypeDetails)"
+			if ($rtd -match 'DistributionGroup|MailUniversalSecurityGroup|MailNonUniversalGroup') {
+				Walk "$($r.PrimarySmtpAddress)"
+			} else {
+				$key = "$($r.PrimarySmtpAddress)"
+				if ($key -and $seen.Add($key)) { [void]$out.Add($r) }
+			}
+		}
+	}
+	Walk $Address
+	return $out
+}
+
+function Convert-DistListToM365($Rec, [bool]$MoveAddr) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$dl = Get-DistributionGroup -Identity $addr -ErrorAction Stop
+	$owners = @($dl.ManagedBy)
+	$directMembers = @(Get-DistributionGroupMember -Identity $addr -ResultSize Unlimited -ErrorAction Stop)
+	$hasGroupMember = @($directMembers | Where-Object { "$($_.RecipientTypeDetails)" -match 'Group' }).Count -gt 0
+	# Prefer Microsoft's built-in upgrade when the list qualifies.
+	$canUpgrade = (Get-Command Upgrade-DistributionGroup -ErrorAction Ignore) -and ($owners.Count -ge 1) -and (-not $hasGroupMember)
+	if ($canUpgrade) {
+		try {
+			Upgrade-DistributionGroup -DlIdentities $addr -ErrorAction Stop
+			$deadline = (Get-Date).AddMinutes(10); $ok = $false
+			while ((Get-Date) -lt $deadline) {
+				Set-ItemStatus "Waiting for Microsoft to finish the upgrade..."
+				Update-UiNow $true
+				Start-Sleep -Seconds 15
+				$ug = $null; try { $ug = Get-UnifiedGroup -Identity $addr -ErrorAction Stop } catch {}
+				if ($ug) { $ok = $true; break }
+			}
+			if (-not $ok) { $script:ConvNote = "Microsoft is still working on $addr - check back in a few minutes." ; Write-Host $script:ConvNote -ForegroundColor Yellow }
+			return
+		} catch {
+			Write-Host "Microsoft's built-in upgrade didn't take $addr ($($_.Exception.Message)); doing it by hand instead." -ForegroundColor Yellow
+		}
+	}
+	# Manual rebuild (the email address is always moved for this direction).
+	$people = @(Expand-ConvListMembers $addr | Select-Object -ExpandProperty PrimarySmtpAddress | Where-Object { "$_".Trim() } | Select-Object -Unique)
+	$ownerAddrs = @($owners | ForEach-Object { try { (Get-Recipient -Identity $_ -ErrorAction Stop | Select-Object -First 1).PrimarySmtpAddress } catch {} } | Where-Object { "$_".Trim() })
+	$usedAdmin = $false
+	if (-not $ownerAddrs.Count) { $me = Get-ConvAdminUpn; if ($me) { $ownerAddrs = @($me); $usedAdmin = $true } }
+	$restore = Move-ConvAddressAway $Rec 'distribution list'
+	try {
+		$new = New-UnifiedGroup -DisplayName "$($Rec.DisplayName)" -Alias $alias -PrimarySmtpAddress $addr -AccessType Private -ErrorAction Stop
+	} catch { Restore-ConvAddress $restore; throw }
+	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Members -Links $m -ErrorAction Stop } catch { Write-Host "  couldn't add $m : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	foreach ($o in $ownerAddrs) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Owners -Links $o -ErrorAction Stop } catch { Write-Host "  couldn't set owner $o : $($_.Exception.Message)" -ForegroundColor Yellow } }
+	try { Set-UnifiedGroup -Identity $addr -AutoSubscribeNewMembers:$true -ErrorAction Stop } catch {}
+	foreach ($m in $people) { try { Add-UnifiedGroupLinks -Identity $addr -LinkType Subscribers -Links $m -ErrorAction SilentlyContinue } catch {} }
+	if ($usedAdmin) { $script:ConvNote = "The old list had no owner, so you were set as the owner of $addr." }
+}
+
+function Convert-DistListToShared($Rec, [bool]$MoveAddr, [bool]$SendAs) {
+	$addr = "$($Rec.PrimarySmtpAddress)"
+	$alias = ($addr -split '@')[0]
+	$members = @(Expand-ConvListMembers $addr)
+	$restore = $null
+	if ($MoveAddr) { $restore = Move-ConvAddressAway $Rec 'distribution list'; $newName = "$($Rec.DisplayName)"; $newAddr = $addr; $newAlias = $alias }
+	else { $newName = "$alias-New"; $newAddr = $null; $newAlias = "$alias-New" }
+	try {
+		if ($newAddr) { $new = New-Mailbox -Shared -Name $newName -DisplayName "$($Rec.DisplayName)" -Alias $newAlias -PrimarySmtpAddress $newAddr -ErrorAction Stop }
+		else { $new = New-Mailbox -Shared -Name $newName -DisplayName "$($Rec.DisplayName)" -Alias $newAlias -ErrorAction Stop }
+	} catch { if ($restore) { Restore-ConvAddress $restore }; throw }
+	# Wait for the new mailbox to show up before granting access.
+	$mbx = $null; $deadline = (Get-Date).AddMinutes(2)
+	while ((Get-Date) -lt $deadline) { try { $mbx = Get-Mailbox -Identity $new.Identity -ErrorAction Stop; if ($mbx) { break } } catch {}; Start-Sleep -Seconds 5 }
+	$target = if ($mbx) { "$($mbx.Identity)" } else { "$($new.Identity)" }
+	foreach ($m in $members) {
+		$rtd = "$($m.RecipientTypeDetails)"
+		$who = "$($m.PrimarySmtpAddress)"
+		if ($rtd -match 'Mailbox') {
+			try {
+				Add-MailboxPermission -Identity $target -User $who -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
+				if ($SendAs) { Add-RecipientPermission -Identity $target -Trustee $who -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
+			} catch { Write-Host "  couldn't give $who access: $($_.Exception.Message)" -ForegroundColor Yellow }
+		} else {
+			Write-Host "  skipped $who - a $(Get-RecipientTypeName $rtd) can't open a mailbox." -ForegroundColor Yellow
+		}
+	}
+}
+
+# Validate one source and run the right conversion. Returns Status + Reason.
+function Convert-ConvOne([string]$Address, [string]$From, [string]$To, [bool]$MoveAddr, [bool]$SendAs) {
+	$rec = $null
+	try { $rec = Get-Recipient -Identity $Address -ErrorAction Stop | Select-Object -First 1 } catch {}
+	if (-not $rec) { return @{ Status = 'skipped'; Reason = "couldn't find that address." } }
+	if (-not (Test-ConvSourceType $rec $From)) {
+		$actual = Get-RecipientTypeName "$($rec.RecipientTypeDetails) $($rec.RecipientType)"
+		return @{ Status = 'skipped'; Reason = "that address is a $actual, not a $From." }
+	}
+	if ($From -eq 'distribution list' -and $To -eq 'Microsoft 365 group') {
+		$rtd = "$($rec.RecipientTypeDetails)"
+		if ($rtd -eq 'MailUniversalSecurityGroup') { return @{ Status = 'skipped'; Reason = "this distribution list is also a security group that may control access to files or apps, so it can't safely become a Microsoft 365 group." } }
+		if ($rtd -match 'Dynamic') { return @{ Status = 'skipped'; Reason = "this is a dynamic distribution list, whose membership is set by a rule, so it can't be converted." } }
+		if ($rec.IsDirSynced) { return @{ Status = 'skipped'; Reason = "this list is managed from your on-premises server." } }
+	}
+	try {
+		switch ("$From|$To") {
+			'Microsoft 365 group|distribution list' { Convert-M365ToDistList $rec $MoveAddr }
+			'shared mailbox|distribution list'      { Convert-SharedToDistList $rec $MoveAddr }
+			'distribution list|Microsoft 365 group' { Convert-DistListToM365 $rec $MoveAddr }
+			'distribution list|shared mailbox'      { Convert-DistListToShared $rec $MoveAddr $SendAs }
+			default { return @{ Status = 'skipped'; Reason = "can't convert a $From to a $To." } }
+		}
+		return @{ Status = 'done'; Reason = '' }
+	} catch {
+		return @{ Status = 'failed'; Reason = "$($_.Exception.Message)".Trim() }
+	}
+}
+
+# ---------------------------------------------------------------------------
+function New-ConvertMailboxOrGroupDialog {
+	New-StyledDialog -Title 'Convert mailbox or group' -Icon '&#xE16F;' -BodyXaml @'
+<StackPanel Margin="16" Width="420">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
+			<TextBlock Text="Convert from" Style="{DynamicResource Dim}"/>
+			<StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+				<RadioButton x:Name="FromM365" Style="{DynamicResource Chip}" GroupName="ConvFrom" Content="Microsoft 365 group" IsChecked="True"/>
+				<RadioButton x:Name="FromDL" Style="{DynamicResource Chip}" GroupName="ConvFrom" Content="distribution list" Margin="8,0,0,0"/>
+				<RadioButton x:Name="FromShared" Style="{DynamicResource Chip}" GroupName="ConvFrom" Content="shared mailbox" Margin="8,0,0,0"/>
+			</StackPanel>
+			<TextBlock Text="Convert to" Style="{DynamicResource Dim}" Margin="0,12,0,0"/>
+			<StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+				<RadioButton x:Name="ToDL" Style="{DynamicResource Chip}" GroupName="ConvTo" Content="distribution list"/>
+				<RadioButton x:Name="ToM365" Style="{DynamicResource Chip}" GroupName="ConvTo" Content="Microsoft 365 group" Margin="8,0,0,0"/>
+				<RadioButton x:Name="ToShared" Style="{DynamicResource Chip}" GroupName="ConvTo" Content="shared mailbox" Margin="8,0,0,0"/>
+			</StackPanel>
+			<TextBlock x:Name="SummaryText" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+			<Border Style="{DynamicResource Card}" Margin="0,10,0,0">
+				<StackPanel>
+					<TextBlock x:Name="StaysText" Style="{DynamicResource Dim}" TextWrapping="Wrap"/>
+					<TextBlock x:Name="LostText" Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+				</StackPanel>
+			</Border>
+			<CheckBox x:Name="MoveAddrCheck" Content="Move the email address to the new item" Margin="0,12,0,0"/>
+			<CheckBox x:Name="SendAsCheck" Content="Also give Send As" IsChecked="True" Visibility="Collapsed" Margin="0,6,0,0"/>
+			<Border Style="{DynamicResource Divider}"/>
 			<StackPanel Orientation="Horizontal">
 				<RadioButton x:Name="SingleChip" Style="{DynamicResource Chip}" GroupName="ConvertMode" Content="Single" IsChecked="True"/>
 				<RadioButton x:Name="BulkChip" Style="{DynamicResource Chip}" GroupName="ConvertMode" Content="Bulk" Margin="8,0,0,0"/>
@@ -515,14 +812,15 @@ function New-ConvertGroupDialog {
 					<Grid.ColumnDefinitions>
 						<ColumnDefinition Width="100"/><ColumnDefinition Width="*"/>
 					</Grid.ColumnDefinitions>
-					<TextBlock Text="Source address" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
+					<TextBlock Text="Address" Style="{DynamicResource Dim}" VerticalAlignment="Center"/>
 					<TextBox x:Name="SourceInput" Grid.Column="1"/>
 				</Grid>
-				<Button x:Name="CreateBtn" Style="{DynamicResource BtnPrimary}" Content="Create" Margin="0,14,0,0"/>
+				<Button x:Name="ConvertBtn" Style="{DynamicResource BtnPrimary}" Content="Convert" Margin="0,14,0,0"/>
 			</StackPanel>
 			<StackPanel x:Name="BulkPanel" Margin="0,14,0,0" Visibility="Collapsed">
-				<Button x:Name="TemplateOpenBtn" Style="{DynamicResource BtnSecondary}" Content="Open Bulk txt File"/>
-				<Button x:Name="CreateBulkBtn" Style="{DynamicResource BtnPrimary}" Content="Create" Margin="0,8,0,0"/>
+				<Button x:Name="TemplateOpenBtn" Style="{DynamicResource BtnSecondary}" Content="Open template"/>
+				<Button x:Name="PasteBtn" Style="{DynamicResource BtnSecondary}" Content="Paste list" Margin="0,8,0,0"/>
+				<Button x:Name="ConvertBulkBtn" Style="{DynamicResource BtnPrimary}" Content="Convert all" Margin="0,8,0,0"/>
 			</StackPanel>
 		</StackPanel>
 	</Border>
@@ -530,86 +828,193 @@ function New-ConvertGroupDialog {
 '@
 }
 
-function Convert-UnifiedGroupToDistributionGroup {
-	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Convert-UnifiedGroupToDistributionGroup.txt"
-	Write-Host "Running Convert-UnifiedGroupToDistributionGroup script..."
+function Convert-MailboxOrGroup {
+	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Convert-MailboxOrGroup.txt"
+	Write-Host "Running Convert-MailboxOrGroup script..."
 	$progressBar1.Value = 10
-	function OnCreateButtonClick {
-		Write-Host "Create button clicked."
-		$progressBar1.Value = 5
-		$M365GroupName = $sourceInputBox.Text
-		$OldGroupName = $sourceInputBox.Text -Split "@"
-		$DistGroupName = $OldGroupName[0] + "-New"
-		New-DistributionGroup -Name $DistGroupName
-		Write-Host "Created $DistGroupName"
-		$progressBar1.Value = 10
-		$M365GroupMembers = Get-UnifiedGroup -Identity $M365GroupName | Get-UnifiedGroupLinks -LinkType Member | Select-Object -expandproperty PrimarySmtpAddress
-		Foreach ($member in $M365GroupMembers) {
-		Write-Host "Adding $member..."
-		$progressBar1.Value = 20
-		Add-DistributionGroupMember -Identity $DistGroupName -Member $member
-		$progressBar1.Value = 80
+	$script:ConvNote = ''
+	$script:ConvSync = $false
+
+	function Get-ConvFrom {
+		if ($fromDL.IsChecked) { 'distribution list' } elseif ($fromShared.IsChecked) { 'shared mailbox' } else { 'Microsoft 365 group' }
+	}
+	function Get-ConvTo {
+		if ($toM365.IsChecked) { 'Microsoft 365 group' } elseif ($toShared.IsChecked) { 'shared mailbox' } elseif ($toDL.IsChecked) { 'distribution list' } else { $null }
+	}
+
+	# Show only the valid targets for the chosen From, auto-select one, and refresh the text.
+	function Update-ConvUi {
+		if ($script:ConvSync) { return }
+		$script:ConvSync = $true
+		try {
+			$from = Get-ConvFrom
+			$targets = @(Get-ConvTargets $from)
+			$toDL.Visibility     = if ($targets -contains 'distribution list')   { 'Visible' } else { 'Collapsed' }
+			$toM365.Visibility   = if ($targets -contains 'Microsoft 365 group')  { 'Visible' } else { 'Collapsed' }
+			$toShared.Visibility = if ($targets -contains 'shared mailbox')       { 'Visible' } else { 'Collapsed' }
+			$to = Get-ConvTo
+			if (-not $to -or ($targets -notcontains $to)) {
+				$to = $targets[0]
+				$toDL.IsChecked     = ($to -eq 'distribution list')
+				$toM365.IsChecked   = ($to -eq 'Microsoft 365 group')
+				$toShared.IsChecked = ($to -eq 'shared mailbox')
+			}
+			$info = Get-ConvPairInfo $from $to
+			if ($info) {
+				$summaryText.Text = $info.Summary
+				$staysText.Text = "What stays:`n" + (($info.Stays | ForEach-Object { "  - $_" }) -join "`n")
+				$lostText.Text  = "What's lost:`n" + (($info.Lost  | ForEach-Object { "  - $_" }) -join "`n")
+			}
+			# Keep the old "-New" behaviour for Microsoft 365 group -> distribution list (off by default);
+			# move the address by default for the other pairs.
+			$moveAddrCheck.IsChecked = ($from -ne 'Microsoft 365 group')
+			$sendAsCheck.Visibility = if ($to -eq 'shared mailbox') { 'Visible' } else { 'Collapsed' }
+		} finally { $script:ConvSync = $false }
+	}
+
+	function Show-ConvSummary($Counts, $Lines) {
+		$body = "Converted $($Counts.done).  Skipped $($Counts.skipped).  Failed $($Counts.failed)."
+		if ($Lines.Count) { $body += "`n`n" + ($Lines -join "`n") }
+		if ($script:ConvNote) { $body += "`n`n$($script:ConvNote)"; $script:ConvNote = '' }
+		$kind = if ($Counts.failed) { 'Warn' } else { 'Info' }
+		Show-Notice 'Conversion complete' $body $kind
+		$progressBar1.Value = 0
+		$Error.Clear()
+	}
+
+	function Run-ConvBatch($Items) {
+		$list = @($Items | Where-Object { "$($_.Address)".Trim() })
+		$tot = $list.Count
+		if (-not $tot) { Show-Notice 'Nothing to convert' 'There were no addresses to convert.' 'Warn'; return }
+		if (-not (Confirm-YesNo 'Convert these items?' "About to convert $tot item(s).`n`nNothing is deleted. Each old item is renamed to its address with -old on the end and hidden from the address book.`n`nContinue?" '&#xF561;')) { return }
+		Reset-Throughput
+		Lock-ScriptWindow $scriptForm6
+		$counts = @{ done = 0; skipped = 0; failed = 0 }
+		$lines = [System.Collections.Generic.List[string]]::new()
+		$i = 0
+		foreach ($it in $list) {
+			$i++
+			$addr = "$($it.Address)".Trim()
+			$from = if ("$($it.From)".Trim()) { "$($it.From)".Trim() } else { Get-ConvFrom }
+			$to   = if ("$($it.To)".Trim())   { "$($it.To)".Trim() }   else { Get-ConvTo }
+			Step-Progress "Converting $addr to a $to..." $i $tot
+			if (-not (Get-ConvPairInfo $from $to)) { $counts.skipped++; $lines.Add("$addr - skipped: can't convert a $from to a $to."); continue }
+			$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true)
+			switch ($r.Status) {
+				'done'    { $counts.done++;    $lines.Add("$addr - converted to a $to.") }
+				'skipped' { $counts.skipped++; $lines.Add("$addr - skipped: $($r.Reason)") }
+				'failed'  { $counts.failed++;  $lines.Add("$addr - failed: $($r.Reason)") }
+			}
 		}
+		Unlock-ScriptWindow
+		Show-ConvSummary $counts $lines
+		CheckForErrors
+		OperationComplete
+	}
+
+	function OnConvertButtonClick {
+		$addr = "$($sourceInputBox.Text)".Trim()
+		if (-not $addr) { Show-Notice 'Missing address' 'Type an address to convert first.' 'Warn'; return }
+		$from = Get-ConvFrom; $to = Get-ConvTo
+		$info = Get-ConvPairInfo $from $to
+		if (-not $info) { Show-Notice "Can't convert that" "Can't convert a $from to a $to." 'Warn'; return }
+		$warn = "$($info.Summary)`n`nWhat's lost:`n" + (($info.Lost | ForEach-Object { "  - $_" }) -join "`n") + "`n`nNothing is deleted. The old $from is renamed to its address with -old on the end and hidden from the address book.`n`nConvert now?"
+		if (-not (Confirm-YesNo 'Convert now?' $warn '&#xF561;')) { return }
+		Reset-Throughput
+		Lock-ScriptWindow $scriptForm6
+		$progressBar1.Value = 20
+		Set-ItemStatus "Converting $addr to a $to..."
+		Update-UiNow $true
+		$r = Convert-ConvOne $addr $from $to ($moveAddrCheck.IsChecked -eq $true) ($sendAsCheck.IsChecked -eq $true)
+		$progressBar1.Value = 100
+		Unlock-ScriptWindow
+		$counts = @{ done = 0; skipped = 0; failed = 0 }
+		$lines = [System.Collections.Generic.List[string]]::new()
+		switch ($r.Status) {
+			'done'    { $counts.done = 1;    $lines.Add("$addr - converted to a $to.") }
+			'skipped' { $counts.skipped = 1; $lines.Add("$addr - skipped: $($r.Reason)") }
+			'failed'  { $counts.failed = 1;  $lines.Add("$addr - failed: $($r.Reason)") }
+		}
+		Show-ConvSummary $counts $lines
 		CheckForErrors
 		OperationComplete
 	}
 
 	function OnTemplateButtonClick {
 		Write-Host "Open template button clicked."
-		$progressBar1.Value = 10
-		Invoke-Item ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt"
+		$csv = ".\Templates\Convert-MailboxOrGroup.csv"
+		if (-not (Test-Path $csv)) { "Source address,From,To" | Out-File $csv -Encoding UTF8 }
+		Invoke-Item $csv
 		$progressBar1.Value = 0
 		CheckForErrors
 	}
 
-	function OnCreateBulkButtonClick {
-		Write-Host "Create bulk button clicked."
-		$progressBar1.Value = 2
-		Reset-Throughput
-			$groups = @(Get-Content ".\Templates\Convert-UnifiedGroupToDistributionGroup.txt" | Where-Object { "$_".Trim() })
-			$tot = $groups.Count; $i = 0
-			$groups | ForEach-Object {
-				$i++; Step-Progress "Converting $_..." $i $tot
-			$OldGroupName = $_ -Split "@"
-			$DistGroupName = $OldGroupName[0] + "-New"
-			New-DistributionGroup -Name $DistGroupName
-			Write-Host "Created $DistGroupName"
-			$M365GroupMembers = Get-UnifiedGroup -Identity $_ | Get-UnifiedGroupLinks -LinkType Member | Select-Object -expandproperty PrimarySmtpAddress
-			$mi = 0; $mc = @($M365GroupMembers).Count
-			Foreach ($member in $M365GroupMembers) {
-				$mi++; Set-ItemStatus "Converting $_ - adding $member ($mi of $mc)..."
-				Write-Host "Adding $member..."
-				Add-DistributionGroupMember -Identity $DistGroupName -Member $member
-			}
-		}
-		Write-Host "Done cycling through text file."
-		CheckForErrors
-		OperationComplete
+	function OnConvertBulkButtonClick {
+		Write-Host "Convert all (template) button clicked."
+		$csv = ".\Templates\Convert-MailboxOrGroup.csv"
+		if (-not (Test-Path $csv)) { Show-Notice 'No template' 'Use Open template to create the CSV first.' 'Warn'; return }
+		$rows = @(Import-Csv $csv | Where-Object { "$($_.'Source address')".Trim() })
+		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
+		$items = @($rows | ForEach-Object { @{ Address = "$($_.'Source address')".Trim(); From = "$($_.From)".Trim(); To = "$($_.To)".Trim() } })
+		Run-ConvBatch $items
 	}
 
-	$ScriptForm6 = New-ConvertGroupDialog
-	$sourceInputBox = $ScriptForm6.FindName('SourceInput')
-	Enable-RecipientAutocomplete $sourceInputBox 'Group'
-	$singlePanel = $ScriptForm6.FindName('SinglePanel')
-	$bulkPanel = $ScriptForm6.FindName('BulkPanel')
-	$ScriptForm6.FindName('SingleChip').Add_Checked({
-		$singlePanel.Visibility = 'Visible'
-		$bulkPanel.Visibility = 'Collapsed'
-	})
-	$ScriptForm6.FindName('BulkChip').Add_Checked({
-		$singlePanel.Visibility = 'Collapsed'
-		$bulkPanel.Visibility = 'Visible'
-	})
-	$ScriptForm6.FindName('CreateBtn').Add_Click({ OnCreateButtonClick })
-	$ScriptForm6.FindName('TemplateOpenBtn').Add_Click({ OnTemplateButtonClick })
-	$ScriptForm6.FindName('CreateBulkBtn').Add_Click({ OnCreateBulkButtonClick })
+	function OnPasteButtonClick {
+		$pwin = New-StyledDialog -Title 'Paste a list of addresses' -Icon '&#xED75;' -BodyXaml @'
+<StackPanel Margin="16" Width="380">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock Text="One address per line. They'll all be converted using the From and To you picked above." Style="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+			<TextBox x:Name="PasteBox" Style="{DynamicResource TextArea}" Height="150" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+			<Grid Margin="0,12,0,0">
+				<Button x:Name="PasteCancel" Style="{DynamicResource BtnGhost}" Content="Cancel" HorizontalAlignment="Left" MinWidth="90"/>
+				<Button x:Name="PasteGo" Style="{DynamicResource BtnPrimary}" Content="Convert all" HorizontalAlignment="Right" MinWidth="120"/>
+			</StackPanel>
+		</StackPanel>
+	</Border>
+</StackPanel>
+'@
+		$box = $pwin.FindName('PasteBox')
+		$pwin.FindName('PasteCancel').Add_Click({ $pwin.Close() })
+		$pwin.FindName('PasteGo').Add_Click({
+			$addrs = @(Get-EmailsFromText $box.Text)
+			if (-not $addrs.Count) { $addrs = @($box.Text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique) }
+			$pwin.Close()
+			$from = Get-ConvFrom; $to = Get-ConvTo
+			$items = @($addrs | ForEach-Object { @{ Address = $_; From = $from; To = $to } })
+			Run-ConvBatch $items
+		})
+		[void]$pwin.ShowDialog()
+	}
 
-	Write-Host "Loaded ScriptForm6."
+	$scriptForm6 = New-ConvertMailboxOrGroupDialog
+	$fromM365 = $scriptForm6.FindName('FromM365'); $fromDL = $scriptForm6.FindName('FromDL'); $fromShared = $scriptForm6.FindName('FromShared')
+	$toDL = $scriptForm6.FindName('ToDL'); $toM365 = $scriptForm6.FindName('ToM365'); $toShared = $scriptForm6.FindName('ToShared')
+	$summaryText = $scriptForm6.FindName('SummaryText'); $staysText = $scriptForm6.FindName('StaysText'); $lostText = $scriptForm6.FindName('LostText')
+	$moveAddrCheck = $scriptForm6.FindName('MoveAddrCheck'); $sendAsCheck = $scriptForm6.FindName('SendAsCheck')
+	$sourceInputBox = $scriptForm6.FindName('SourceInput')
+	Enable-RecipientAutocomplete $sourceInputBox 'Any'
+	$singlePanel = $scriptForm6.FindName('SinglePanel'); $bulkPanel = $scriptForm6.FindName('BulkPanel')
+	foreach ($r in @($fromM365, $fromDL, $fromShared, $toDL, $toM365, $toShared)) { $r.Add_Checked({ Update-ConvUi }) }
+	$scriptForm6.FindName('SingleChip').Add_Checked({ $singlePanel.Visibility = 'Visible'; $bulkPanel.Visibility = 'Collapsed' })
+	$scriptForm6.FindName('BulkChip').Add_Checked({ $singlePanel.Visibility = 'Collapsed'; $bulkPanel.Visibility = 'Visible' })
+	$scriptForm6.FindName('ConvertBtn').Add_Click({ OnConvertButtonClick })
+	$scriptForm6.FindName('TemplateOpenBtn').Add_Click({ OnTemplateButtonClick })
+	$scriptForm6.FindName('PasteBtn').Add_Click({ OnPasteButtonClick })
+	$scriptForm6.FindName('ConvertBulkBtn').Add_Click({ OnConvertBulkButtonClick })
+
+	Update-ConvUi
+	Write-Host "Loaded Convert mailbox or group dialog."
 	$progressBar1.Value = 0
 
-	[void]$ScriptForm6.ShowDialog()
+	[void]$scriptForm6.ShowDialog()
 
 	Stop-Transcript
+}
+
+# Back-compat: anything still calling the old name gets Microsoft 365 group -> distribution list.
+function Convert-UnifiedGroupToDistributionGroup {
+	Convert-MailboxOrGroup
 }
 
 # ---------------------------------------------------------------------------

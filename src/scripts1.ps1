@@ -445,6 +445,7 @@ function New-PasteMembersDialog {
 		# Cache external-address resolution per click, so the same person isn't re-looked-up / re-invited
 		# for every target they're added to (a big saver when adding to many lists at once).
 		$extContactCache = @{}; $extGuestCache = @{}
+		$pi = 0; $ptot = [Math]::Max(1, $members.Count * $targets.Count)
 		foreach ($target in $targets) {
 			$ti++
 			# Left line: which target we're on (the email). Right detail: N of M + throughput. Set-ItemStatus
@@ -452,13 +453,12 @@ function New-PasteMembersDialog {
 			# live (throttled) even though the main window is behind this modal dialog.
 			$tp = Get-ThroughputText ($ti - 1) $tc
 			Set-ItemStatus "$actLow $target"
-			Set-StatusDetail ("$ti of $tc" + $(if ($tp) { " · $tp" } else { '' }))
-			Set-LoopProgress $ti $tc 12 95
 			$cat = Get-RecipientCategory $target
 			$typeName = Get-RecipientTypeName (Get-LastRecipientRaw)
 			if (-not $cat -or $cat -eq 'Other') {
 				Write-Host "Skipping '$target' - couldn't determine its type (not a mailbox / list / group)." -ForegroundColor Yellow
 				$lines.Add("$target - skipped (not a mailbox, list, or group)")
+				$pi += $members.Count; Set-LoopProgress $pi $ptot 12 95   # keep the bar accurate past a skipped target
 				continue
 			}
 			$skipM  = [System.Collections.Generic.List[string]]::new()
@@ -466,6 +466,12 @@ function New-PasteMembersDialog {
 			$noopM  = [System.Collections.Generic.List[string]]::new()
 			$failM  = [System.Collections.Generic.List[string]]::new()
 			foreach ($m in $members) {
+				$pi++
+				$verbNow = if ($isRemove) { "Removing $m from $target" } else { "Adding $m to $target" }
+				Set-LoopProgress $pi $ptot 12 95
+				$tp = Get-ThroughputText ($pi - 1) $ptot
+				Set-StatusDetail ("$pi of $ptot" + $(if ($tp) { " · $tp" } else { '' }))
+				Set-ItemStatus "$verbNow ($pi of $ptot)"
 				try {
 					if ($isRemove) {
 						switch ($cat) {
@@ -509,6 +515,7 @@ function New-PasteMembersDialog {
 			Write-Host $lineText -ForegroundColor Cyan
 		}
 		$result.Counts = $counts; $result.Lines = $lines; $result.AnyFailed = $anyFailed; $result.TargetCount = $targets.Count
+		Set-LoopProgress $ptot $ptot 12 95
 		Unlock-ScriptWindow   # release before closing (the lock also guards against close while running)
 		$win.Close()
 	}.GetNewClosure())

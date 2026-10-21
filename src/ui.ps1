@@ -733,7 +733,7 @@ function Get-AuthMethodInfo($m) {
 		'*windowsHelloForBusinessAuthenticationMethod'           { $kind = 'Windows Hello for Business'; $detail = "$($ap['displayName'])" }
 		'*emailAuthenticationMethod'                             { $kind = 'Email'; $detail = "$($ap['emailAddress'])" }
 		'*temporaryAccessPassAuthenticationMethod'               { $kind = 'Temporary Access Pass'; $detail = '' }
-		'*platformCredentialAuthenticationMethod'                { $kind = 'Platform credential'; $detail = "$($ap['displayName'])" }
+		'*platformCredentialAuthenticationMethod'                { $kind = 'Platform credential'; $detail = "$($ap['displayName'])"; if (-not (Get-Command Remove-MgUserAuthenticationPlatformCredentialMethod -ErrorAction Ignore)) { $removable = $false } }
 		'*passwordAuthenticationMethod'                          { $kind = 'Password'; $removable = $false }
 		default { $kind = (("$type" -replace '.*\.', '') -replace 'AuthenticationMethod$', ''); if (-not $kind) { $kind = 'Authentication method' } }
 	}
@@ -826,17 +826,18 @@ function Step-AcWorker {
 			$script:AcOffMsg = ''
 			$rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
 			$parts = $key -split '\|'; $org = $parts[1]; $upn = $parts[2]
+			$exoVer = ''; try { $exoVer = [string](Get-PinnedVersion 'ExchangeOnlineManagement') } catch {}   # pin Exchange in the worker runspace too
 			$ps = [PowerShell]::Create(); $ps.Runspace = $rs
 			[void]$ps.AddScript({
-				param($org, $upn)
-				Import-Module ExchangeOnlineManagement
+				param($org, $upn, $exoVer)
+				if ($exoVer) { Import-Module ExchangeOnlineManagement -RequiredVersion $exoVer } else { Import-Module ExchangeOnlineManagement }
 				$cp = @{ ShowBanner = $false; ErrorAction = 'Stop' }
 				if ($org) { $cp.Organization = $org }; if ($upn) { $cp.UserPrincipalName = $upn }
 				$k = (Get-Command Connect-ExchangeOnline).Parameters
 				if ($k.ContainsKey('DisableWAM'))            { $cp.DisableWAM = $true }
 				if ($k.ContainsKey('SkipLoadingCmdletHelp')) { $cp.SkipLoadingCmdletHelp = $true }
 				Connect-ExchangeOnline @cp; 'ok'
-			}).AddParameters(@{ org = $org; upn = $upn }) | Out-Null
+			}).AddParameters(@{ org = $org; upn = $upn; exoVer = $exoVer }) | Out-Null
 			$script:AcWorker = @{ RS = $rs; Key = $key; ConnPS = $ps; ConnAsync = $ps.BeginInvoke(); Ready = $false; Started = [datetime]::Now }
 			Write-BgLog "connecting worker (upn=$upn org=$org module=$((Get-Module ExchangeOnlineManagement | Select-Object -First 1).Version))..."
 		} catch { Write-BgLog "worker SETUP failed: $($_.Exception.Message)"; Reset-AcWorker; $script:AcWorkerFail = $key; return 'off' }

@@ -10,8 +10,7 @@ A modern WPF admin toolkit for Microsoft 365 and Active Directory - dark/light t
 For the portable version, run `Script-Package-Studio.bat` as administrator.
 
 **Modules:** Microsoft.Graph, ExchangeOnlineManagement  
-- `Install-Module -Name Microsoft.Graph -Force -AllowClobber`  
-- `Install-Module -Name ExchangeOnlineManagement -Force -AllowClobber`  
+The app installs and uses exact module versions (Microsoft Graph 1.23.0 and a fixed ExchangeOnlineManagement version - see the PINNED MODULE VERSIONS block in MainGUI.ps1), so Microsoft sign-in opens in your browser. Newer Graph versions (2.34+) use a Windows account pop-up instead; if one is installed, the app offers to switch back.  
   
 If the modules are missing, the app offers to install them the first time you sign in. You can also run the `Install-RequiredModules` script from the list to install them manually.
 
@@ -129,8 +128,7 @@ It's built to stay fast: it reads cloud groups (one lookup) and Send As only - t
 ### Install-RequiredModules
 
 Installs required modules for the script package to work.  
-`Install-Module -Name Microsoft.Graph -Force -AllowClobber`  
-`Install-Module -Name ExchangeOnlineManagement -Force -AllowClobber`
+The app installs and uses exact module versions (Microsoft Graph 1.23.0 and a fixed ExchangeOnlineManagement version - see the PINNED MODULE VERSIONS block in MainGUI.ps1), so Microsoft sign-in opens in your browser. Newer Graph versions (2.34+) use a Windows account pop-up instead; if one is installed, the app offers to switch back.
 
 ### New-ADAccounts
 

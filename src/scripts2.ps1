@@ -57,16 +57,29 @@ function Remove-UserLicenses([string]$User) {
 # Remove ONE authentication method (any type) by its @odata.type + id. Used by the Add-2FA
 # "Show current" list so the user can remove any single 2FA method (phone, alternate phone,
 # Microsoft Authenticator, security key, email, TAP, etc.). Throws for the password / unknown types.
+# Remove a Windows Hello for Business method. Graph 1.x spells the cmdlet "...WindowHello..."
+# (no 's'); 2.x spells it "...WindowsHello...". Use whichever the loaded module provides. Called
+# only after sign-in, when the pinned modules are already loaded.
+function Remove-WinHelloMethod([string]$User, [string]$Id) {
+	if (Get-Command Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -ErrorAction Ignore) {
+		Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop
+	} else {
+		Remove-MgUserAuthenticationWindowHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop
+	}
+}
 function Remove-OneAuthMethod([string]$User, [string]$Type, [string]$Id) {
 	switch -Wildcard ($Type) {
 		'*phoneAuthenticationMethod'                  { Remove-MgUserAuthenticationPhoneMethod -UserId $User -PhoneAuthenticationMethodId $Id -ErrorAction Stop }
 		'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $User -MicrosoftAuthenticatorAuthenticationMethodId $Id -ErrorAction Stop }
 		'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $User -SoftwareOathAuthenticationMethodId $Id -ErrorAction Stop }
 		'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $User -Fido2AuthenticationMethodId $Id -ErrorAction Stop }
-		'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop }
+		'*windowsHelloForBusinessAuthenticationMethod'{ Remove-WinHelloMethod $User $Id }
 		'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $User -EmailAuthenticationMethodId $Id -ErrorAction Stop }
 		'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $User -TemporaryAccessPassAuthenticationMethodId $Id -ErrorAction Stop }
-		'*platformCredentialAuthenticationMethod'     { Remove-MgUserAuthenticationPlatformCredentialMethod -UserId $User -PlatformCredentialAuthenticationMethodId $Id -ErrorAction Stop }
+		'*platformCredentialAuthenticationMethod'     {
+			if (Get-Command Remove-MgUserAuthenticationPlatformCredentialMethod -ErrorAction Ignore) { Remove-MgUserAuthenticationPlatformCredentialMethod -UserId $User -PlatformCredentialAuthenticationMethodId $Id -ErrorAction Stop }
+			else { throw "Removing a platform credential needs a newer Microsoft Graph module than the pinned one - remove it in the Entra admin center instead." }
+		}
 		default { throw "this kind of sign-in method can't be removed here." }
 	}
 }
@@ -81,7 +94,7 @@ function Clear-UserAuthMethods([string]$User) {
 				'*microsoftAuthenticatorAuthenticationMethod' { Remove-MgUserAuthenticationMicrosoftAuthenticatorMethod -UserId $User -MicrosoftAuthenticatorAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
 				'*softwareOathAuthenticationMethod'           { Remove-MgUserAuthenticationSoftwareOathMethod -UserId $User -SoftwareOathAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
 				'*fido2AuthenticationMethod'                  { Remove-MgUserAuthenticationFido2Method -UserId $User -Fido2AuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
-				'*windowsHelloForBusinessAuthenticationMethod'{ Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
+				'*windowsHelloForBusinessAuthenticationMethod'{ Remove-WinHelloMethod $User $m.Id; $removed++ }
 				'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $User -EmailAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
 				'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $User -TemporaryAccessPassAuthenticationMethodId $m.Id -ErrorAction Stop; $removed++ }
 				default { }   # passwordAuthenticationMethod / anything unknown: leave alone
@@ -1213,9 +1226,17 @@ function Install-RequiredModules {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Install-RequiredModules.txt"
 	Write-Host "Running Install-RequiredModules script..."
 	$progressBar1.Value = 10
-	Install-Module -Name Microsoft.Graph -Force -AllowClobber
-	$progressBar1.Value = 50
-	Install-Module -Name ExchangeOnlineManagement -Force -AllowClobber
+	# Install the exact PINNED versions (CurrentUser scope, no admin), then load them. If a different
+	# Microsoft Graph version is already loaded in this window, the pinned one can't load until the app
+	# restarts - so offer the switch (which restarts).
+	$ok = Install-PinnedModules
+	$progressBar1.Value = 60
+	if ($ok) {
+		if (-not (Import-PinnedModules)) {
+			Write-Host "Installed. Restart Script Package Studio to finish." -ForegroundColor Yellow
+			Show-GraphPinPrompt 'after-install-required'
+		}
+	}
 	$progressBar1.Value = 80
 	CheckForErrors
 	OperationComplete

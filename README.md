@@ -11,12 +11,12 @@ For the portable version, run `Script-Package-Studio.bat` as administrator.
 
 **Modules:** Microsoft.Graph, ExchangeOnlineManagement
 
-On a working machine the app loads whatever Microsoft Graph and Exchange modules are already installed, exactly as before - **already-installed working versions are used as-is** (no prompt, no install). It only steps in when that would be broken:
+On a working machine the app loads whatever Microsoft Graph and Exchange modules are already installed, exactly as before - **already-installed working versions are used as-is** (no prompt, no install). The app checks the version PowerShell would actually load (the first module folder that has it), not just the newest one installed. It only steps in when that would be broken:
 
-- If the newest installed Microsoft Graph is **2.34.0 or newer** (which forces a Windows account pop-up instead of the browser), the app offers to install **Microsoft Graph 1.23.0** for browser sign-in.
+- If the Microsoft Graph that PowerShell loads (the first module folder that has it) is **2.34.0 or newer** (which forces a Windows account pop-up instead of the browser), the app offers to install **Microsoft Graph 1.23.0** for browser sign-in.
 - It picks an Exchange version that actually loads on your PowerShell:
 
-  | PowerShell | Exchange it will install | Also loads if already installed |
+  | PowerShell | Exchange it will install | Used if it's the version PowerShell loads (unless known-broken) |
   |---|---|---|
   | 7.2 / 7.3 | 3.4.0 | 3.0.0 – 3.4.0 |
   | 7.4 / 7.5 | 3.9.2 | 3.0.0 – 3.9.2 |

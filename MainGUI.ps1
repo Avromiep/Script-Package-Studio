@@ -51,6 +51,7 @@ $script:Settings = @{
 	bgSearch        = $true
 	rolledBackFrom  = ''   # if set, the version we rolled back FROM (so Check for updates can offer to return)
 	badModuleVersions = @()   # "Name=Version" entries that failed to import; skipped by Resolve-ModulePlan next time
+	graphRevertDeclined = ''   # the autoload Graph version the user said "Not now" to (don't re-offer it)
 }
 
 function Read-AppSettings {
@@ -66,6 +67,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*BackgroundSearch\s*=\s*(0|1)\s*$') { $script:Settings.bgSearch = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*RolledBackFrom\s*=\s*(.*)$') { $script:Settings.rolledBackFrom = $Matches[1].Trim() }
 		elseif ($line -match '^\s*BadModuleVersions\s*=\s*(.*)$') { $script:Settings.badModuleVersions = @(($Matches[1] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+		elseif ($line -match '^\s*GraphRevertDeclined\s*=\s*(.*)$') { $script:Settings.graphRevertDeclined = $Matches[1].Trim() }
 	}
 }
 
@@ -82,6 +84,7 @@ function Save-AppSettings {
 			BackgroundSearch = if ($script:Settings.bgSearch) { '1' } else { '0' }
 			RolledBackFrom = [string]$script:Settings.rolledBackFrom
 			BadModuleVersions = (@($script:Settings.badModuleVersions) -join ',')
+			GraphRevertDeclined = [string]$script:Settings.graphRevertDeclined
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -675,7 +678,11 @@ function Write-ModuleLog([string]$Message) {
 	try {
 		$dir = Join-Path $PSScriptRoot 'Logs'
 		if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-		Add-Content -LiteralPath (Join-Path $dir 'modules.txt') -Value ("{0}  {1}" -f (Get-Date -Format 'o'), $Message) -Encoding UTF8
+		$file = Join-Path $dir 'modules.txt'
+		Add-Content -LiteralPath $file -Value ("{0}  {1}" -f (Get-Date -Format 'o'), $Message) -Encoding UTF8
+		# keep only the last 500 lines so the log can't grow without bound
+		$all = @(Get-Content -LiteralPath $file -ErrorAction Ignore)
+		if ($all.Count -gt 500) { Set-Content -LiteralPath $file -Value (@($all | Select-Object -Last 500)) -Encoding UTF8 }
 	} catch {}
 	Write-Host $Message
 }
@@ -683,6 +690,7 @@ function Write-ModuleLog([string]$Message) {
 # SILENT startup step - NO UI, NO prompts. Work out the plan, and only when a pin is needed import
 # it (so the later Get-Command autoload finds the pinned version). asToday both = import nothing.
 function Initialize-ModulePinsEarly {
+	$errBefore = $Error.Count   # module lookups can add to $Error even when ignored; remove ONLY ours below
 	try {
 		$script:ModulePlan = Resolve-ModulePlan
 		$fw = ''; try { $fw = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription } catch {}
@@ -691,6 +699,7 @@ function Initialize-ModulePinsEarly {
 			$script:ModuleImport = Import-ModulePlan -Plan $script:ModulePlan -Log { param($m) Write-ModuleLog $m }
 		}
 	} catch { Write-ModuleLog "Initialize-ModulePinsEarly: $($_.Exception.Message)" }
+	try { while ($Error.Count -gt $errBefore) { $Error.RemoveAt(0) } } catch {}   # so CheckForErrors doesn't pop them later
 }
 
 # Two-button styled dialog. Returns the clicked key, or '' if closed / in a test run.
@@ -721,11 +730,13 @@ function Show-ModuleChoiceDialog([string]$Title, [string]$Message, [string]$Prim
 	return $result.Key
 }
 
-# Install the given {Name;Version} items with a status line + repaint. $true if all installed.
-function Invoke-ModuleInstall($Items, [string]$What) {
+# Install the given {Name;Version} items with a status line + repaint. Returns $true (meaning "now
+# restart") only when at least one module was actually installed and nothing failed. If everything
+# was already present it returns $false (no restart). -ForceCurrentUser reinstalls to CurrentUser.
+function Invoke-ModuleInstall($Items, [string]$What, [switch]$ForceCurrentUser) {
 	try { Set-ItemStatus "Installing $What... this can take a few minutes." } catch {}
 	try { Update-UiNow } catch {}
-	$res = Install-PlanModules -Items $Items -Log { param($m) Write-ModuleLog $m }
+	$res = if ($ForceCurrentUser) { Install-PlanModules -Items $Items -ForceCurrentUser -Log { param($m) Write-ModuleLog $m } } else { Install-PlanModules -Items $Items -Log { param($m) Write-ModuleLog $m } }
 	try { Set-ItemStatus 'Ready' } catch {}
 	if (@($res.Failed).Count) {
 		$body = "These couldn't be installed:`n  " + (@($res.Failed) -join "`n  ")
@@ -733,25 +744,28 @@ function Invoke-ModuleInstall($Items, [string]$What) {
 		Show-Notice 'Some modules did not install' $body 'Warn'
 		return $false
 	}
+	if (@($res.Installed).Count -eq 0) { Write-ModuleLog "already installed - not restarting"; return $false }
 	return $true
 }
 
 function Show-ModuleRestartPrompt {
 	$imp = $script:ModuleImport
 	$what = if ("$($imp.Error)" -match 'Exchange') { 'Exchange' } else { 'Microsoft Graph' }
-	$next = ''
-	try { if ($imp.Error -match '(\d+\.\d+\.\d+)') { $next = " It will try $($Matches[1])'s replacement." } } catch {}
-	$k = Show-ModuleChoiceDialog 'Restart needed' "$what couldn't load in this window.$next Click Restart to finish." 'Restart' 'restart'
+	$ver = ''; try { if ($imp.Error -match '(\d+\.\d+\.\d+)') { $ver = " $($Matches[1])" } } catch {}
+	$k = Show-ModuleChoiceDialog 'Restart needed' "$what$ver couldn't load in this window. Click Restart and the app will try the next version." 'Restart' 'restart'
 	if ($k -eq 'restart') { Restart-App; Complete-Relaunch }
 }
 
 function Show-GraphRevertPrompt {
 	$plan = $script:ModulePlan
-	$newest = ''
-	try { $ai = @(Get-InstalledModuleVersions 'Microsoft.Graph.Authentication'); if ($ai.Count) { $newest = ($ai | Select-Object -Last 1).Version } } catch {}
-	$msg = "This PC has Microsoft Graph $newest, which signs in with a Windows account pop-up. Script Package Studio can install Microsoft Graph $($script:GraphInstallDefault), which signs in with the browser like before.`n`nIt's installed only for the Windows account running this app (if Windows asked for a different admin account when the app started, it goes into that account). Nothing is removed and other users aren't affected. Then the app restarts."
+	$auto = "$($plan.GraphAutoload)"
+	$msg = "This PC has Microsoft Graph $auto, which signs in with a Windows account pop-up. Script Package Studio can install Microsoft Graph $($script:GraphInstallDefault), which signs in with the browser like before.`n`nIt's installed only for the Windows account running this app (if Windows asked for a different admin account when the app started, it goes into that account). Nothing is removed and other users aren't affected. Then the app restarts."
 	$k = Show-ModuleChoiceDialog 'Microsoft Graph sign-in' $msg 'Install the browser-sign-in version' 'install'
-	if ($k -ne 'install') { Write-ModuleLog "Graph revert declined - continuing with Microsoft Graph $newest (Windows account window)."; return }
+	if ($k -ne 'install') {
+		Write-ModuleLog "Graph revert declined - continuing with Microsoft Graph $auto (Windows account window)."
+		try { $script:Settings.graphRevertDeclined = $auto; Save-AppSettings } catch {}   # remember, so we don't ask again for this version
+		return
+	}
 	$items = @($plan.NeedsInstall | Where-Object { $_.Name -like 'Microsoft.Graph*' })
 	if (Invoke-ModuleInstall $items 'Microsoft Graph') { Restart-App; Complete-Relaunch }
 }
@@ -767,33 +781,35 @@ function Show-ExoInstallPrompt {
 	if (Invoke-ModuleInstall $items 'Exchange') { Restart-App; Complete-Relaunch }
 }
 
-# ContentRendered UI step: prompt ONLY when needed. Nothing to show when both modes are asToday/pin
-# and the import was fine (Albert / office PC see no new prompt).
+# ContentRendered UI step: prompt ONLY when needed. Returns $true when it showed a dialog (so the
+# caller can skip the old missing-modules dialog). asToday/pin/blocked = nothing to show.
 function Initialize-ModulePins {
+	$shown = $false
 	try {
 		if (-not $script:ModulePlan) { $script:ModulePlan = Resolve-ModulePlan }
 		$plan = $script:ModulePlan; $imp = $script:ModuleImport
-		if ($imp -and $imp.Step -eq 'restart') { Show-ModuleRestartPrompt; return }
-		if ($plan.GraphMode -eq 'needsRevert') { $script:GraphRevertOffered = $true; Show-GraphRevertPrompt; return }
-		if ($plan.ExoMode -eq 'needsInstall') { Show-ExoInstallPrompt; return }
-		# both 'missing' -> the existing Confirm-ModulesAtStartup offers the install
+		if ($imp -and $imp.Step -eq 'restart') { Show-ModuleRestartPrompt; $shown = $true }
+		elseif (Test-ShouldOfferGraphRevert -Plan $plan -Declined ([string]$script:Settings.graphRevertDeclined)) { Show-GraphRevertPrompt; $shown = $true }
+		elseif ($plan.ExoMode -eq 'needsInstall') { Show-ExoInstallPrompt; $shown = $true }
+		# 'blocked' -> no offer (Settings shows the "Clear failed-version list" option); both 'missing' -> Confirm-ModulesAtStartup
 	} catch { Write-ModuleLog "Initialize-ModulePins: $($_.Exception.Message)" }
+	return [bool]$shown
 }
 
 # Before a connect: asToday / already-loaded -> return (v3.4.2 flow). pin-not-loaded -> import.
-# needsRevert -> offer once per session, then continue as v3.4.2 would. No Jwt check.
+# needsRevert -> offer unless already declined for this version. No Jwt check.
 function Confirm-GraphPinReady {
 	try {
 		if (-not $script:ModulePlan) { $script:ModulePlan = Resolve-ModulePlan }
 		$plan = $script:ModulePlan
-		if ($plan.GraphMode -eq 'asToday' -or $plan.GraphMode -eq 'missing') { return }
+		if ($plan.GraphMode -eq 'asToday' -or $plan.GraphMode -eq 'missing' -or $plan.GraphMode -eq 'blocked') { return }
 		if ($plan.GraphMode -eq 'pin') {
 			$la = Get-Module -Name 'Microsoft.Graph.Authentication' | Where-Object { "$($_.Version)" -eq "$($plan.Graph)" } | Select-Object -First 1
 			if (-not $la) { $script:ModuleImport = Import-ModulePlan -Plan $plan -Log { param($m) Write-ModuleLog $m }; if ($script:ModuleImport.Step -eq 'restart') { Show-ModuleRestartPrompt } }
 			return
 		}
 		if ($plan.GraphMode -eq 'needsRevert') {
-			if (-not $script:GraphRevertOffered) { $script:GraphRevertOffered = $true; Show-GraphRevertPrompt }
+			if (Test-ShouldOfferGraphRevert -Plan $plan -Declined ([string]$script:Settings.graphRevertDeclined)) { Show-GraphRevertPrompt }
 			return
 		}
 	} catch { Write-ModuleLog "Confirm-GraphPinReady: $($_.Exception.Message)" }
@@ -1689,6 +1705,14 @@ function New-SettingsDialog {
 				<TextBlock x:Name="ExoUpgradeText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
 				<Button x:Name="ExoUpgradeBtn" Style="{DynamicResource BtnSecondary}" Content="Install" HorizontalAlignment="Left" MinWidth="120" Margin="0,6,0,0"/>
 			</StackPanel>
+			<StackPanel x:Name="SwitchGraphPanel" Visibility="Collapsed" Margin="0,8,0,0">
+				<TextBlock x:Name="SwitchGraphText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
+				<Button x:Name="SwitchGraphBtn" Style="{DynamicResource BtnSecondary}" Content="Switch to browser sign-in (Graph 1.23.0)" HorizontalAlignment="Left" MinWidth="220" Margin="0,6,0,0"/>
+			</StackPanel>
+			<StackPanel x:Name="ModBlockedPanel" Visibility="Collapsed" Margin="0,8,0,0">
+				<TextBlock x:Name="ModBlockedText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
+				<Button x:Name="ClearBadBtn" Style="{DynamicResource BtnGhost}" Content="Clear failed-version list" HorizontalAlignment="Left" MinWidth="170" Margin="0,6,0,0"/>
+			</StackPanel>
 			<CheckBox x:Name="SimBareCheck" Content="Simulate a bare server (ignore modules installed for all users)" Margin="0,12,0,0"/>
 			<Grid Margin="0,12,0,0">
 				<Button x:Name="SelfTestBtn" Style="{DynamicResource BtnSecondary}" Content="Run self-test" HorizontalAlignment="Left" MinWidth="130"/>
@@ -1856,20 +1880,44 @@ function Show-Settings {
 	$eTxt = if ($loadedExo)   { $loadedExo   } elseif ($mplan -and $mplan.Exo)   { "$($mplan.Exo)" }   else { '(none)' }
 	$rowTxt = if ($mplan) { $mplan.PwshRow } else { Get-PwshRowKey }
 	$win.FindName('ModInfo').Text = "Graph $gTxt / Exchange $eTxt on PowerShell $rowTxt"
-	$exoNow = $null; try { if ($loadedExo) { $exoNow = [version]$loadedExo } elseif ($mplan -and $mplan.Exo) { $exoNow = [version]"$($mplan.Exo)" } } catch {}
-	if ($PSVersionTable.PSVersion -ge [version]'7.6' -and $exoNow -and $exoNow -lt [version]'3.10.1') {
-		$win.FindName('ExoUpgradeText').Text = "Exchange $exoNow is installed; 3.10.1 is recommended before Mar 31 2027."
+	# "Install 3.10.1" - only when the Exchange version AUTOLOAD would load is below 3.10.1 (not the newest
+	# installed), and 3.10.1 isn't on the failed list. Forces a CurrentUser install so it wins over a copy elsewhere.
+	$exoAuto = $null; try { $aa = Get-AutoloadVersion 'ExchangeOnlineManagement'; if ($aa) { $exoAuto = $aa.Version } } catch {}
+	$exo310Bad = ('ExchangeOnlineManagement=3.10.1' -in @($script:Settings.badModuleVersions))
+	if ($PSVersionTable.PSVersion -ge [version]'7.6' -and $exoAuto -and $exoAuto -lt [version]'3.10.1' -and -not $exo310Bad) {
+		$win.FindName('ExoUpgradeText').Text = "Exchange $exoAuto is the version PowerShell loads; 3.10.1 is recommended before Mar 31 2027."
 		$win.FindName('ExoUpgradeBtn').Content = 'Install 3.10.1'
 		$win.FindName('ExoUpgradePanel').Visibility = 'Visible'
 		$win.FindName('ExoUpgradeBtn').Add_Click({
-			if (Invoke-ModuleInstall @([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = '3.10.1' }) 'Exchange 3.10.1') { Restart-App; Complete-Relaunch }
+			if (Invoke-ModuleInstall @([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = '3.10.1' }) 'Exchange 3.10.1' -ForceCurrentUser) { Restart-App; Complete-Relaunch }
 		}.GetNewClosure())
 	}
+	# "Switch to browser sign-in" - shown whenever Graph needs a revert, even after a "Not now".
+	if ($mplan -and $mplan.GraphMode -eq 'needsRevert') {
+		$win.FindName('SwitchGraphText').Text = "Microsoft Graph $($mplan.GraphAutoload) loads here, which uses a Windows account pop-up. Switch to Microsoft Graph $($script:GraphInstallDefault) for browser sign-in (installed for your Windows account; nothing removed). The app restarts."
+		$win.FindName('SwitchGraphPanel').Visibility = 'Visible'
+		$win.FindName('SwitchGraphBtn').Add_Click({
+			$items = @($mplan.NeedsInstall | Where-Object { $_.Name -like 'Microsoft.Graph*' })
+			if ($items.Count -and (Invoke-ModuleInstall $items 'Microsoft Graph')) { Restart-App; Complete-Relaunch }
+		}.GetNewClosure())
+	}
+	# Blocked: a version failed earlier, so no offer. Let the user clear the failed-version list to retry.
+	if ($mplan -and ($mplan.GraphMode -eq 'blocked' -or $mplan.ExoMode -eq 'blocked')) {
+		$which = if ($mplan.GraphMode -eq 'blocked') { 'Microsoft Graph' } else { 'Exchange' }
+		$win.FindName('ModBlockedText').Text = "$which couldn't load on this PC earlier, so it won't be offered again. Click 'Clear failed-version list' to try it again."
+		$win.FindName('ModBlockedPanel').Visibility = 'Visible'
+	}
+	$win.FindName('ClearBadBtn').Add_Click({
+		try { $script:Settings.badModuleVersions = @(); Save-AppSettings } catch {}
+		try { $win.FindName('SelfTestStatus').Text = 'Cleared. Restart the app to try again.' } catch {}
+	}.GetNewClosure())
 	$modWarn = "Heads-up: Microsoft says Exchange module versions older than 3.10.1 may stop signing in from about 31 March 2027 (notice MC1483974). This PC uses Exchange $eTxt. On PowerShell 7.6 or newer the app can use 3.10.1 (above). On Windows Server 2012/2012 R2 (PowerShell 7.2) that isn't possible, so after that date use Script-Package Studio from Windows Server 2016+ or Windows 10/11 for Exchange tasks."
 	if ($PSVersionTable.PSVersion -lt [version]'7.4') { $modWarn = "PowerShell $($PSVersionTable.PSVersion) is out of Microsoft support; it can only use Exchange 3.0-3.4.`n`n" + $modWarn }
 	$win.FindName('ModWarnText').Text = $modWarn
 	$selfTestStatus = $win.FindName('SelfTestStatus'); $simBare = $win.FindName('SimBareCheck'); $selfTestBtn = $win.FindName('SelfTestBtn')
 	$stRoot = $appRoot
+	$diagBox = @{ Text = '' }   # closures can't share a $script: write (GetNewClosure module scope); use a hashtable
+	$capPlan = $mplan           # capture the plan before the closures
 	$selfTestBtn.Add_Click({
 		$selfTestBtn.IsEnabled = $false; $selfTestStatus.Text = 'Running self-test (this can take a minute)...'
 		$outFile = Join-Path $env:TEMP ("SPS-selftest-{0}.txt" -f (Get-Date -Format yyyyMMdd-HHmmss))
@@ -1886,13 +1934,17 @@ function Show-Settings {
 			$lines = @(); try { $lines = @(Get-Content -LiteralPath $outFile -TotalCount 25 -ErrorAction Stop) } catch {}
 			$head = if ($proc.ExitCode -eq 0) { 'Self-test passed.' } else { 'Self-test found a problem.' }
 			$selfTestStatus.Text = $head + "`n" + ($lines -join "`n")
-			$script:LastDiag = ''; try { $script:LastDiag = (Get-Content -LiteralPath $outFile -Raw) } catch {}
+			$diagBox.Text = ''; try { $diagBox.Text = (Get-Content -LiteralPath $outFile -Raw) } catch {}
+			try {   # F7c: delete the report, only if it's under %TEMP% with the expected name
+				$full = [IO.Path]::GetFullPath($outFile); $tmp = [IO.Path]::GetFullPath($env:TEMP); $leaf = Split-Path $outFile -Leaf
+				if ($full.StartsWith($tmp, [System.StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '^SPS-selftest-\d{8}-\d{6}\.txt$')) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue }
+			} catch {}
 		}.GetNewClosure())
 		$timer.Start()
 	}.GetNewClosure())
 	$win.FindName('CopyDiagBtn').Add_Click({
 		$text = ''
-		if ($script:LastDiag) { $text = $script:LastDiag } else { try { $text = Get-ModuleDiagnostics -Plan $script:ModulePlan } catch { $text = "Couldn't build diagnostics: $($_.Exception.Message)" } }
+		if ($diagBox.Text) { $text = $diagBox.Text } else { try { $text = Get-ModuleDiagnostics -Plan $capPlan } catch { $text = "Couldn't build diagnostics: $($_.Exception.Message)" } }
 		try { Set-Clipboard -Value $text; $selfTestStatus.Text = 'Diagnostics copied to the clipboard.' } catch { $selfTestStatus.Text = "Couldn't copy: $($_.Exception.Message)" }
 	}.GetNewClosure())
 
@@ -2297,8 +2349,9 @@ if (-not $env:SP_SHOT -and -not $env:SP_TEST) {
 	$script:Window.Add_ContentRendered({
 		if ($script:ModulesCheckedAtStartup) { return }
 		$script:ModulesCheckedAtStartup = $true
-		try { Initialize-ModulePins } catch {}   # load the pinned (browser sign-in) Graph, or offer to switch
-		try { Confirm-ModulesAtStartup } catch {}
+		$modDlgShown = $false
+		try { $modDlgShown = [bool](Initialize-ModulePins) } catch {}   # offer switch/install if needed; $true if it showed a dialog
+		if (-not $modDlgShown) { try { Confirm-ModulesAtStartup } catch {} }   # skip the old missing-modules dialog if we already showed one
 	})
 }
 

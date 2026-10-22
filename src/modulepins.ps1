@@ -70,6 +70,45 @@ function Get-InstalledModuleVersions([string]$Name, [string[]]$Roots) {
 	return @($out | Sort-Object Version)
 }
 
+# What PowerShell autoload would REALLY load for $Name. PowerShell does NOT pick the newest version
+# installed: it stops at the FIRST $env:PSModulePath folder (or the first -Roots entry) that contains
+# the module, and loads the highest version in THAT folder. On Windows the user's Documents folder
+# comes before Program Files, so the version there wins even if Program Files has a newer one.
+# A version folder whose .psd1 ModuleVersion doesn't match its folder name is skipped (PowerShell
+# skips it too). An unversioned <Name>\<Name>.psd1 is read for its ModuleVersion. Returns
+# { Version; ManifestPath; Folder } or $null. Never imports.
+# NOTE: command autoload actually finds the first module that EXPORTS the command, so a newer version
+# in a later folder can still load for a 2.x-only Graph command name - which is why the app never
+# Get-Commands those and uses Test-LoadedGraphCommand. But every Authentication / ExchangeOnlineManagement
+# version exports Connect-MgGraph / Connect-ExchangeOnline, so "first folder, highest in it" is exact here.
+function Get-AutoloadVersion([string]$Name, [string[]]$Roots) {
+	$folders = if ($Roots) { @($Roots) } else { @("$env:PSModulePath" -split [IO.Path]::PathSeparator) }
+	foreach ($folder in $folders) {
+		if (-not $folder) { continue }
+		$dir = Join-Path $folder $Name
+		if (-not (Test-Path -LiteralPath $dir)) { continue }
+		$best = $null
+		foreach ($vdir in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
+			$manifest = Join-Path $vdir.FullName "$Name.psd1"
+			if (-not (Test-Path -LiteralPath $manifest)) { continue }
+			$fv = $null; try { $fv = [version]$vdir.Name } catch {}
+			if (-not $fv) { continue }
+			$mv = $null; try { $mv = [version](Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop).ModuleVersion } catch {}
+			if ($mv -and "$mv" -ne "$fv") { continue }   # PowerShell skips a folder whose manifest version mismatches
+			if (-not $best -or $fv -gt $best.Version) { $best = [pscustomobject]@{ Version = $fv; ManifestPath = $manifest; Folder = $folder } }
+		}
+		if (-not $best) {
+			$flat = Join-Path $dir "$Name.psd1"
+			if (Test-Path -LiteralPath $flat) {
+				$mv = $null; try { $mv = [version](Import-PowerShellDataFile -LiteralPath $flat -ErrorAction Stop).ModuleVersion } catch {}
+				if ($mv) { $best = [pscustomobject]@{ Version = $mv; ManifestPath = $flat; Folder = $folder } }
+			}
+		}
+		if ($best) { return $best }   # first folder that has the module wins
+	}
+	return $null
+}
+
 # True ONLY for Exchange + pwsh combinations KNOWN to fail. Everything else is left alone (it may
 # be working today even if Microsoft doesn't officially support it).
 function Test-ExoBrokenHere([version]$v, [version]$ps) {
@@ -96,26 +135,29 @@ function Add-BadModuleVersion([string]$NameVersion) {
 	} catch {}
 }
 
-# Decide what to load. Returns the plan (modes + chosen versions + manifests + NeedsInstall). Pure.
+# Decide what to load, from the version autoload would REALLY load (first folder, not newest). Pure.
+# $PSVersion is for dry-runs only; the app never passes it.
 function Resolve-ModulePlan {
-	param([string[]]$Roots)
-	$ps = $PSVersionTable.PSVersion
-	$rowKey = Get-PwshRowKey
+	param([string[]]$Roots, [version]$PSVersion)
+	$ps = if ($PSVersion) { $PSVersion } else { $PSVersionTable.PSVersion }
+	$rowKey = '{0}.{1}' -f $ps.Major, $ps.Minor
 	if ($ps.Major -eq 7 -and $ps.Minor -ge 7) { $rowKey = '7.6' }   # 7.7+ uses the 7.6 row
 	$bad = @(Get-BadModuleVersions)
 	$attempts = [System.Collections.Generic.List[string]]::new()
 
 	# ---- Graph ----
 	$authInstalled = @(Get-InstalledModuleVersions 'Microsoft.Graph.Authentication' -Roots $Roots)
+	$graphNewest = if ($authInstalled.Count) { ($authInstalled | Select-Object -Last 1).Version } else { $null }
+	$graphAuto = Get-AutoloadVersion 'Microsoft.Graph.Authentication' -Roots $Roots   # what v3.4.2 really loads
+	$graphDefaultBad = @($script:GraphModuleNames | Where-Object { "$_=$($script:GraphInstallDefault)" -in $bad }).Count -gt 0
 	$graphMode = 'missing'; $graphVer = $null; $graphManifests = @{}
-	if ($authInstalled.Count) {
-		$newestAuth = ($authInstalled | Select-Object -Last 1).Version
-		if ($newestAuth -lt $script:GraphWamFrom) {
-			$graphMode = 'asToday'; $graphVer = $newestAuth    # v3.4.2 autoload picks the newest, exactly as today
+	if ($graphAuto) {
+		if ($graphAuto.Version -lt $script:GraphWamFrom) {
+			$graphMode = 'asToday'; $graphVer = $graphAuto.Version    # exactly the version v3.4.2 loads
 		} else {
 			$graphMode = 'needsRevert'
 			foreach ($cand in $script:GraphPinCandidates) {
-				if ("Microsoft.Graph.Authentication=$cand" -in $bad) { continue }
+				if (@($script:GraphModuleNames | Where-Object { "$_=$cand" -in $bad }).Count) { continue }   # any submodule marked bad
 				$ok = $true; $mans = @{}
 				foreach ($gm in $script:GraphModuleNames) {
 					$iv = @(Get-InstalledModuleVersions $gm -Roots $Roots | Where-Object { "$($_.Version)" -eq $cand })
@@ -124,16 +166,19 @@ function Resolve-ModulePlan {
 				}
 				if ($ok) { $graphMode = 'pin'; $graphVer = [version]$cand; $graphManifests = $mans; break }
 			}
+			if ($graphMode -eq 'needsRevert' -and $graphDefaultBad) { $graphMode = 'blocked'; $attempts.Add("Graph $($script:GraphInstallDefault) is on the failed-version list - no offer until cleared.") }
 		}
 	}
 
 	# ---- Exchange ----
 	$exoInstalled = @(Get-InstalledModuleVersions 'ExchangeOnlineManagement' -Roots $Roots)
+	$exoNewest = if ($exoInstalled.Count) { ($exoInstalled | Select-Object -Last 1).Version } else { $null }
+	$exoAuto = Get-AutoloadVersion 'ExchangeOnlineManagement' -Roots $Roots
+	$exoDefault = if ($script:ExoInstallDefault.Contains($rowKey)) { $script:ExoInstallDefault[$rowKey] } else { $null }
 	$exoMode = 'missing'; $exoVer = $null; $exoManifest = $null
-	if ($exoInstalled.Count) {
-		$newestExo = ($exoInstalled | Select-Object -Last 1).Version
-		if (-not (Test-ExoBrokenHere $newestExo $ps)) {
-			$exoMode = 'asToday'; $exoVer = $newestExo        # autoload loads the newest as v3.4.2 did
+	if ($exoAuto) {
+		if (-not (Test-ExoBrokenHere $exoAuto.Version $ps)) {
+			$exoMode = 'asToday'; $exoVer = $exoAuto.Version        # exactly the version v3.4.2 loads
 		} else {
 			$exoMode = 'needsInstall'
 			$cands = @(); if ($script:ExoCompat.Contains($rowKey)) { $cands = @($script:ExoCompat[$rowKey]) }
@@ -147,31 +192,44 @@ function Resolve-ModulePlan {
 				if (-not (Test-Path -LiteralPath $dll)) { continue }
 				$exoMode = 'pin'; $exoVer = [version]$cand; $exoManifest = $man; break
 			}
+			if ($exoMode -eq 'needsInstall' -and (-not $exoDefault -or "ExchangeOnlineManagement=$exoDefault" -in $bad)) { $exoMode = 'blocked'; $attempts.Add("Exchange install default is missing or on the failed-version list - no offer until cleared.") }
 		}
 	}
 
-	# ---- NeedsInstall (row defaults; NEVER installed silently) ----
+	# ---- NeedsInstall (row defaults; never a version on the failed list) ----
 	$needsInstall = [System.Collections.Generic.List[object]]::new()
-	if ($graphMode -eq 'missing' -or $graphMode -eq 'needsRevert') {
+	if (($graphMode -eq 'missing' -or $graphMode -eq 'needsRevert') -and -not $graphDefaultBad) {
 		foreach ($gm in $script:GraphModuleNames) { [void]$needsInstall.Add([pscustomobject]@{ Name = $gm; Version = $script:GraphInstallDefault }) }
 	}
 	if ($exoMode -eq 'missing' -or $exoMode -eq 'needsInstall') {
-		$ev = if ($script:ExoInstallDefault.Contains($rowKey)) { $script:ExoInstallDefault[$rowKey] } else { $null }
-		if ($ev) { [void]$needsInstall.Add([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = $ev }) }
+		if ($exoDefault -and ("ExchangeOnlineManagement=$exoDefault" -notin $bad)) { [void]$needsInstall.Add([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = $exoDefault }) }
 	}
 
 	return [pscustomobject]@{
 		PwshRow        = $rowKey
 		GraphMode      = $graphMode
 		Graph          = $graphVer
+		GraphNewest    = $graphNewest
+		GraphAutoload  = $(if ($graphAuto) { $graphAuto.Version } else { $null })   # what autoload would load (the problematic 2.x one on needsRevert)
 		GraphManifests = $graphManifests
 		ExoMode        = $exoMode
 		Exo            = $exoVer
+		ExoNewest      = $exoNewest
+		ExoAutoload    = $(if ($exoAuto) { $exoAuto.Version } else { $null })
 		ExoManifest    = $exoManifest
 		NeedsInstall   = @($needsInstall)
 		Attempts       = @($attempts)
 		Bad            = @($bad)
 	}
+}
+
+# Should the Graph "switch to browser sign-in" offer be shown? Only when the plan says needsRevert
+# and the user hasn't already declined THIS autoload Graph version. Pure (dry-run 5 calls it).
+function Test-ShouldOfferGraphRevert($Plan, [string]$Declined) {
+	if (-not $Plan) { return $false }
+	if ($Plan.GraphMode -ne 'needsRevert') { return $false }
+	if ($Declined -and "$Declined" -eq "$($Plan.GraphAutoload)") { return $false }
+	return $true
 }
 
 # Load the plan. Graph first (Authentication first), then Exchange - exactly v3.4.2's order. Imports
@@ -199,6 +257,7 @@ function Import-ModulePlan {
 				$msg = "$($_.Exception.Message)"
 				& $log "Couldn't load $gm $($Plan.Graph): $msg"
 				Add-BadModuleVersion "$gm=$($Plan.Graph)"
+				Add-BadModuleVersion "Microsoft.Graph.Authentication=$($Plan.Graph)"   # the key for the whole set
 				return [pscustomobject]@{ Ok = $false; Step = 'restart'; Error = "$gm $($Plan.Graph): $msg"; Loaded = @($loaded) }
 			}
 		}
@@ -233,7 +292,7 @@ function Test-LoadedGraphCommand([string]$Name) {
 	$authMajor = $null
 	$la = Get-Module -Name 'Microsoft.Graph.Authentication' | Sort-Object Version -Descending | Select-Object -First 1
 	if ($la) { $authMajor = $la.Version.Major }
-	else { $ai = @(Get-InstalledModuleVersions 'Microsoft.Graph.Authentication'); if ($ai.Count) { $authMajor = ($ai | Select-Object -Last 1).Version.Major } }
+	else { $auto = Get-AutoloadVersion 'Microsoft.Graph.Authentication'; if ($auto) { $authMajor = $auto.Version.Major } }   # the version autoload would load, not the newest
 	if ($null -eq $authMajor) { return $false }
 	return ($authMajor -ge 2)
 }
@@ -259,7 +318,7 @@ function Initialize-GalleryAccessPlain([scriptblock]$Log) {
 # Install (CurrentUser) or Save (-Destination) the given {Name;Version} items from PSGallery. Never
 # uninstalls, never writes machine-wide. Returns Installed / Already / Failed / NetworkError.
 function Install-PlanModules {
-	param($Items, [string]$Destination, [scriptblock]$Log)
+	param($Items, [string]$Destination, [switch]$ForceCurrentUser, [scriptblock]$Log)
 	$log = { param($m) if ($Log) { & $Log $m } }
 	Initialize-GalleryAccessPlain -Log $Log
 	$acceptLic = $false; try { $acceptLic = (Get-Command Install-Module).Parameters.ContainsKey('AcceptLicense') } catch {}
@@ -267,10 +326,14 @@ function Install-PlanModules {
 	foreach ($it in @($Items)) {
 		$name = "$($it.Name)"; $ver = "$($it.Version)"
 		if (-not $name -or -not $ver) { continue }
-		$have = if ($Destination) { @(Get-InstalledModuleVersions $name -Roots @($Destination) | Where-Object { "$($_.Version)" -eq $ver }) } else { @(Get-InstalledModuleVersions $name | Where-Object { "$($_.Version)" -eq $ver }) }
-		if ($have.Count) { $already += "$name $ver"; continue }
+		# -ForceCurrentUser (the Settings "Install 3.10.1" button): install to CurrentUser even if a copy
+		# exists elsewhere, so the CurrentUser folder (first on the path) wins. Otherwise skip if present.
+		if (-not $ForceCurrentUser) {
+			$have = if ($Destination) { @(Get-InstalledModuleVersions $name -Roots @($Destination) | Where-Object { "$($_.Version)" -eq $ver }) } else { @(Get-InstalledModuleVersions $name | Where-Object { "$($_.Version)" -eq $ver }) }
+			if ($have.Count) { $already += "$name $ver"; continue }
+		}
 		try {
-			if ($Destination) {
+			if ($Destination -and -not $ForceCurrentUser) {
 				$sp = @{ Name = $name; RequiredVersion = $ver; Path = $Destination; Repository = 'PSGallery'; Force = $true; ErrorAction = 'Stop' }
 				if ($acceptLic) { $sp.AcceptLicense = $true }
 				Save-Module @sp
@@ -296,20 +359,22 @@ function Get-GalleryHelpText {
 	"Couldn't reach the PowerShell Gallery. This computer may have no internet access, or a proxy/firewall is blocking it. Ask your network admin to allow HTTPS (port 443) to: cdn.oneget.org, cdn.powershellgallery.com, *.powershellgallery.com, go.microsoft.com, aka.ms."
 }
 
-# Redact machine-/user-identifying text (E8). Order matters: longer/profile paths first.
+# Redact machine-/user-identifying text (E8, N2). Secrets/identifiers FIRST (token, e-mail, GUID) so a
+# later name/path pass can't mangle them (e.g. leaving "albert" from albert@contoso.com). Then paths.
+# Then USERNAME / USERDOMAIN / COMPUTERNAME as WHOLE words only, so a short name can't scramble others.
 function Protect-DiagText([string]$Text) {
 	if (-not $Text) { return $Text }
 	$t = $Text
-	foreach ($pair in @(@($env:USERPROFILE,'<profile>'), @($env:OneDrive,'<onedrive>'), @($env:OneDriveCommercial,'<onedrive>'))) {
+	$t = $t -replace 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*', '<token>'
+	$t = $t -replace '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<upn>'
+	$t = $t -replace '(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<guid>'
+	foreach ($pair in @(@($env:USERPROFILE, '<profile>'), @($env:OneDrive, '<onedrive>'), @($env:OneDriveCommercial, '<onedrive>'))) {
 		if ($pair[0]) { $t = $t -replace [regex]::Escape($pair[0]), $pair[1] }
 	}
 	$t = $t -replace '(?i)OneDrive - [^\\/\r\n]+', 'OneDrive - <org>'
-	if ($env:USERNAME)     { $t = $t -replace ('(?i)' + [regex]::Escape($env:USERNAME)),     '<user>' }
-	if ($env:USERDOMAIN)   { $t = $t -replace ('(?i)' + [regex]::Escape($env:USERDOMAIN)),   '<domain>' }
-	if ($env:COMPUTERNAME) { $t = $t -replace ('(?i)' + [regex]::Escape($env:COMPUTERNAME)), '<pc>' }
-	$t = $t -replace '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<upn>'
-	$t = $t -replace '(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<guid>'
-	$t = $t -replace 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*', '<token>'
+	if ($env:USERNAME)     { $t = $t -replace ('(?i)(?<![A-Za-z0-9])' + [regex]::Escape($env:USERNAME)     + '(?![A-Za-z0-9])'), '<user>' }
+	if ($env:USERDOMAIN)   { $t = $t -replace ('(?i)(?<![A-Za-z0-9])' + [regex]::Escape($env:USERDOMAIN)   + '(?![A-Za-z0-9])'), '<domain>' }
+	if ($env:COMPUTERNAME) { $t = $t -replace ('(?i)(?<![A-Za-z0-9])' + [regex]::Escape($env:COMPUTERNAME) + '(?![A-Za-z0-9])'), '<pc>' }
 	return $t
 }
 
@@ -327,10 +392,12 @@ function Get-ModuleDiagnostics {
 	$elev = 'no'
 	try { $id = [Security.Principal.WindowsIdentity]::GetCurrent(); $elev = if ((New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 'yes' } else { 'no' } } catch {}
 	& $add "Elevated: $elev"
-	$pAll = 'no'; $pCur = 'no'
-	try { if ($PROFILE.CurrentUserAllHosts  -and (Test-Path -LiteralPath $PROFILE.CurrentUserAllHosts))  { $pAll = 'yes' } } catch {}
-	try { if ($PROFILE.CurrentUserCurrentHost -and (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) { $pCur = 'yes' } } catch {}
-	& $add "Profile files: AllHosts=$pAll CurrentHost=$pCur"
+	$pAAH = 'no'; $pACH = 'no'; $pCAH = 'no'; $pCCH = 'no'
+	try { if ($PROFILE.AllUsersAllHosts      -and (Test-Path -LiteralPath $PROFILE.AllUsersAllHosts))      { $pAAH = 'yes' } } catch {}
+	try { if ($PROFILE.AllUsersCurrentHost   -and (Test-Path -LiteralPath $PROFILE.AllUsersCurrentHost))   { $pACH = 'yes' } } catch {}
+	try { if ($PROFILE.CurrentUserAllHosts   -and (Test-Path -LiteralPath $PROFILE.CurrentUserAllHosts))   { $pCAH = 'yes' } } catch {}
+	try { if ($PROFILE.CurrentUserCurrentHost -and (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) { $pCCH = 'yes' } } catch {}
+	& $add "Profile files: AllUsersAllHosts=$pAAH AllUsersCurrentHost=$pACH CurrentUserAllHosts=$pCAH CurrentUserCurrentHost=$pCCH"
 	& $add ""
 	& $add "PSModulePath:"
 	foreach ($e in @(("$env:PSModulePath" -split [IO.Path]::PathSeparator) | Where-Object { $_ })) { & $add "  $e" }
@@ -344,9 +411,23 @@ function Get-ModuleDiagnostics {
 	& $add ""
 	if (-not $Plan) { try { $Plan = Resolve-ModulePlan } catch {} }
 	if ($Plan) {
-		& $add "Plan: pwsh row $($Plan.PwshRow) -> Graph $($Plan.Graph) ($($Plan.GraphMode)) / Exchange $($Plan.Exo) ($($Plan.ExoMode))"
+		$gExtra = if ($Plan.GraphNewest -and "$($Plan.GraphNewest)" -ne "$($Plan.Graph)") { " (newest installed: $($Plan.GraphNewest))" } else { '' }
+		$eExtra = if ($Plan.ExoNewest -and "$($Plan.ExoNewest)" -ne "$($Plan.Exo)") { " (newest installed: $($Plan.ExoNewest))" } else { '' }
+		& $add "Plan: pwsh row $($Plan.PwshRow) -> Graph $($Plan.Graph) ($($Plan.GraphMode))$gExtra / Exchange $($Plan.Exo) ($($Plan.ExoMode))$eExtra"
 		if (@($Plan.NeedsInstall).Count) { & $add ("  NeedsInstall: " + ((@($Plan.NeedsInstall) | ForEach-Object { "$($_.Name) $($_.Version)" }) -join ', ')) }
 		if (@($Plan.Attempts).Count)     { foreach ($a in @($Plan.Attempts)) { & $add "  attempt: $a" } }
+	}
+	& $add ""
+	# Graph set check (information only, never a failure/install): the version autoload would pick for each
+	# submodule next to Authentication; a mismatch means that part of Graph won't load (same as v3.4.2).
+	$authAuto = Get-AutoloadVersion 'Microsoft.Graph.Authentication'
+	if ($authAuto) {
+		& $add "Graph autoload set (Authentication $($authAuto.Version)):"
+		foreach ($gm in $script:GraphModuleNames) {
+			$sa = Get-AutoloadVersion $gm
+			& $add ("  {0} {1}" -f $gm, $(if ($sa) { "$($sa.Version)" } else { '(none)' }))
+			if ($sa -and "$($sa.Version)" -ne "$($authAuto.Version)") { & $add "  Note: Microsoft Graph $gm $($sa.Version) needs Authentication $($sa.Version), but $($authAuto.Version) loads first - that part of Graph won't load (same as v3.4.2)." }
+		}
 	}
 	& $add ("badModuleVersions: " + ((Get-BadModuleVersions) -join ', '))
 	& $add ""

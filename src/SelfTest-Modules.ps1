@@ -28,16 +28,20 @@ if (-not $Inner) {
 	New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
 	$mods = Join-Path $root 'Modules'
 	New-Item -ItemType Directory -Path $mods -ErrorAction Stop | Out-Null
-	if (-not $OutFile) { $OutFile = Join-Path $root 'selftest-report.txt' }
+	# OutFile defaults OUTSIDE the folder that gets deleted (F7a).
+	if (-not $OutFile) { $OutFile = Join-Path $env:TEMP ('SPS-selftest-{0}.txt' -f (Get-Date -Format yyyyMMdd-HHmmss)) }
 	$roots = @($mods); if (-not $ExcludeAllUsers) { $roots += Get-AllUsersRoots }   # NEVER MyDocuments
 	$plan = Resolve-ModulePlan -Roots $roots
-	if (-not $SkipDownload) {
-		$items = @()
-		foreach ($gm in $script:GraphModuleNames) { $items += [pscustomobject]@{ Name = $gm; Version = $script:GraphInstallDefault } }
-		$row = $plan.PwshRow; $ev = if ($script:ExoInstallDefault.Contains($row)) { $script:ExoInstallDefault[$row] } else { $null }
-		if ($ev) { $items += [pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = $ev } }
+	# Download ONLY what the plan says is needed (N3): everything when the set is bare, nothing when the
+	# AllUsers roots already hold a working set. The child copies download.txt into the report.
+	if (-not $SkipDownload -and @($plan.NeedsInstall).Count) {
 		Write-Host "Downloading module set into the temp folder (this can take ~20s)..."
-		[void](Install-PlanModules -Items $items -Destination $mods -Log { param($m) Write-Host $m })
+		$dl = Install-PlanModules -Items @($plan.NeedsInstall) -Destination $mods -Log { param($m) Write-Host $m }
+		$dlText = @()
+		if (@($dl.Installed).Count) { $dlText += "Downloaded: " + (@($dl.Installed) -join ', ') }
+		if (@($dl.Failed).Count)    { $dlText += "Download failed: " + (@($dl.Failed) -join '; ') }
+		if ($dl.NetworkError)       { $dlText += (Get-GalleryHelpText) }
+		if ($dlText.Count) { Set-Content -LiteralPath (Join-Path $root 'download.txt') -Value ($dlText -join "`n") -Encoding UTF8 }
 	}
 	$exe = (Get-Process -Id $PID).Path
 	# Quote paths: Start-Process -ArgumentList joins with spaces and does NOT quote, so a spaced path breaks.
@@ -54,6 +58,7 @@ if (-not $Inner) {
 		if ($okDel) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
 		if (Test-Path -LiteralPath $root) { Write-Host "leftover temp folder: $root" }
 	} catch {}
+	Write-Host "Report: $OutFile"
 	exit $code
 }
 
@@ -120,6 +125,7 @@ if ($exoMod) {
 } else { $results.Add('FAIL Exchange module not loaded'); $pass = $false }
 
 # ---- information only (never a failure; never connect/disconnect) ----
+try { $dlf = Join-Path $Root 'download.txt'; if (Test-Path -LiteralPath $dlf) { foreach ($line in @(Get-Content -LiteralPath $dlf)) { if ("$line".Trim()) { $info.Add("download: $line") } } } } catch {}
 try { foreach ($a in [System.AppDomain]::CurrentDomain.GetAssemblies()) { $n = $a.GetName().Name; if ($n -eq 'Microsoft.Identity.Client' -or $n -eq 'System.IdentityModel.Tokens.Jwt') { $info.Add("info: $n $($a.GetName().Version)") } } } catch {}
 $info.Add("info: Jwt 5.6 with Graph 1.x is normal; it only matters for certificate or access-token Exchange sign-in, which SPS doesn't use.")
 

@@ -1226,18 +1226,17 @@ function Install-RequiredModules {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Install-RequiredModules.txt"
 	Write-Host "Running Install-RequiredModules script..."
 	$progressBar1.Value = 10
-	# Install what the plan says is missing/broken, or the row defaults if nothing specific is flagged.
-	# CurrentUser scope (no admin), never uninstalls.
+	# Only install what the plan says is actually missing/broken. CurrentUser scope (no admin), never uninstalls.
 	$plan = $null; try { $plan = Resolve-ModulePlan } catch {}
-	$items = @()
-	if ($plan -and @($plan.NeedsInstall).Count) {
-		$items = @($plan.NeedsInstall)
-	} else {
-		$row = Get-PwshRowKey; if ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -ge 7) { $row = '7.6' }
-		foreach ($gm in $script:GraphModuleNames) { $items += [pscustomobject]@{ Name = $gm; Version = $script:GraphInstallDefault } }
-		$ev = if ($script:ExoInstallDefault.Contains($row)) { $script:ExoInstallDefault[$row] } else { $null }
-		if ($ev) { $items += [pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = $ev } }
+	if ($plan -and -not @($plan.NeedsInstall).Count -and $plan.GraphMode -ne 'missing' -and $plan.GraphMode -ne 'needsRevert' -and $plan.ExoMode -ne 'missing' -and $plan.ExoMode -ne 'needsInstall') {
+		Show-Notice 'Nothing to install' 'Microsoft Graph and Exchange are already installed and working.' 'Info'
+		$progressBar1.Value = 80
+		CheckForErrors
+		OperationComplete
+		Stop-Transcript
+		return
 	}
+	$items = @(); if ($plan) { $items = @($plan.NeedsInstall) }
 	$progressBar1.Value = 30
 	$res = Install-PlanModules -Items $items -Log { param($m) Write-Host $m }
 	$progressBar1.Value = 70
@@ -1250,7 +1249,10 @@ function Install-RequiredModules {
 		$plan2 = $null; try { $plan2 = Resolve-ModulePlan } catch {}
 		if ($plan2) {
 			$r = Import-ModulePlan -Plan $plan2 -Log { param($m) Write-Host $m }
-			if ($r.Step -eq 'restart') { Show-Notice 'Installed' 'Installed - restarting to load it.' 'Info'; Restart-App }
+			if ($r.Step -eq 'restart') {
+				if ((Show-ModuleChoiceDialog 'Restart needed' 'Installed. Restart the app to start using it.' 'Restart' 'restart') -eq 'restart') { Restart-App; Complete-Relaunch }
+				else { Write-Host 'Install done; user chose not to restart yet.' }
+			}
 		}
 	}
 	$progressBar1.Value = 80

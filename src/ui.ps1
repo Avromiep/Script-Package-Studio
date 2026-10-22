@@ -733,7 +733,7 @@ function Get-AuthMethodInfo($m) {
 		'*windowsHelloForBusinessAuthenticationMethod'           { $kind = 'Windows Hello for Business'; $detail = "$($ap['displayName'])" }
 		'*emailAuthenticationMethod'                             { $kind = 'Email'; $detail = "$($ap['emailAddress'])" }
 		'*temporaryAccessPassAuthenticationMethod'               { $kind = 'Temporary Access Pass'; $detail = '' }
-		'*platformCredentialAuthenticationMethod'                { $kind = 'Platform credential'; $detail = "$($ap['displayName'])"; if (-not (Get-Command Remove-MgUserAuthenticationPlatformCredentialMethod -ErrorAction Ignore)) { $removable = $false } }
+		'*platformCredentialAuthenticationMethod'                { $kind = 'Platform credential'; $detail = "$($ap['displayName'])"; if (-not (Test-LoadedGraphCommand 'Remove-MgUserAuthenticationPlatformCredentialMethod')) { $removable = $false } }
 		'*passwordAuthenticationMethod'                          { $kind = 'Password'; $removable = $false }
 		default { $kind = (("$type" -replace '.*\.', '') -replace 'AuthenticationMethod$', ''); if (-not $kind) { $kind = 'Authentication method' } }
 	}
@@ -826,7 +826,10 @@ function Step-AcWorker {
 			$script:AcOffMsg = ''
 			$rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
 			$parts = $key -split '\|'; $org = $parts[1]; $upn = $parts[2]
-			$exoVer = ''; try { $exoVer = [string](Get-PinnedVersion 'ExchangeOnlineManagement') } catch {}   # pin Exchange in the worker runspace too
+			# Load the SAME Exchange version the app already loaded (so a second version can't come up in
+			# this process). If none is loaded yet, import without -RequiredVersion, exactly as v3.4.2 did.
+			$exoVer = ''; try { $exoVer = [string](Get-Module ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1).Version } catch {}
+			try { Write-BgLog "worker Exchange version: $(if ($exoVer) { $exoVer } else { '(newest installed)' })" } catch {}
 			$ps = [PowerShell]::Create(); $ps.Runspace = $rs
 			[void]$ps.AddScript({
 				param($org, $upn, $exoVer)

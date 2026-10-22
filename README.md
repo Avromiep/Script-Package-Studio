@@ -9,8 +9,28 @@ A modern WPF admin toolkit for Microsoft 365 and Active Directory - dark/light t
 **Run as administrator:** The installer version will create a shortcut which can be ran as admin. You can set it to always run as admin by going to the shortcut's properties, then "Advanced", then checking off "Run as administrator".  
 For the portable version, run `Script-Package-Studio.bat` as administrator.
 
-**Modules:** Microsoft.Graph, ExchangeOnlineManagement  
-The app installs and uses exact module versions (Microsoft Graph 1.23.0 and a fixed ExchangeOnlineManagement version - see the PINNED MODULE VERSIONS block in MainGUI.ps1), so Microsoft sign-in opens in your browser. Newer Graph versions (2.34+) use a Windows account pop-up instead; if one is installed, the app offers to switch back.  
+**Modules:** Microsoft.Graph, ExchangeOnlineManagement
+
+On a working machine the app loads whatever Microsoft Graph and Exchange modules are already installed, exactly as before - **already-installed working versions are used as-is** (no prompt, no install). It only steps in when that would be broken:
+
+- If the newest installed Microsoft Graph is **2.34.0 or newer** (which forces a Windows account pop-up instead of the browser), the app offers to install **Microsoft Graph 1.23.0** for browser sign-in.
+- It picks an Exchange version that actually loads on your PowerShell:
+
+  | PowerShell | Exchange it will install | Also loads if already installed |
+  |---|---|---|
+  | 7.2 / 7.3 | 3.4.0 | 3.0.0 – 3.4.0 |
+  | 7.4 / 7.5 | 3.9.2 | 3.0.0 – 3.9.2 |
+  | 7.6+ | 3.10.1 | 3.0.0 – 3.10.1 |
+
+Exchange 3.7.0 and 3.7.1 are never used (they force the Windows pop-up with no way to turn it off). **Modules install only for the Windows account running the app (CurrentUser); nothing is ever removed**, and it works without an administrator.
+
+**PowerShell support (Microsoft Learn):** 7.4 and 7.5 end **10 Nov 2026**; 7.6 (LTS) runs to **14 Nov 2028**; 7.2 and 7.3 are already out of support.
+
+**Heads-up (March 2027):** Microsoft says Exchange module versions older than 3.10.1 may stop signing in from about **31 March 2027** (notice MC1483974). On PowerShell 7.6+ you can move to 3.10.1 from **Settings -> Microsoft modules -> Install**. On Windows Server 2012/2012 R2 (PowerShell 7.2) that isn't possible, so after that date run Script-Package Studio from Windows Server 2016+ or Windows 10/11 for Exchange tasks.
+
+**Self-test and diagnostics:** Settings -> Microsoft modules has **Run self-test** (loads the modules in a throwaway temp folder and checks them, without signing in or touching your installed copy) and **Copy diagnostics** (a redacted report you can paste when asking for help).
+
+**If anything breaks:** the exact version before this change is tagged **`known-good-before-pin`** on GitHub.
   
 If the modules are missing, the app offers to install them the first time you sign in. You can also run the `Install-RequiredModules` script from the list to install them manually.
 
@@ -128,7 +148,7 @@ It's built to stay fast: it reads cloud groups (one lookup) and Send As only - t
 ### Install-RequiredModules
 
 Installs required modules for the script package to work.  
-The app installs and uses exact module versions (Microsoft Graph 1.23.0 and a fixed ExchangeOnlineManagement version - see the PINNED MODULE VERSIONS block in MainGUI.ps1), so Microsoft sign-in opens in your browser. Newer Graph versions (2.34+) use a Windows account pop-up instead; if one is installed, the app offers to switch back.
+Installs the Microsoft Graph and Exchange modules this app needs, picking versions that keep browser sign-in and that load on your PowerShell (see the Modules note under Requirements). Already-installed working versions are used as-is; installs are per-user and nothing is removed.
 
 ### New-ADAccounts
 

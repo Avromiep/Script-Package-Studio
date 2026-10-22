@@ -1,11 +1,13 @@
-﻿$version = "v3.4.3"
+﻿$version = "v3.4.4"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
 #
-# Needs Microsoft Graph and ExchangeOnlineManagement. The app installs and loads EXACT pinned
-# versions (see the PINNED MODULE VERSIONS block below) so Microsoft sign-in opens in the browser;
-# newer Graph (2.34+) forces a Windows account pop-up. The app offers to install/switch for you.
+# Needs Microsoft Graph and ExchangeOnlineManagement. On a working machine the app loads whatever is
+# already installed, exactly as before. It only steps in when that's broken: if the newest Graph is
+# 2.34+ (which forces a Windows account pop-up) it offers to install Graph 1.23.0 for browser sign-in,
+# and it picks an Exchange version that loads on this PowerShell. See the PINNED MODULE VERSIONS block
+# in src/modulepins.ps1 and the README. Nothing is ever removed; installs are per-user (no admin).
 
 # Must run as administrator (runtime check instead of #Requires so automated
 # UI tests can run un-elevated with SP_SHOT / SP_TEST set)
@@ -35,6 +37,7 @@ $script:SrcDir = Join-Path $PSScriptRoot 'src'
 $script:SettingsIniPath = Join-Path $PSScriptRoot 'settings.ini'
 
 . (Join-Path $script:SrcDir 'ui.ps1')
+. (Join-Path $script:SrcDir 'modulepins.ps1')
 
 # ---- settings (persisted in settings.ini) -----------------------------------
 $script:Settings = @{
@@ -47,6 +50,7 @@ $script:Settings = @{
 	recipientSearch = $true
 	bgSearch        = $true
 	rolledBackFrom  = ''   # if set, the version we rolled back FROM (so Check for updates can offer to return)
+	badModuleVersions = @()   # "Name=Version" entries that failed to import; skipped by Resolve-ModulePlan next time
 }
 
 function Read-AppSettings {
@@ -61,6 +65,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*RecipientSearch\s*=\s*(0|1)\s*$') { $script:Settings.recipientSearch = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*BackgroundSearch\s*=\s*(0|1)\s*$') { $script:Settings.bgSearch = $Matches[1] -eq '1' }
 		elseif ($line -match '^\s*RolledBackFrom\s*=\s*(.*)$') { $script:Settings.rolledBackFrom = $Matches[1].Trim() }
+		elseif ($line -match '^\s*BadModuleVersions\s*=\s*(.*)$') { $script:Settings.badModuleVersions = @(($Matches[1] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 	}
 }
 
@@ -76,6 +81,7 @@ function Save-AppSettings {
 			RecipientSearch = if ($script:Settings.recipientSearch) { '1' } else { '0' }
 			BackgroundSearch = if ($script:Settings.bgSearch) { '1' } else { '0' }
 			RolledBackFrom = [string]$script:Settings.rolledBackFrom
+			BadModuleVersions = (@($script:Settings.badModuleVersions) -join ',')
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -658,277 +664,139 @@ $script:SuppressTenantEvents = $false
 $script:TenantSwitching = $false
 $script:GraphScopes = @("User.ReadWrite.All", "Directory.ReadWrite.All", "User.Invite.All", "Group.ReadWrite.All", "UserAuthenticationMethod.ReadWrite.All")
 
-# ======================= PINNED MODULE VERSIONS (edit ONLY here) =======================
-# Exact versions from Avromi's office PC (browser sign-in). PLACEHOLDERS - confirm from:
-#   Get-Module Microsoft.Graph*,ExchangeOnlineManagement -ListAvailable | Sort-Object Name,Version | Format-Table Name,Version,ModuleBase
-# Graph.Authentication MUST be imported first; every Graph submodule must use the SAME version as it.
-# ExchangeOnlineManagement: '' = don't pin (use the newest installed); otherwise an exact version.
-$script:PinnedModules = [ordered]@{
-	'Microsoft.Graph.Authentication'               = '1.23.0'   # confirm
-	'Microsoft.Graph.Users'                        = '1.23.0'   # confirm
-	'Microsoft.Graph.Users.Actions'                = '1.23.0'   # confirm
-	'Microsoft.Graph.Groups'                       = '1.23.0'   # confirm
-	'Microsoft.Graph.Identity.SignIns'             = '1.23.0'   # confirm
-	'Microsoft.Graph.Identity.DirectoryManagement' = '1.23.0'   # confirm
-	'ExchangeOnlineManagement'                     = '3.10.1'   # confirm - used on PowerShell 7.4+ (needs .NET 8)
-}
-# Exchange version for PowerShell 7.2/7.3 (Windows Server 2012/2012 R2 via Bootstrap-PS7.ps1): 3.10.1 can't load there
-# (built for .NET 8). 3.5.0 is the newest ExchangeOnlineManagement built for .NET 6.
-$script:PinnedExoLegacy = '3.5.0'   # confirm
-# =======================================================================================
+# ---- Microsoft module version handling (pure logic is in src/modulepins.ps1) -----------------
+# On a working v3.4.2 machine (newest Graph < 2.34, Exchange not broken here) nothing below changes
+# behaviour: the plan is 'asToday' for both, nothing is imported, and the old Get-Command autoload
+# loads the same versions in the same order as v3.4.2. New behaviour only switches on when v3.4.2 is
+# KNOWN broken (Graph 2.34+ forces the Windows pop-up, or the newest Exchange can't load here).
 
-# The version to USE for a module name. Exchange falls back to the legacy version on PowerShell
-# older than 7.4 (3.10.1 needs .NET 8). EVERY version-aware line below reads only through this.
-$script:PinnedExoLegacyWarned = $false
-function Get-PinnedVersion([string]$Name) {
-	$v = [string]$script:PinnedModules[$Name]
-	if ($Name -eq 'ExchangeOnlineManagement' -and $v -and $PSVersionTable.PSVersion -lt [version]'7.4') {
-		if (-not $script:PinnedExoLegacyWarned) {
-			$script:PinnedExoLegacyWarned = $true
-			Write-Host "PowerShell $($PSVersionTable.PSVersion) is too old for Exchange $v - using Exchange $($script:PinnedExoLegacy). Installing PowerShell 7.4 or newer (Windows Server 2016+) is recommended." -ForegroundColor Yellow
-		}
-		return $script:PinnedExoLegacy
-	}
-	return $v
-}
-
-# Read-only snapshot of what's installed vs pinned. Uses ONLY Get-Module -ListAvailable (never imports).
-# Never throws and leaves $Error clean.
-function Get-ModulePinStatus {
-	$cuRoot = $null
-	try { $cuRoot = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Modules' } catch {}
-	$mods = @(); $allInstalled = $true; $anyGraph = $false; $wrongLoaded = $false; $newestAuth = $null
-	foreach ($name in $script:PinnedModules.Keys) {
-		$pin = [string](Get-PinnedVersion $name)
-		$avail = @()
-		try { $avail = @(Get-Module -ListAvailable -Name $name -ErrorAction SilentlyContinue) } catch {}
-		$installed = @($avail | ForEach-Object {
-			$base = "$($_.ModuleBase)"
-			$scope = if ($cuRoot -and $base.StartsWith($cuRoot, [System.StringComparison]::OrdinalIgnoreCase)) { 'CurrentUser' }
-				elseif ($env:ProgramFiles -and $base.StartsWith($env:ProgramFiles, [System.StringComparison]::OrdinalIgnoreCase)) { 'AllUsers' }
-				else { 'Other' }
-			[pscustomobject]@{ Version = [version]$_.Version; ModuleBase = $base; Scope = $scope }
-		} | Sort-Object Version)
-		if ($pin) { $pinInstalled = [bool](@($installed | Where-Object { "$($_.Version)" -eq $pin }).Count) }
-		else { $pinInstalled = [bool](@($installed).Count) }   # '' = not pinned: present means any version
-		$loadedMod = $null
-		try { $loadedMod = Get-Module -Name $name | Sort-Object Version -Descending | Select-Object -First 1 } catch {}
-		$loaded = if ($loadedMod) { [version]$loadedMod.Version } else { $null }
-		if ($name -like 'Microsoft.Graph*') {
-			if (@($installed).Count) { $anyGraph = $true }
-			if ($name -eq 'Microsoft.Graph.Authentication' -and @($installed).Count) { $newestAuth = (@($installed) | Select-Object -Last 1).Version }
-		}
-		if (-not $pinInstalled) { $allInstalled = $false }
-		if ($pin -and $loaded -and ("$loaded" -ne $pin)) { $wrongLoaded = $true }   # Exchange '' is never "wrong"
-		$mods += [pscustomobject]@{ Name = $name; Pinned = $pin; InstalledVersions = $installed; PinnedInstalled = $pinInstalled; Loaded = $loaded }
-	}
-	$result = [pscustomobject]@{
-		Modules            = $mods
-		AllPinnedInstalled = $allInstalled
-		AnyGraphInstalled  = $anyGraph
-		NewestGraphAuth    = $newestAuth
-		WrongVersionLoaded = $wrongLoaded
-	}
-	try { $Error.Clear() } catch {}
-	return $result
-}
-
-# Make the PowerShell Gallery reachable for THIS process only (no admin, nothing machine-wide).
-# Returns $true when installs can proceed. Runs once per session.
-$script:GalleryReady = $false
-function Initialize-GalleryAccess {
-	if ($script:GalleryReady) { return $true }
+# Log to Logs\modules.txt (file + console only; never a dialog or the status bar).
+function Write-ModuleLog([string]$Message) {
 	try {
-		try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-		try { [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials } catch {}
-		$nuget = $null
-		try { $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1 } catch {}
-		if (-not $nuget -or $nuget.Version -lt [version]'2.8.5.201') {
-			Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ErrorAction Stop | Out-Null
-		}
-		$psg = $null; try { $psg = (Get-Module PowerShellGet -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1) } catch {}
-		$pm  = $null; try { $pm  = (Get-Module PackageManagement -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1) } catch {}
-		Write-Host "PowerShellGet $([string]$psg.Version), PackageManagement $([string]$pm.Version)"
-		if ($psg -and $psg.Version -lt [version]'2.2.5') {
-			$have225 = $null
-			try { $have225 = (Get-Module PowerShellGet -ListAvailable | Where-Object { $_.Version -ge [version]'2.2.5' } | Select-Object -First 1) } catch {}
-			if ($have225) {
-				Import-Module PowerShellGet -MinimumVersion 2.2.5 -Global -ErrorAction SilentlyContinue
-			} else {
-				Install-Module PowerShellGet -MinimumVersion 2.2.5 -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
-				Show-Notice 'Restart needed' 'A PowerShell component (PowerShellGet) was updated. Please restart Script-Package Studio, then click Install again.' 'Info'
-				try { $Error.Clear() } catch {}
-				return $false
-			}
-		}
-		$script:GalleryReady = $true
-		try { $Error.Clear() } catch {}
-		return $true
-	} catch {
-		$m = "$($_.Exception.Message)"
-		if ($m -match 'Unable to resolve package source|No match was found|unable to connect|proxy|407|could not be resolved|The remote name|timed out|SSL|TLS') {
-			Show-Notice "Can't reach the PowerShell Gallery" "Couldn't reach the PowerShell Gallery (www.powershellgallery.com). This server may have no internet access, or a proxy/firewall is blocking it. Ask your network admin to allow https://www.powershellgallery.com and https://*.powershellgallery.com (and https://onegetcdn.azureedge.net for the NuGet provider), then click Install again." 'Warn'
-		} else {
-			Write-Host "Gallery setup problem: $m" -ForegroundColor Red
-		}
-		try { $Error.Clear() } catch {}
-		return $false
-	}
+		$dir = Join-Path $PSScriptRoot 'Logs'
+		if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+		Add-Content -LiteralPath (Join-Path $dir 'modules.txt') -Value ("{0}  {1}" -f (Get-Date -Format 'o'), $Message) -Encoding UTF8
+	} catch {}
+	Write-Host $Message
 }
 
-# Install every pinned version that isn't already present, CurrentUser scope (no admin). Never
-# uninstalls. Returns $true only when every pinned module is now installed.
-function Install-PinnedModules {
-	if (-not (Initialize-GalleryAccess)) { return $false }
-	$acceptLicense = $false
-	try { $acceptLicense = (Get-Command Install-Module).Parameters.ContainsKey('AcceptLicense') } catch {}
-	$names = @($script:PinnedModules.Keys)
-	$n = $names.Count; $k = 0
-	$installed = @(); $already = @(); $failed = @()
-	foreach ($name in $names) {
-		$k++
-		$ver = Get-PinnedVersion $name
-		if (-not $ver) { continue }
-		$have = @(); try { $have = @(Get-Module -ListAvailable -Name $name) } catch {}
-		if (@($have | Where-Object { "$($_.Version)" -eq $ver }).Count) { $already += "$name $ver"; continue }
-		try { Set-ItemStatus "Installing $name $ver ($k of $n)..." } catch {}
-		try { Update-UiNow $true } catch {}
-		try {
-			$p = @{ Name = $name; RequiredVersion = $ver; Scope = 'CurrentUser'; Repository = 'PSGallery'; Force = $true; AllowClobber = $true; ErrorAction = 'Stop' }
-			if ($acceptLicense) { $p.AcceptLicense = $true }
-			Install-Module @p
-			$base = ''
-			try { $base = "$((Get-Module -ListAvailable -Name $name | Where-Object { "$($_.Version)" -eq $ver } | Select-Object -First 1).ModuleBase)" } catch {}
-			Write-Host "Installed $name $ver -> $base" -ForegroundColor Green
-			$installed += "$name $ver"
-		} catch {
-			Write-Host "Couldn't install $name $ver - $($_.Exception.Message)" -ForegroundColor Red
-			$failed += "$name $ver"
+# SILENT startup step - NO UI, NO prompts. Work out the plan, and only when a pin is needed import
+# it (so the later Get-Command autoload finds the pinned version). asToday both = import nothing.
+function Initialize-ModulePinsEarly {
+	try {
+		$script:ModulePlan = Resolve-ModulePlan
+		$fw = ''; try { $fw = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription } catch {}
+		Write-ModuleLog ("Modules: pwsh {0} ({1}) -> Graph {2} ({3}) / Exchange {4} ({5})" -f $script:ModulePlan.PwshRow, $fw, $script:ModulePlan.Graph, $script:ModulePlan.GraphMode, $script:ModulePlan.Exo, $script:ModulePlan.ExoMode)
+		if ($script:ModulePlan.GraphMode -eq 'pin' -or $script:ModulePlan.ExoMode -eq 'pin') {
+			$script:ModuleImport = Import-ModulePlan -Plan $script:ModulePlan -Log { param($m) Write-ModuleLog $m }
 		}
-	}
-	Write-Host "Modules: installed $($installed.Count), already present $($already.Count), failed $($failed.Count)." -ForegroundColor Cyan
-	if ($failed.Count) { Write-Host "  failed: $($failed -join ', ')" -ForegroundColor Yellow }
-	try { $Error.Clear() } catch {}
-	return [bool](Get-ModulePinStatus).AllPinnedInstalled
+	} catch { Write-ModuleLog "Initialize-ModulePinsEarly: $($_.Exception.Message)" }
 }
 
-# Load the pinned versions into THIS process. Authentication first, then the Graph submodules in
-# block order, then Exchange (only if its pinned version is installed). Exact -RequiredVersion so a
-# newer copy in AllUsers can never win. Idempotent. Returns $false on the first import failure.
-function Import-PinnedModules {
-	foreach ($name in $script:PinnedModules.Keys) {
-		$ver = Get-PinnedVersion $name
-		if (-not $ver) { continue }   # '' = don't pin (Exchange): leave it to the newest already-available
-		if ($name -eq 'ExchangeOnlineManagement') {
-			$have = @(); try { $have = @(Get-Module -ListAvailable -Name $name) } catch {}
-			if (-not @($have | Where-Object { "$($_.Version)" -eq $ver }).Count) { continue }
-		}
-		$already = $null
-		try { $already = Get-Module -Name $name | Where-Object { "$($_.Version)" -eq $ver } | Select-Object -First 1 } catch {}
-		if ($already) { continue }   # already loaded at the pin - skip
-		try {
-			Import-Module -Name $name -RequiredVersion $ver -Global -ErrorAction Stop -WarningAction SilentlyContinue
-		} catch {
-			Write-Host "Couldn't load $name $ver - $($_.Exception.Message)" -ForegroundColor Red
-			try { $Error.Clear() } catch {}
-			return $false
-		}
-	}
-	$authVer = Get-PinnedVersion 'Microsoft.Graph.Authentication'
-	Write-Host "Microsoft Graph $authVer loaded (browser sign-in)." -ForegroundColor Green
-	foreach ($name in $script:PinnedModules.Keys) {
-		$lm = $null; try { $lm = Get-Module -Name $name | Sort-Object Version -Descending | Select-Object -First 1 } catch {}
-		if ($lm) { Write-Host "  $name $($lm.Version)" }
-	}
-	try { $Error.Clear() } catch {}
-	return $true
-}
-
-# Plain-words prompt offering to install/switch to the pinned (browser sign-in) Graph. Reason is
-# for logging; the wording comes from the live install/load state.
-function Show-GraphPinPrompt([string]$Reason) {
-	if ($env:SP_SHOT -or $env:SP_TEST) { return }
-	$st = Get-ModulePinStatus
-	$authPin = Get-PinnedVersion 'Microsoft.Graph.Authentication'
-	$loadedAuth = (@($st.Modules | Where-Object { $_.Name -eq 'Microsoft.Graph.Authentication' }) | Select-Object -First 1).Loaded
-	Write-Host "Graph pin prompt ($Reason): loaded=$loadedAuth newest=$($st.NewestGraphAuth) allInstalled=$($st.AllPinnedInstalled)"
-	if (-not $st.AllPinnedInstalled -and $st.NewestGraphAuth) {
-		$msg = "This PC has Microsoft Graph $($st.NewestGraphAuth). Versions 2.34 and newer sign in with a Windows account pop-up instead of the browser. Script Package Studio is set up for Microsoft Graph $authPin, which signs in with the browser like before. Switching installs that version for your Windows account only, next to the current one. Nothing is removed, other users on this computer aren't affected, and no admin rights are needed. Then the app restarts."
-	} elseif (-not $st.AllPinnedInstalled) {
-		$msg = "Script Package Studio is set up for Microsoft Graph $authPin, which signs in with the browser. It isn't installed yet. Installing it adds it for your Windows account only; nothing is removed and no admin rights are needed. Then the app restarts."
-	} else {
-		$msg = "A different Microsoft Graph version ($loadedAuth) is already loaded in this window, so the browser-sign-in version can't load until the app restarts."
-	}
-	$win = New-StyledDialog -Title 'Microsoft Graph sign-in' -Icon '&#xF561;' -BodyXaml @"
-<StackPanel Margin="16" Width="380">
+# Two-button styled dialog. Returns the clicked key, or '' if closed / in a test run.
+function Show-ModuleChoiceDialog([string]$Title, [string]$Message, [string]$PrimaryText, [string]$PrimaryKey) {
+	if ($env:SP_SHOT -or $env:SP_TEST) { return '' }
+	$result = @{ Key = '' }
+	$win = New-StyledDialog -Title $Title -Icon '&#xF561;' -BodyXaml @"
+<StackPanel Margin="16" Width="400">
 	<Border Style="{DynamicResource Card}">
 		<StackPanel>
 			<ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-				<TextBlock x:Name="PinMsg" Style="{DynamicResource Body}" TextWrapping="Wrap"/>
+				<TextBlock x:Name="MsgText" Style="{DynamicResource Body}" TextWrapping="Wrap"/>
 			</ScrollViewer>
 			<Border Style="{DynamicResource Divider}"/>
 			<StackPanel>
-				<Button x:Name="RevertBtn" Style="{DynamicResource BtnPrimary}" Content="Revert to the browser-sign-in version"/>
+				<Button x:Name="PrimaryBtn" Style="{DynamicResource BtnPrimary}" Content=""/>
 				<Button x:Name="NotNowBtn" Style="{DynamicResource BtnGhost}" Content="Not now" Margin="0,8,0,0"/>
 			</StackPanel>
 		</StackPanel>
 	</Border>
 </StackPanel>
 "@
-	$win.FindName('PinMsg').Text = $msg
-	$act = @{ Revert = $false }
-	$win.FindName('RevertBtn').Add_Click({ $act.Revert = $true; $win.Close() }.GetNewClosure())
+	$win.FindName('MsgText').Text = $Message
+	$win.FindName('PrimaryBtn').Content = $PrimaryText
+	$win.FindName('PrimaryBtn').Add_Click({ $result.Key = $PrimaryKey; $win.Close() }.GetNewClosure())
 	$win.FindName('NotNowBtn').Add_Click({ $win.Close() }.GetNewClosure())
 	[void]$win.ShowDialog()
-	if (-not $act.Revert) {
-		Write-Host "Continuing with Microsoft Graph $($st.NewestGraphAuth) - sign-in will use the Windows account window." -ForegroundColor Yellow
-		return
-	}
-	if (-not $st.AllPinnedInstalled) {
-		if (-not (Install-PinnedModules)) {
-			$fx = @((Get-ModulePinStatus).Modules | Where-Object { -not $_.PinnedInstalled } | ForEach-Object { "$($_.Name) $($_.Pinned)" })
-			Show-Notice 'Some modules did not install' ("These couldn't be installed:`n  " + ($fx -join "`n  ") + "`n`nCouldn't reach the PowerShell Gallery (www.powershellgallery.com), or a proxy/firewall is blocking it. Ask your network admin to allow https://www.powershellgallery.com and https://*.powershellgallery.com (and https://onegetcdn.azureedge.net for the NuGet provider), then try again.") 'Warn'
-			return
-		}
-	}
-	Show-Notice 'Restarting' 'The app will restart to finish switching to the browser-sign-in version of Microsoft Graph.' 'Info'
-	Restart-App
-	Complete-Relaunch
+	return $result.Key
 }
 
-# Startup: load the pinned Graph if it's all installed; otherwise offer to switch. Never breaks startup.
+# Install the given {Name;Version} items with a status line + repaint. $true if all installed.
+function Invoke-ModuleInstall($Items, [string]$What) {
+	try { Set-ItemStatus "Installing $What... this can take a few minutes." } catch {}
+	try { Update-UiNow } catch {}
+	$res = Install-PlanModules -Items $Items -Log { param($m) Write-ModuleLog $m }
+	try { Set-ItemStatus 'Ready' } catch {}
+	if (@($res.Failed).Count) {
+		$body = "These couldn't be installed:`n  " + (@($res.Failed) -join "`n  ")
+		if ($res.NetworkError) { $body += "`n`n" + (Get-GalleryHelpText) }
+		Show-Notice 'Some modules did not install' $body 'Warn'
+		return $false
+	}
+	return $true
+}
+
+function Show-ModuleRestartPrompt {
+	$imp = $script:ModuleImport
+	$what = if ("$($imp.Error)" -match 'Exchange') { 'Exchange' } else { 'Microsoft Graph' }
+	$next = ''
+	try { if ($imp.Error -match '(\d+\.\d+\.\d+)') { $next = " It will try $($Matches[1])'s replacement." } } catch {}
+	$k = Show-ModuleChoiceDialog 'Restart needed' "$what couldn't load in this window.$next Click Restart to finish." 'Restart' 'restart'
+	if ($k -eq 'restart') { Restart-App; Complete-Relaunch }
+}
+
+function Show-GraphRevertPrompt {
+	$plan = $script:ModulePlan
+	$newest = ''
+	try { $ai = @(Get-InstalledModuleVersions 'Microsoft.Graph.Authentication'); if ($ai.Count) { $newest = ($ai | Select-Object -Last 1).Version } } catch {}
+	$msg = "This PC has Microsoft Graph $newest, which signs in with a Windows account pop-up. Script Package Studio can install Microsoft Graph $($script:GraphInstallDefault), which signs in with the browser like before.`n`nIt's installed only for the Windows account running this app (if Windows asked for a different admin account when the app started, it goes into that account). Nothing is removed and other users aren't affected. Then the app restarts."
+	$k = Show-ModuleChoiceDialog 'Microsoft Graph sign-in' $msg 'Install the browser-sign-in version' 'install'
+	if ($k -ne 'install') { Write-ModuleLog "Graph revert declined - continuing with Microsoft Graph $newest (Windows account window)."; return }
+	$items = @($plan.NeedsInstall | Where-Object { $_.Name -like 'Microsoft.Graph*' })
+	if (Invoke-ModuleInstall $items 'Microsoft Graph') { Restart-App; Complete-Relaunch }
+}
+
+function Show-ExoInstallPrompt {
+	$plan = $script:ModulePlan
+	$items = @($plan.NeedsInstall | Where-Object { $_.Name -eq 'ExchangeOnlineManagement' })
+	$ver = if ($items.Count) { "$($items[0].Version)" } else { '' }
+	if (-not $ver) { Write-ModuleLog "Exchange needs-install but no row default - skipping prompt."; return }
+	$msg = "The Exchange module on this PC can't be used with this PowerShell. Script Package Studio can install Exchange $ver for the Windows account running this app. Nothing is removed and other users aren't affected. Then the app restarts."
+	$k = Show-ModuleChoiceDialog 'Exchange module' $msg "Install Exchange $ver" 'install'
+	if ($k -ne 'install') { Write-ModuleLog "Exchange install declined."; return }
+	if (Invoke-ModuleInstall $items 'Exchange') { Restart-App; Complete-Relaunch }
+}
+
+# ContentRendered UI step: prompt ONLY when needed. Nothing to show when both modes are asToday/pin
+# and the import was fine (Albert / office PC see no new prompt).
 function Initialize-ModulePins {
 	try {
-		try { $script:UI.StatusText.Text = 'Loading Microsoft modules...'; Update-UiNow } catch {}
-		$st = Get-ModulePinStatus
-		if ($st.AllPinnedInstalled) {
-			if (-not (Import-PinnedModules) -and $st.WrongVersionLoaded) { Show-GraphPinPrompt 'startup-wrong-version-loaded' }
-		} elseif ($st.AnyGraphInstalled) {
-			Show-GraphPinPrompt 'startup-newer-graph-installed'
-		}
-		# else: no Graph at all - Confirm-ModulesAtStartup offers the install as today
-	} catch {
-	} finally {
-		try { $script:UI.StatusText.Text = 'Ready' } catch {}
-	}
+		if (-not $script:ModulePlan) { $script:ModulePlan = Resolve-ModulePlan }
+		$plan = $script:ModulePlan; $imp = $script:ModuleImport
+		if ($imp -and $imp.Step -eq 'restart') { Show-ModuleRestartPrompt; return }
+		if ($plan.GraphMode -eq 'needsRevert') { $script:GraphRevertOffered = $true; Show-GraphRevertPrompt; return }
+		if ($plan.ExoMode -eq 'needsInstall') { Show-ExoInstallPrompt; return }
+		# both 'missing' -> the existing Confirm-ModulesAtStartup offers the install
+	} catch { Write-ModuleLog "Initialize-ModulePins: $($_.Exception.Message)" }
 }
 
-# Before a connect: make sure the pinned Graph is loaded. Quick-returns when it already is.
+# Before a connect: asToday / already-loaded -> return (v3.4.2 flow). pin-not-loaded -> import.
+# needsRevert -> offer once per session, then continue as v3.4.2 would. No Jwt check.
 function Confirm-GraphPinReady {
-	$st = Get-ModulePinStatus
-	$graphNames = @($script:PinnedModules.Keys | Where-Object { $_ -like 'Microsoft.Graph*' })
-	$loadedAtPin = 0; $loadedAny = 0; $pinnedInstalledAll = $true
-	foreach ($name in $graphNames) {
-		$m = @($st.Modules | Where-Object { $_.Name -eq $name }) | Select-Object -First 1
-		$pin = Get-PinnedVersion $name
-		if ($m) {
-			if ($m.Loaded) { $loadedAny++; if ("$($m.Loaded)" -eq "$pin") { $loadedAtPin++ } }
-			if (-not $m.PinnedInstalled) { $pinnedInstalledAll = $false }
-		} else { $pinnedInstalledAll = $false }
-	}
-	if ($loadedAtPin -eq $graphNames.Count) { return }                      # already loaded at the pin
-	if ($pinnedInstalledAll -and $loadedAny -eq 0) { [void](Import-PinnedModules); return }
-	Show-GraphPinPrompt 'before-connect'
+	try {
+		if (-not $script:ModulePlan) { $script:ModulePlan = Resolve-ModulePlan }
+		$plan = $script:ModulePlan
+		if ($plan.GraphMode -eq 'asToday' -or $plan.GraphMode -eq 'missing') { return }
+		if ($plan.GraphMode -eq 'pin') {
+			$la = Get-Module -Name 'Microsoft.Graph.Authentication' | Where-Object { "$($_.Version)" -eq "$($plan.Graph)" } | Select-Object -First 1
+			if (-not $la) { $script:ModuleImport = Import-ModulePlan -Plan $plan -Log { param($m) Write-ModuleLog $m }; if ($script:ModuleImport.Step -eq 'restart') { Show-ModuleRestartPrompt } }
+			return
+		}
+		if ($plan.GraphMode -eq 'needsRevert') {
+			if (-not $script:GraphRevertOffered) { $script:GraphRevertOffered = $true; Show-GraphRevertPrompt }
+			return
+		}
+	} catch { Write-ModuleLog "Confirm-GraphPinReady: $($_.Exception.Message)" }
 }
 
 function Load-Tenants {
@@ -949,12 +817,9 @@ function Save-Tenants {
 }
 
 function Get-MissingModules {
-	# Inspect with Get-Module -ListAvailable, NOT Get-Command: Get-Command auto-imports the NEWEST
-	# installed module, which would defeat the version pin. Graph counts as present when
-	# Microsoft.Graph.Authentication is available; Exchange when ExchangeOnlineManagement is.
 	$missing = @()
-	if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication -ErrorAction SilentlyContinue)) { $missing += 'Microsoft.Graph' }
-	if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement -ErrorAction SilentlyContinue)) { $missing += 'ExchangeOnlineManagement' }
+	if (-not (Get-Command Connect-MgGraph -ErrorAction Ignore)) { $missing += 'Microsoft.Graph' }
+	if (-not (Get-Command Connect-ExchangeOnline -ErrorAction Ignore)) { $missing += 'ExchangeOnlineManagement' }
 	return $missing
 }
 
@@ -1095,9 +960,9 @@ function Connect-Exo([string]$Upn) {
 	# needs this thread's message pump - but Connect-ExchangeOnline runs synchronously
 	# on the (now-blocked) WPF UI thread, so on a switch that needs interactive auth
 	# the dialog can never pump and the app deadlocks forever (progress stuck ~50%).
-	# -DisableWAM forces the out-of-process browser flow (same as the pinned Microsoft Graph's
-	# Connect-MgGraph), which completes without the pump. Pass it on EVERY connect (WAM can't be
-	# disabled once initialized in the process). Only exists in v3.7.0+.
+	# -DisableWAM exists only in EXO 3.7.2+; it forces the browser flow, which completes without the
+	# pump. Older versions have no WAM, so it's simply not passed. (modulepins never plans 3.7.0/3.7.1,
+	# which force WAM on with no -DisableWAM.)
 	if ($cmd -and $cmd.Parameters.ContainsKey('DisableWAM')) { $p.DisableWAM = $true }
 	# Clear the WPF dispatcher sync context INLINE (fix A for the sign-in deadlock) - do
 	# NOT route this through Invoke-WithoutDispatcherContext {...}.GetNewClosure(). A
@@ -1816,6 +1681,23 @@ function New-SettingsDialog {
 			</Grid>
 		</StackPanel>
 	</Border>
+	<Border Style="{DynamicResource Card}" Margin="0,12,0,0">
+		<StackPanel>
+			<TextBlock Text="Microsoft modules" Style="{DynamicResource H3}"/>
+			<TextBlock x:Name="ModInfo" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+			<StackPanel x:Name="ExoUpgradePanel" Visibility="Collapsed" Margin="0,8,0,0">
+				<TextBlock x:Name="ExoUpgradeText" Style="{DynamicResource Small}" TextWrapping="Wrap"/>
+				<Button x:Name="ExoUpgradeBtn" Style="{DynamicResource BtnSecondary}" Content="Install" HorizontalAlignment="Left" MinWidth="120" Margin="0,6,0,0"/>
+			</StackPanel>
+			<CheckBox x:Name="SimBareCheck" Content="Simulate a bare server (ignore modules installed for all users)" Margin="0,12,0,0"/>
+			<Grid Margin="0,12,0,0">
+				<Button x:Name="SelfTestBtn" Style="{DynamicResource BtnSecondary}" Content="Run self-test" HorizontalAlignment="Left" MinWidth="130"/>
+				<Button x:Name="CopyDiagBtn" Style="{DynamicResource BtnGhost}" Content="Copy diagnostics" HorizontalAlignment="Right" MinWidth="140"/>
+			</Grid>
+			<TextBlock x:Name="SelfTestStatus" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+			<TextBlock x:Name="ModWarnText" Style="{DynamicResource Small}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+		</StackPanel>
+	</Border>
 </StackPanel>
 '@
 }
@@ -1965,6 +1847,55 @@ function Show-Settings {
 		Restart-App          # spawn the helper that waits for us to exit, then starts the new copy
 		Complete-Relaunch    # save + hard-exit now so the relaunch happens immediately
 	}.GetNewClosure())
+
+	# ---- Microsoft modules card ----
+	$mplan = $script:ModulePlan; if (-not $mplan) { try { $mplan = Resolve-ModulePlan } catch {} }
+	$loadedGraph = ''; try { $loadedGraph = "$((Get-Module Microsoft.Graph.Authentication | Sort-Object Version -Descending | Select-Object -First 1).Version)" } catch {}
+	$loadedExo   = ''; try { $loadedExo   = "$((Get-Module ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1).Version)" } catch {}
+	$gTxt = if ($loadedGraph) { $loadedGraph } elseif ($mplan -and $mplan.Graph) { "$($mplan.Graph)" } else { '(none)' }
+	$eTxt = if ($loadedExo)   { $loadedExo   } elseif ($mplan -and $mplan.Exo)   { "$($mplan.Exo)" }   else { '(none)' }
+	$rowTxt = if ($mplan) { $mplan.PwshRow } else { Get-PwshRowKey }
+	$win.FindName('ModInfo').Text = "Graph $gTxt / Exchange $eTxt on PowerShell $rowTxt"
+	$exoNow = $null; try { if ($loadedExo) { $exoNow = [version]$loadedExo } elseif ($mplan -and $mplan.Exo) { $exoNow = [version]"$($mplan.Exo)" } } catch {}
+	if ($PSVersionTable.PSVersion -ge [version]'7.6' -and $exoNow -and $exoNow -lt [version]'3.10.1') {
+		$win.FindName('ExoUpgradeText').Text = "Exchange $exoNow is installed; 3.10.1 is recommended before Mar 31 2027."
+		$win.FindName('ExoUpgradeBtn').Content = 'Install 3.10.1'
+		$win.FindName('ExoUpgradePanel').Visibility = 'Visible'
+		$win.FindName('ExoUpgradeBtn').Add_Click({
+			if (Invoke-ModuleInstall @([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = '3.10.1' }) 'Exchange 3.10.1') { Restart-App; Complete-Relaunch }
+		}.GetNewClosure())
+	}
+	$modWarn = "Heads-up: Microsoft says Exchange module versions older than 3.10.1 may stop signing in from about 31 March 2027 (notice MC1483974). This PC uses Exchange $eTxt. On PowerShell 7.6 or newer the app can use 3.10.1 (above). On Windows Server 2012/2012 R2 (PowerShell 7.2) that isn't possible, so after that date use Script-Package Studio from Windows Server 2016+ or Windows 10/11 for Exchange tasks."
+	if ($PSVersionTable.PSVersion -lt [version]'7.4') { $modWarn = "PowerShell $($PSVersionTable.PSVersion) is out of Microsoft support; it can only use Exchange 3.0-3.4.`n`n" + $modWarn }
+	$win.FindName('ModWarnText').Text = $modWarn
+	$selfTestStatus = $win.FindName('SelfTestStatus'); $simBare = $win.FindName('SimBareCheck'); $selfTestBtn = $win.FindName('SelfTestBtn')
+	$stRoot = $appRoot
+	$selfTestBtn.Add_Click({
+		$selfTestBtn.IsEnabled = $false; $selfTestStatus.Text = 'Running self-test (this can take a minute)...'
+		$outFile = Join-Path $env:TEMP ("SPS-selftest-{0}.txt" -f (Get-Date -Format yyyyMMdd-HHmmss))
+		$exe = (Get-Process -Id $PID).Path
+		$stArgs = @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', ('"' + (Join-Path $stRoot 'src\SelfTest-Modules.ps1') + '"'), '-OutFile', ('"' + $outFile + '"'))
+		if ($simBare.IsChecked -eq $true) { $stArgs += '-ExcludeAllUsers' }
+		$proc = $null
+		try { $proc = Start-Process $exe -ArgumentList $stArgs -PassThru -WindowStyle Hidden } catch { $selfTestStatus.Text = "Couldn't start the self-test: $($_.Exception.Message)"; $selfTestBtn.IsEnabled = $true; return }
+		$timer = New-Object System.Windows.Threading.DispatcherTimer
+		$timer.Interval = [TimeSpan]::FromMilliseconds(500)
+		$timer.Add_Tick({
+			if (-not $proc.HasExited) { return }
+			$timer.Stop(); $selfTestBtn.IsEnabled = $true
+			$lines = @(); try { $lines = @(Get-Content -LiteralPath $outFile -TotalCount 25 -ErrorAction Stop) } catch {}
+			$head = if ($proc.ExitCode -eq 0) { 'Self-test passed.' } else { 'Self-test found a problem.' }
+			$selfTestStatus.Text = $head + "`n" + ($lines -join "`n")
+			$script:LastDiag = ''; try { $script:LastDiag = (Get-Content -LiteralPath $outFile -Raw) } catch {}
+		}.GetNewClosure())
+		$timer.Start()
+	}.GetNewClosure())
+	$win.FindName('CopyDiagBtn').Add_Click({
+		$text = ''
+		if ($script:LastDiag) { $text = $script:LastDiag } else { try { $text = Get-ModuleDiagnostics -Plan $script:ModulePlan } catch { $text = "Couldn't build diagnostics: $($_.Exception.Message)" } }
+		try { Set-Clipboard -Value $text; $selfTestStatus.Text = 'Diagnostics copied to the clipboard.' } catch { $selfTestStatus.Text = "Couldn't copy: $($_.Exception.Message)" }
+	}.GetNewClosure())
+
 	[void]$win.ShowDialog()
 }
 $script:UI.SettingsBtn.Add_Click({ Show-Settings })
@@ -2005,6 +1936,7 @@ Update-TenantCombo
 if ($script:Tenants.Count -gt 0) {
 	Set-SignState $false 'Not connected - pick a tenant above, or click Connect.'
 }
+try { Initialize-ModulePinsEarly } catch {}   # SILENT: loads the pinned Graph/Exchange only when needed; no UI
 $missingModules = @(Get-MissingModules)
 if ($missingModules.Count -gt 0) {
 	Set-SignState $false "Missing modules: $($missingModules -join ', ') - you will be offered an install on sign-in."

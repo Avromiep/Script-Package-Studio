@@ -61,7 +61,7 @@ function Remove-UserLicenses([string]$User) {
 # (no 's'); 2.x spells it "...WindowsHello...". Use whichever the loaded module provides. Called
 # only after sign-in, when the pinned modules are already loaded.
 function Remove-WinHelloMethod([string]$User, [string]$Id) {
-	if (Get-Command Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -ErrorAction Ignore) {
+	if (Test-LoadedGraphCommand 'Remove-MgUserAuthenticationWindowsHelloForBusinessMethod') {
 		Remove-MgUserAuthenticationWindowsHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop
 	} else {
 		Remove-MgUserAuthenticationWindowHelloForBusinessMethod -UserId $User -WindowsHelloForBusinessAuthenticationMethodId $Id -ErrorAction Stop
@@ -77,7 +77,7 @@ function Remove-OneAuthMethod([string]$User, [string]$Type, [string]$Id) {
 		'*emailAuthenticationMethod'                  { Remove-MgUserAuthenticationEmailMethod -UserId $User -EmailAuthenticationMethodId $Id -ErrorAction Stop }
 		'*temporaryAccessPassAuthenticationMethod'    { Remove-MgUserAuthenticationTemporaryAccessPassMethod -UserId $User -TemporaryAccessPassAuthenticationMethodId $Id -ErrorAction Stop }
 		'*platformCredentialAuthenticationMethod'     {
-			if (Get-Command Remove-MgUserAuthenticationPlatformCredentialMethod -ErrorAction Ignore) { Remove-MgUserAuthenticationPlatformCredentialMethod -UserId $User -PlatformCredentialAuthenticationMethodId $Id -ErrorAction Stop }
+			if (Test-LoadedGraphCommand 'Remove-MgUserAuthenticationPlatformCredentialMethod') { Remove-MgUserAuthenticationPlatformCredentialMethod -UserId $User -PlatformCredentialAuthenticationMethodId $Id -ErrorAction Stop }
 			else { throw "Removing a platform credential needs a newer Microsoft Graph module than the pinned one - remove it in the Entra admin center instead." }
 		}
 		default { throw "this kind of sign-in method can't be removed here." }
@@ -1226,15 +1226,31 @@ function Install-RequiredModules {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Install-RequiredModules.txt"
 	Write-Host "Running Install-RequiredModules script..."
 	$progressBar1.Value = 10
-	# Install the exact PINNED versions (CurrentUser scope, no admin), then load them. If a different
-	# Microsoft Graph version is already loaded in this window, the pinned one can't load until the app
-	# restarts - so offer the switch (which restarts).
-	$ok = Install-PinnedModules
-	$progressBar1.Value = 60
-	if ($ok) {
-		if (-not (Import-PinnedModules)) {
-			Write-Host "Installed. Restart Script Package Studio to finish." -ForegroundColor Yellow
-			Show-GraphPinPrompt 'after-install-required'
+	# Install what the plan says is missing/broken, or the row defaults if nothing specific is flagged.
+	# CurrentUser scope (no admin), never uninstalls.
+	$plan = $null; try { $plan = Resolve-ModulePlan } catch {}
+	$items = @()
+	if ($plan -and @($plan.NeedsInstall).Count) {
+		$items = @($plan.NeedsInstall)
+	} else {
+		$row = Get-PwshRowKey; if ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -ge 7) { $row = '7.6' }
+		foreach ($gm in $script:GraphModuleNames) { $items += [pscustomobject]@{ Name = $gm; Version = $script:GraphInstallDefault } }
+		$ev = if ($script:ExoInstallDefault.Contains($row)) { $script:ExoInstallDefault[$row] } else { $null }
+		if ($ev) { $items += [pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = $ev } }
+	}
+	$progressBar1.Value = 30
+	$res = Install-PlanModules -Items $items -Log { param($m) Write-Host $m }
+	$progressBar1.Value = 70
+	if (@($res.Failed).Count) {
+		$body = "These couldn't be installed:`n  " + (@($res.Failed) -join "`n  ")
+		if ($res.NetworkError) { $body += "`n`n" + (Get-GalleryHelpText) }
+		Show-Notice 'Some modules did not install' $body 'Warn'
+	} else {
+		# Installed OK. If a different Graph is already loaded in this window, loading the new one needs a restart.
+		$plan2 = $null; try { $plan2 = Resolve-ModulePlan } catch {}
+		if ($plan2) {
+			$r = Import-ModulePlan -Plan $plan2 -Log { param($m) Write-Host $m }
+			if ($r.Step -eq 'restart') { Show-Notice 'Installed' 'Installed - restarting to load it.' 'Info'; Restart-App }
 		}
 	}
 	$progressBar1.Value = 80

@@ -1,4 +1,4 @@
-﻿$version = "v3.4.4"
+﻿$version = "v3.4.5"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -1936,9 +1936,9 @@ function Show-Settings {
 		$timer.Interval = [TimeSpan]::FromMilliseconds(500)
 		$timer.Add_Tick({
 			if (-not $proc.HasExited) {
-				if (((Get-Date) - $tStart).TotalMinutes -gt 10) {
+				if (((Get-Date) - $tStart).TotalMinutes -gt 12) {
 					$timer.Stop(); try { $proc.Kill($true) } catch {}; $tBtn.IsEnabled = $true
-					$tStatus.Text = 'Self-test timed out after 10 minutes (no changes were made to this PC).'
+					$tStatus.Text = 'Self-test timed out after 12 minutes (no changes were made to this PC).'
 				}
 				return
 			}

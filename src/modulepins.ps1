@@ -348,12 +348,112 @@ function Initialize-GalleryAccessPlain([scriptblock]$Log) {
 	} catch {}
 }
 
+# ---- Verified staged install (v3.4.5) ---------------------------------------------------------
+# Graph 1.23.0 ships unsigned .psd1 files and no .cat. PowerShellGet 2.2.5 refuses to install it when a
+# Microsoft-signed Graph (2.x) is already installed anywhere ("is not catalog signed ... use the
+# publisher-check bypass"). For SPS's pinned Graph set ONLY, and ONLY after that exact error, we
+# Save-Module to a temp stage, verify it ourselves, then copy it into the CurrentUser module folder.
+# Never bypass the publisher check, never overwrite or remove an existing version folder.
+function Test-StagedInstallAllowed([string]$Name, [string]$Version) {
+	return (($script:GraphModuleNames -contains $Name) -and ("$Version" -eq "$script:GraphInstallDefault"))
+}
+# The folder Install-Module -Scope CurrentUser uses (Documents\PowerShell\Modules on Windows, OneDrive-redirected too).
+function Get-CurrentUserModulesPath {
+	$p = $null
+	try { $m = Get-Module PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1; if ($m) { $p = & $m { $script:MyDocumentsModulesPath } } } catch {}
+	if (-not $p) {
+		$docs = $null; try { $docs = [Environment]::GetFolderPath('MyDocuments') } catch {}
+		if ($docs) { $p = Join-Path $docs 'PowerShell\Modules' } elseif ($HOME) { $p = Join-Path $HOME 'Documents\PowerShell\Modules' }
+	}
+	return $p
+}
+# RequiredModules (ModuleName=RequiredVersion) of a manifest, read by parsing only.
+function Get-ManifestRequiredModules([string]$Path) {
+	$out = @()
+	try {
+		$ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+		$h = $ast.Find({ param($a) $a -is [System.Management.Automation.Language.HashtableAst] }, $false)
+		foreach ($kv in @($h.KeyValuePairs)) {
+			if ("$($kv.Item1.Value)" -ne 'RequiredModules') { continue }
+			foreach ($rh in @($kv.Item2.FindAll({ param($a) $a -is [System.Management.Automation.Language.HashtableAst] }, $true))) {
+				$n = ''; $v = ''
+				foreach ($p in $rh.KeyValuePairs) {
+					$val = $p.Item2.Find({ param($a) $a -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)
+					if ("$($p.Item1.Value)" -eq 'ModuleName') { $n = "$($val.Value)" }
+					if ("$($p.Item1.Value)" -eq 'RequiredVersion') { $v = "$($val.Value)" }
+				}
+				if ($n) { $out += "$n=$v" }
+			}
+		}
+	} catch {}
+	return @($out)
+}
+# Returns '' when the staged <Name>\<Version> folder is OK, otherwise the reason.
+function Test-StagedModuleFolder([string]$Folder, [string]$Name, [string]$Version) {
+	$psd1 = Join-Path $Folder "$Name.psd1"
+	if (-not (Test-Path -LiteralPath $psd1)) { return 'manifest missing' }
+	if ("$(Get-ManifestVersion $psd1)" -ne "$Version") { return 'manifest version mismatch' }
+	$main = if ($Name -eq 'Microsoft.Graph.Authentication') { Join-Path $Folder 'Microsoft.Graph.Authentication.dll' } else { Join-Path (Join-Path $Folder 'bin') "$Name.private.dll" }
+	if (-not (Test-Path -LiteralPath $main)) { return "main file missing ($(Split-Path $main -Leaf))" }
+	$ms = Get-AuthenticodeSignature -FilePath $main
+	if ("$($ms.Status)" -ne 'Valid' -or "$($ms.SignerCertificate.Subject)" -notmatch 'O=Microsoft Corporation') { return "main file not validly signed by Microsoft ($(Split-Path $main -Leaf): $($ms.Status))" }
+	foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Recurse -File -ErrorAction Stop | Where-Object { $_.Extension -in '.dll','.psd1','.psm1','.ps1','.ps1xml' })) {
+		$st = "$((Get-AuthenticodeSignature -FilePath $f.FullName).Status)"
+		if ($st -ne 'Valid' -and $st -ne 'NotSigned') { return "$($f.Name): signature $st" }
+	}
+	if ($Name -ne 'Microsoft.Graph.Authentication') {
+		if (@(Get-ManifestRequiredModules $psd1) -notcontains "Microsoft.Graph.Authentication=$Version") { return 'unexpected RequiredModules' }
+	}
+	return ''
+}
+function Install-StagedModule([string]$Name, [string]$Version, [scriptblock]$Log) {
+	$say = $Log
+	$stage = Join-Path ([IO.Path]::GetTempPath()) ('sps-stage-' + [guid]::NewGuid().ToString('N'))
+	try {
+		if (-not (Test-StagedInstallAllowed $Name $Version)) { return [pscustomobject]@{ Ok = $false; Reason = 'not on the pin list' } }
+		New-Item -ItemType Directory -Path $stage -Force -ErrorAction Stop | Out-Null
+		$sp = @{ Name = $Name; RequiredVersion = $Version; Path = $stage; Repository = 'PSGallery'; Force = $true; ErrorAction = 'Stop' }
+		try { if ((Get-Command Save-Module).Parameters.ContainsKey('AcceptLicense')) { $sp.AcceptLicense = $true } } catch {}
+		Save-Module @sp
+		$dest = Get-CurrentUserModulesPath
+		if (-not $dest) { return [pscustomobject]@{ Ok = $false; Reason = 'no CurrentUser module folder' } }
+		foreach ($md in @(Get-ChildItem -LiteralPath $stage -Directory)) {
+			$n = $md.Name
+			$vdir = Join-Path $md.FullName $Version
+			if (-not (Test-Path -LiteralPath $vdir)) { continue }
+			if (-not (Test-StagedInstallAllowed $n $Version)) { if ($say) { & $say "Staged install: ignoring $n (not on the pin list)" }; continue }
+			$target = Join-Path (Join-Path $dest $n) $Version
+			if (Test-Path -LiteralPath $target) { continue }   # never overwrite an existing version folder
+			$why = Test-StagedModuleFolder $vdir $n $Version
+			if ($why) { return [pscustomobject]@{ Ok = $false; Reason = "$n ${Version} failed verification: $why" } }
+			$partial = "$target.sps-partial"
+			try {
+				New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force -ErrorAction Stop | Out-Null
+				if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force -ErrorAction Stop }
+				Copy-Item -LiteralPath $vdir -Destination $partial -Recurse -Force -ErrorAction Stop
+				$xml = Join-Path $partial 'PSGetModuleInfo.xml'
+				if (Test-Path -LiteralPath $xml) { try { $t = [IO.File]::ReadAllText($xml); [IO.File]::WriteAllText($xml, $t.Replace($vdir, $target)) } catch {} }
+				Rename-Item -LiteralPath $partial -NewName $Version -ErrorAction Stop
+				if ($say) { & $say "Staged install: copied verified $n $Version to the CurrentUser module folder" }
+			} catch {
+				try { if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
+				return [pscustomobject]@{ Ok = $false; Reason = "copy failed: $($_.Exception.Message)" }
+			}
+		}
+		$ok = Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $dest $Name) $Version) "$Name.psd1")
+		return [pscustomobject]@{ Ok = $ok; Reason = $(if ($ok) { '' } else { 'module not found after copy' }) }
+	} catch {
+		return [pscustomobject]@{ Ok = $false; Reason = "$($_.Exception.Message)" }
+	} finally {
+		try { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue } } catch {}
+	}
+}
 # Install (CurrentUser) or Save (-Destination) the given {Name;Version} items from PSGallery. Never
 # uninstalls, never writes machine-wide. Returns Installed / Already / Failed / NetworkError.
 function Install-PlanModules {
 	param($Items, [string]$Destination, [switch]$ForceCurrentUser, [scriptblock]$Log)
 	$emitLog = $Log; $log = { param($m) if ($emitLog) { & $emitLog $m } }   # NOT if($Log): $log IS $Log (case-insensitive) -> infinite recursion
-	Initialize-GalleryAccessPlain -Log $Log
+	Initialize-GalleryAccessPlain -Log $emitLog
 	$acceptLic = $false; try { $acceptLic = (Get-Command Install-Module).Parameters.ContainsKey('AcceptLicense') } catch {}
 	$installed = @(); $already = @(); $failed = @(); $netErr = $false
 	foreach ($it in @($Items)) {
@@ -365,6 +465,7 @@ function Install-PlanModules {
 			$have = if ($Destination) { @(Get-InstalledModuleVersions $name -Roots @($Destination) | Where-Object { "$($_.Version)" -eq $ver }) } else { @(Get-InstalledModuleVersions $name | Where-Object { "$($_.Version)" -eq $ver }) }
 			if ($have.Count) { $already += "$name $ver"; continue }
 		}
+		$errItem = $Error.Count
 		try {
 			if ($Destination -and -not $ForceCurrentUser) {
 				$sp = @{ Name = $name; RequiredVersion = $ver; Path = $Destination; Repository = 'PSGallery'; Force = $true; ErrorAction = 'Stop' }
@@ -379,6 +480,18 @@ function Install-PlanModules {
 			$installed += "$name $ver"
 		} catch {
 			$msg = "$($_.Exception.Message)"
+			$notCat = ("$($_.FullyQualifiedErrorId)" -match 'ModuleIsNotCatalogSigned') -or ($msg -match 'is not catalog signed')
+			if ($notCat -and -not ($Destination -and -not $ForceCurrentUser) -and (Test-StagedInstallAllowed $name $ver)) {
+				& $log "PowerShellGet refused $name $ver (a signed newer copy is installed); trying the verified staged install."
+				$sr = Install-StagedModule -Name $name -Version $ver -Log $emitLog
+				if ($sr.Ok) {
+					while ($Error.Count -gt $errItem) { $Error.RemoveAt(0) }   # handled - don't show the refused attempt as an error later
+					& $log "Installed $name $ver (verified staged install)"
+					$installed += "$name $ver"
+					continue
+				}
+				$msg = "$msg  [Staged install also failed: $($sr.Reason)]"
+			}
 			& $log "Failed $name ${ver}: $msg"
 			$failed += "$name ${ver}: $msg"
 			if ($msg -match 'Unable to resolve package source|No match was found|unable to connect|proxy|407|could not be resolved|The remote name|timed out|SSL|TLS') { $netErr = $true }
@@ -419,6 +532,7 @@ function Get-ModuleDiagnostics {
 	$sb = [System.Text.StringBuilder]::new()
 	$add = { param($line) [void]$sb.AppendLine("$line") }
 	$appVer = ''; try { $appVer = "$version" } catch {}
+	if (-not $appVer) { try { $mg = Join-Path (Split-Path $PSScriptRoot -Parent) 'MainGUI.ps1'; if (Test-Path -LiteralPath $mg) { $m1 = [regex]::Match(([IO.File]::ReadAllLines($mg)[0]), 'v\d+\.\d+\.\d+'); if ($m1.Success) { $appVer = $m1.Value } } } catch {} }
 	& $add "App version: $appVer"
 	$fw = ''; try { $fw = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription } catch {}
 	& $add "PowerShell: $($PSVersionTable.PSVersion) ($fw)"
@@ -448,7 +562,7 @@ function Get-ModuleDiagnostics {
 	if ($Plan) {
 		$gExtra = if ($Plan.GraphNewest -and "$($Plan.GraphNewest)" -ne "$($Plan.Graph)") { " (newest installed: $($Plan.GraphNewest))" } else { '' }
 		$eExtra = if ($Plan.ExoNewest -and "$($Plan.ExoNewest)" -ne "$($Plan.Exo)") { " (newest installed: $($Plan.ExoNewest))" } else { '' }
-		& $add "Plan: pwsh row $($Plan.PwshRow) -> Graph $($Plan.Graph) ($($Plan.GraphMode))$gExtra / Exchange $($Plan.Exo) ($($Plan.ExoMode))$eExtra"
+		& $add "Plan: pwsh row $($Plan.PwshRow) -> Graph $($Plan.Graph) ($($Plan.GraphMode)) autoload $($Plan.GraphAutoload)$gExtra / Exchange $($Plan.Exo) ($($Plan.ExoMode)) autoload $($Plan.ExoAutoload)$eExtra"
 		if (@($Plan.NeedsInstall).Count) { & $add ("  NeedsInstall: " + ((@($Plan.NeedsInstall) | ForEach-Object { "$($_.Name) $($_.Version)" }) -join ', ')) }
 		if (@($Plan.Attempts).Count)     { foreach ($a in @($Plan.Attempts)) { & $add "  attempt: $a" } }
 	}

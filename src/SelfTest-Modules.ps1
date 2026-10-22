@@ -35,20 +35,29 @@ if (-not $Inner) {
 	# Download ONLY what the plan says is needed (N3): everything when the set is bare, nothing when the
 	# AllUsers roots already hold a working set. The child copies download.txt into the report.
 	if (-not $SkipDownload -and @($plan.NeedsInstall).Count) {
-		Write-Host "Downloading module set into the temp folder (this can take ~20s)..."
-		$dl = Install-PlanModules -Items @($plan.NeedsInstall) -Destination $mods -Log { param($m) Write-Host $m }
+		Write-Host "Downloading module set into the temp folder (this can take up to ~5 min)..."
+		$dl = $null; $mpPath = Join-Path $PSScriptRoot 'modulepins.ps1'
+		if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
+			$job = Start-ThreadJob -ScriptBlock { param($sp, $items, $dest) . $sp; Install-PlanModules -Items $items -Destination $dest } -ArgumentList $mpPath, @($plan.NeedsInstall), $mods
+			if (Wait-Job $job -Timeout 300) { $dl = Receive-Job $job } else { Stop-Job $job -ErrorAction SilentlyContinue; Write-Host 'Download timed out after 5 minutes.' }
+			Remove-Job $job -Force -ErrorAction SilentlyContinue
+		} else {
+			$dl = Install-PlanModules -Items @($plan.NeedsInstall) -Destination $mods -Log { param($m) Write-Host $m }
+		}
 		$dlText = @()
-		if (@($dl.Installed).Count) { $dlText += "Downloaded: " + (@($dl.Installed) -join ', ') }
-		if (@($dl.Failed).Count)    { $dlText += "Download failed: " + (@($dl.Failed) -join '; ') }
-		if ($dl.NetworkError)       { $dlText += (Get-GalleryHelpText) }
+		if ($dl) {
+			if (@($dl.Installed).Count) { $dlText += "Downloaded: " + (@($dl.Installed) -join ', ') }
+			if (@($dl.Failed).Count)    { $dlText += "Download failed: " + (@($dl.Failed) -join '; ') }
+			if ($dl.NetworkError)       { $dlText += (Get-GalleryHelpText) }
+		} else { $dlText += 'Download timed out after 5 minutes.' }
 		if ($dlText.Count) { Set-Content -LiteralPath (Join-Path $root 'download.txt') -Value ($dlText -join "`n") -Encoding UTF8 }
 	}
 	$exe = (Get-Process -Id $PID).Path
 	# Quote paths: Start-Process -ArgumentList joins with spaces and does NOT quote, so a spaced path breaks.
 	$childArgs = @('-NoProfile', '-NonInteractive', '-File', ('"' + $PSCommandPath + '"'), '-Inner', '-Root', ('"' + $root + '"'), '-OutFile', ('"' + $OutFile + '"'))
 	if ($ExcludeAllUsers) { $childArgs += '-ExcludeAllUsers' }
-	$proc = Start-Process $exe -ArgumentList $childArgs -PassThru -NoNewWindow -Wait
-	$code = $proc.ExitCode
+	$proc = Start-Process $exe -ArgumentList $childArgs -PassThru -NoNewWindow
+	if (-not $proc.WaitForExit(300000)) { try { $proc.Kill($true) } catch {}; Write-Host 'Self-test timed out after 5 minutes.'; $code = 2 } else { $code = $proc.ExitCode }
 	# Guarded cleanup - only a folder we created, under TEMP, with our name pattern, not under MyDocuments.
 	try {
 		$full = [IO.Path]::GetFullPath($root); $tmp = [IO.Path]::GetFullPath($env:TEMP)

@@ -694,7 +694,7 @@ function Initialize-ModulePinsEarly {
 	try {
 		$script:ModulePlan = Resolve-ModulePlan
 		$fw = ''; try { $fw = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription } catch {}
-		Write-ModuleLog ("Modules: pwsh {0} ({1}) -> Graph {2} ({3}) / Exchange {4} ({5})" -f $script:ModulePlan.PwshRow, $fw, $script:ModulePlan.Graph, $script:ModulePlan.GraphMode, $script:ModulePlan.Exo, $script:ModulePlan.ExoMode)
+		Write-ModuleLog ("Modules: pwsh {0} ({1}) -> Graph {2} ({3}) autoload {6} / Exchange {4} ({5}) autoload {7}" -f $script:ModulePlan.PwshRow, $fw, $script:ModulePlan.Graph, $script:ModulePlan.GraphMode, $script:ModulePlan.Exo, $script:ModulePlan.ExoMode, $script:ModulePlan.GraphAutoload, $script:ModulePlan.ExoAutoload)
 		if ($script:ModulePlan.GraphMode -eq 'pin' -or $script:ModulePlan.ExoMode -eq 'pin') {
 			$script:ModuleImport = Import-ModulePlan -Plan $script:ModulePlan -Log { param($m) Write-ModuleLog $m }
 		}
@@ -1770,6 +1770,7 @@ function Install-AppVersion([string]$Tag, $Set, $Prog, [string]$AppRoot) {
 # Persist the "rolled back from" marker. A FUNCTION (not a bare $script: in the Settings click handlers,
 # which are .GetNewClosure() scopes where $script:Settings reads as $null). Pass '' to clear it.
 function Set-RolledBack([string]$FromVersion) { $script:Settings.rolledBackFrom = $FromVersion; Save-AppSettings }
+function Clear-BadModuleVersions { $script:Settings.badModuleVersions = @(); Save-AppSettings }
 
 function Show-Settings {
 	$win = New-SettingsDialog
@@ -1873,16 +1874,19 @@ function Show-Settings {
 	}.GetNewClosure())
 
 	# ---- Microsoft modules card ----
+	$errN = $Error.Count
+	try {
 	$mplan = $script:ModulePlan; if (-not $mplan) { try { $mplan = Resolve-ModulePlan } catch {} }
 	$loadedGraph = ''; try { $loadedGraph = "$((Get-Module Microsoft.Graph.Authentication | Sort-Object Version -Descending | Select-Object -First 1).Version)" } catch {}
 	$loadedExo   = ''; try { $loadedExo   = "$((Get-Module ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1).Version)" } catch {}
-	$gTxt = if ($loadedGraph) { $loadedGraph } elseif ($mplan -and $mplan.Graph) { "$($mplan.Graph)" } else { '(none)' }
-	$eTxt = if ($loadedExo)   { $loadedExo   } elseif ($mplan -and $mplan.Exo)   { "$($mplan.Exo)" }   else { '(none)' }
+	$gTxt = if ($loadedGraph) { $loadedGraph } elseif ($mplan -and $mplan.Graph) { "$($mplan.Graph)" } elseif ($mplan -and $mplan.GraphAutoload) { "$($mplan.GraphAutoload)" } else { '(none)' }
+	$eTxt = if ($loadedExo)   { $loadedExo   } elseif ($mplan -and $mplan.Exo)   { "$($mplan.Exo)" }   elseif ($mplan -and $mplan.ExoAutoload) { "$($mplan.ExoAutoload)" } else { '(none)' }
 	$rowTxt = if ($mplan) { $mplan.PwshRow } else { Get-PwshRowKey }
 	$win.FindName('ModInfo').Text = "Graph $gTxt / Exchange $eTxt on PowerShell $rowTxt"
 	# "Install 3.10.1" - only when the Exchange version AUTOLOAD would load is below 3.10.1 (not the newest
 	# installed), and 3.10.1 isn't on the failed list. Forces a CurrentUser install so it wins over a copy elsewhere.
 	$exoAuto = $null; try { $aa = Get-AutoloadVersion 'ExchangeOnlineManagement'; if ($aa) { $exoAuto = $aa.Version } } catch {}
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 	$exo310Bad = ('ExchangeOnlineManagement=3.10.1' -in @($script:Settings.badModuleVersions))
 	if ($PSVersionTable.PSVersion -ge [version]'7.6' -and $exoAuto -and $exoAuto -lt [version]'3.10.1' -and -not $exo310Bad) {
 		$win.FindName('ExoUpgradeText').Text = "Exchange $exoAuto is the version PowerShell loads; 3.10.1 is recommended before Mar 31 2027."
@@ -1907,9 +1911,10 @@ function Show-Settings {
 		$win.FindName('ModBlockedText').Text = "$which couldn't load on this PC earlier, so it won't be offered again. Click 'Clear failed-version list' to try it again."
 		$win.FindName('ModBlockedPanel').Visibility = 'Visible'
 	}
+	$clrStatus = $win.FindName('SelfTestStatus'); $clrBlockedPanel = $win.FindName('ModBlockedPanel')
 	$win.FindName('ClearBadBtn').Add_Click({
-		try { $script:Settings.badModuleVersions = @(); Save-AppSettings } catch {}
-		try { $win.FindName('SelfTestStatus').Text = 'Cleared. Restart the app to try again.' } catch {}
+		try { Clear-BadModuleVersions; $clrStatus.Text = 'Cleared. Restart the app to try again.'; $clrBlockedPanel.Visibility = 'Collapsed' }
+		catch { $clrStatus.Text = "Couldn't clear the list: $($_.Exception.Message)" }
 	}.GetNewClosure())
 	$modWarn = "Heads-up: Microsoft says Exchange module versions older than 3.10.1 may stop signing in from about 31 March 2027 (notice MC1483974). This PC uses Exchange $eTxt. On PowerShell 7.6 or newer the app can use 3.10.1 (above). On Windows Server 2012/2012 R2 (PowerShell 7.2) that isn't possible, so after that date use Script-Package Studio from Windows Server 2016+ or Windows 10/11 for Exchange tasks."
 	if ($PSVersionTable.PSVersion -lt [version]'7.4') { $modWarn = "PowerShell $($PSVersionTable.PSVersion) is out of Microsoft support; it can only use Exchange 3.0-3.4.`n`n" + $modWarn }
@@ -1926,19 +1931,30 @@ function Show-Settings {
 		if ($simBare.IsChecked -eq $true) { $stArgs += '-ExcludeAllUsers' }
 		$proc = $null
 		try { $proc = Start-Process $exe -ArgumentList $stArgs -PassThru -WindowStyle Hidden } catch { $selfTestStatus.Text = "Couldn't start the self-test: $($_.Exception.Message)"; $selfTestBtn.IsEnabled = $true; return }
+		$tBtn = $selfTestBtn; $tStatus = $selfTestStatus; $tBox = $diagBox; $tStart = Get-Date   # TRUE locals so the tick's GetNewClosure captures them (not the parent-closure copies, which come back $null)
 		$timer = New-Object System.Windows.Threading.DispatcherTimer
 		$timer.Interval = [TimeSpan]::FromMilliseconds(500)
 		$timer.Add_Tick({
-			if (-not $proc.HasExited) { return }
-			$timer.Stop(); $selfTestBtn.IsEnabled = $true
+			if (-not $proc.HasExited) {
+				if (((Get-Date) - $tStart).TotalMinutes -gt 10) {
+					$timer.Stop(); try { $proc.Kill($true) } catch {}; $tBtn.IsEnabled = $true
+					$tStatus.Text = 'Self-test timed out after 10 minutes (no changes were made to this PC).'
+				}
+				return
+			}
+			$timer.Stop(); $tBtn.IsEnabled = $true
 			$lines = @(); try { $lines = @(Get-Content -LiteralPath $outFile -TotalCount 25 -ErrorAction Stop) } catch {}
 			$head = if ($proc.ExitCode -eq 0) { 'Self-test passed.' } else { 'Self-test found a problem.' }
-			$selfTestStatus.Text = $head + "`n" + ($lines -join "`n")
-			$diagBox.Text = ''; try { $diagBox.Text = (Get-Content -LiteralPath $outFile -Raw) } catch {}
-			try {   # F7c: delete the report, only if it's under %TEMP% with the expected name
-				$full = [IO.Path]::GetFullPath($outFile); $tmp = [IO.Path]::GetFullPath($env:TEMP); $leaf = Split-Path $outFile -Leaf
-				if ($full.StartsWith($tmp, [System.StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '^SPS-selftest-\d{8}-\d{6}\.txt$')) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue }
-			} catch {}
+			$tStatus.Text = $head + "`n" + ($lines -join "`n")
+			$tBox.Text = ''; try { $tBox.Text = (Get-Content -LiteralPath $outFile -Raw) } catch {}
+			if ($tBox.Text) {
+				try {   # delete the report only AFTER we captured it, and only a %TEMP% file with the expected name
+					$full = [IO.Path]::GetFullPath($outFile); $tmp = [IO.Path]::GetFullPath($env:TEMP); $leaf = Split-Path $outFile -Leaf
+					if ($full.StartsWith($tmp, [System.StringComparison]::OrdinalIgnoreCase) -and ($leaf -match '^SPS-selftest-\d{8}-\d{6}\.txt$')) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue }
+				} catch {}
+			} else {
+				$tStatus.Text = $tStatus.Text + "`nReport kept at: $outFile"
+			}
 		}.GetNewClosure())
 		$timer.Start()
 	}.GetNewClosure())

@@ -1229,7 +1229,11 @@ function Install-RequiredModules {
 	# Only install what the plan says is actually missing/broken. CurrentUser scope (no admin), never uninstalls.
 	$plan = $null; try { $plan = Resolve-ModulePlan } catch {}
 	if ($plan -and -not @($plan.NeedsInstall).Count -and $plan.GraphMode -ne 'missing' -and $plan.GraphMode -ne 'needsRevert' -and $plan.ExoMode -ne 'missing' -and $plan.ExoMode -ne 'needsInstall') {
-		Show-Notice 'Nothing to install' 'Microsoft Graph and Exchange are already installed and working.' 'Info'
+		if ($plan.GraphMode -eq 'blocked' -or $plan.ExoMode -eq 'blocked') {
+			Show-Notice 'Nothing installed' "A version failed to load on this PC earlier, so it won't be installed again. Open Settings -> Microsoft modules -> 'Clear failed-version list' to try again." 'Info'
+		} else {
+			Show-Notice 'Nothing to install' 'Microsoft Graph and Exchange are already installed and working.' 'Info'
+		}
 		$progressBar1.Value = 80
 		CheckForErrors
 		OperationComplete

@@ -30,12 +30,30 @@ function Get-PwshRowKey { '{0}.{1}' -f $PSVersionTable.PSVersion.Major, $PSVersi
 # List installed versions of a module WITHOUT importing anything. Without -Roots: Get-Module
 # -ListAvailable. With -Roots: read <root>\<Name>\<ver>\<Name>.psd1 directly. Returns Version,
 # ManifestPath, ModuleBase, Scope (CurrentUser / AllUsers / Built-in / Other), sorted by version.
+# Read a module manifest's ModuleVersion by PARSING ONLY (never runs the .psd1 - real EXO manifests
+# have if($PSEdition...) code that the built-in data-file loader runs and throws on, polluting $Error). Never throws.
+function Get-ManifestVersion([string]$Path) {
+	$tok = $null; $perr = $null
+	try { $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tok, [ref]$perr) } catch { return $null }
+	$h = $ast.Find({ param($a) $a -is [System.Management.Automation.Language.HashtableAst] }, $false)
+	if (-not $h) { return $null }
+	foreach ($kv in $h.KeyValuePairs) {
+		if ("$($kv.Item1.Value)" -eq 'ModuleVersion') {
+			$s = $kv.Item2.Find({ param($a) $a -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)
+			$v = $null; if ($s -and [version]::TryParse($s.Value, [ref]$v)) { return $v }
+		}
+	}
+	return $null
+}
+
 function Get-InstalledModuleVersions([string]$Name, [string[]]$Roots) {
+	$errN = $Error.Count
+	try {
+	$docs = $null; try { $docs = [Environment]::GetFolderPath('MyDocuments') } catch {}
 	$cuPwsh = $null; $cuWin = $null; $puPwsh = $null; $puWin = $null; $home2 = $null
-	try { $cuPwsh = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Modules' } catch {}
-	try { $cuWin  = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules' } catch {}   # E10
-	try { if ($env:ProgramFiles) { $puPwsh = Join-Path $env:ProgramFiles 'PowerShell\Modules'; $puWin = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules' } } catch {}
-	try { $home2 = Join-Path $PSHOME 'Modules' } catch {}
+	if ($docs)             { $cuPwsh = Join-Path $docs 'PowerShell\Modules'; $cuWin = Join-Path $docs 'WindowsPowerShell\Modules' }
+	if ($env:ProgramFiles) { $puPwsh = Join-Path $env:ProgramFiles 'PowerShell\Modules'; $puWin = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules' }
+	if ($PSHOME)           { $home2 = Join-Path $PSHOME 'Modules' }
 	$starts = {
 		param([string]$base, [string]$dir)
 		($dir -and $base -and $base.StartsWith($dir, [System.StringComparison]::OrdinalIgnoreCase))
@@ -56,7 +74,7 @@ function Get-InstalledModuleVersions([string]$Name, [string[]]$Roots) {
 			foreach ($vdir in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
 				$manifest = Join-Path $vdir.FullName "$Name.psd1"
 				if (-not (Test-Path -LiteralPath $manifest)) { continue }
-				$ver = $null; try { $ver = [version]$vdir.Name } catch {}
+				$ver = $null; [void][version]::TryParse("$($vdir.Name)", [ref]$ver)
 				if (-not $ver) { continue }
 				$out.Add([pscustomobject]@{ Version = $ver; ManifestPath = $manifest; ModuleBase = $vdir.FullName; Scope = (& $classify $vdir.FullName) })
 			}
@@ -68,6 +86,7 @@ function Get-InstalledModuleVersions([string]$Name, [string[]]$Roots) {
 		}
 	}
 	return @($out | Sort-Object Version)
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }
 
 # What PowerShell autoload would REALLY load for $Name. PowerShell does NOT pick the newest version
@@ -82,6 +101,8 @@ function Get-InstalledModuleVersions([string]$Name, [string[]]$Roots) {
 # Get-Commands those and uses Test-LoadedGraphCommand. But every Authentication / ExchangeOnlineManagement
 # version exports Connect-MgGraph / Connect-ExchangeOnline, so "first folder, highest in it" is exact here.
 function Get-AutoloadVersion([string]$Name, [string[]]$Roots) {
+	$errN = $Error.Count
+	try {
 	$folders = if ($Roots) { @($Roots) } else { @("$env:PSModulePath" -split [IO.Path]::PathSeparator) }
 	foreach ($folder in $folders) {
 		if (-not $folder) { continue }
@@ -91,22 +112,23 @@ function Get-AutoloadVersion([string]$Name, [string[]]$Roots) {
 		foreach ($vdir in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
 			$manifest = Join-Path $vdir.FullName "$Name.psd1"
 			if (-not (Test-Path -LiteralPath $manifest)) { continue }
-			$fv = $null; try { $fv = [version]$vdir.Name } catch {}
+			$fv = $null; [void][version]::TryParse("$($vdir.Name)", [ref]$fv)
 			if (-not $fv) { continue }
-			$mv = $null; try { $mv = [version](Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop).ModuleVersion } catch {}
+			$mv = Get-ManifestVersion $manifest
 			if ($mv -and "$mv" -ne "$fv") { continue }   # PowerShell skips a folder whose manifest version mismatches
 			if (-not $best -or $fv -gt $best.Version) { $best = [pscustomobject]@{ Version = $fv; ManifestPath = $manifest; Folder = $folder } }
 		}
 		if (-not $best) {
 			$flat = Join-Path $dir "$Name.psd1"
 			if (Test-Path -LiteralPath $flat) {
-				$mv = $null; try { $mv = [version](Import-PowerShellDataFile -LiteralPath $flat -ErrorAction Stop).ModuleVersion } catch {}
+				$mv = Get-ManifestVersion $flat
 				if ($mv) { $best = [pscustomobject]@{ Version = $mv; ManifestPath = $flat; Folder = $folder } }
 			}
 		}
 		if ($best) { return $best }   # first folder that has the module wins
 	}
 	return $null
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }
 
 # True ONLY for Exchange + pwsh combinations KNOWN to fail. Everything else is left alone (it may
@@ -139,6 +161,8 @@ function Add-BadModuleVersion([string]$NameVersion) {
 # $PSVersion is for dry-runs only; the app never passes it.
 function Resolve-ModulePlan {
 	param([string[]]$Roots, [version]$PSVersion)
+	$errN = $Error.Count
+	try {
 	$ps = if ($PSVersion) { $PSVersion } else { $PSVersionTable.PSVersion }
 	$rowKey = '{0}.{1}' -f $ps.Major, $ps.Minor
 	if ($ps.Major -eq 7 -and $ps.Minor -ge 7) { $rowKey = '7.6' }   # 7.7+ uses the 7.6 row
@@ -221,6 +245,7 @@ function Resolve-ModulePlan {
 		Attempts       = @($attempts)
 		Bad            = @($bad)
 	}
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }
 
 # Should the Graph "switch to browser sign-in" offer be shown? Only when the plan says needsRevert
@@ -234,10 +259,10 @@ function Test-ShouldOfferGraphRevert($Plan, [string]$Declined) {
 
 # Load the plan. Graph first (Authentication first), then Exchange - exactly v3.4.2's order. Imports
 # each module ONCE (E3): on failure, records the bad version and returns Step='restart'. No Jwt
-# preload or gate. No wholesale $Error.Clear().
+# preload or gate. No wholesale clearing of the error list.
 function Import-ModulePlan {
 	param($Plan, [switch]$ByPath, [string]$IsolatedPath, [scriptblock]$Log)
-	$log = { param($m) if ($Log) { & $Log $m } }
+	$emitLog = $Log; $log = { param($m) if ($emitLog) { & $emitLog $m } }   # NOT if($Log): $log IS $Log (case-insensitive) -> infinite recursion
 	$loaded = [System.Collections.Generic.List[string]]::new()
 	if ($Plan.GraphMode -eq 'pin') {
 		$la = Get-Module -Name 'Microsoft.Graph.Authentication' | Sort-Object Version -Descending | Select-Object -First 1
@@ -263,6 +288,11 @@ function Import-ModulePlan {
 		}
 	}
 	if ($Plan.ExoMode -eq 'pin') {
+		$le = Get-Module -Name 'ExchangeOnlineManagement' | Sort-Object Version -Descending | Select-Object -First 1
+		if ($le -and "$($le.Version)" -ne "$($Plan.Exo)") {
+			& $log "A different Exchange ($($le.Version)) is already loaded; restart needed to load $($Plan.Exo)."
+			return [pscustomobject]@{ Ok = $false; Step = 'restart'; Error = "Exchange $($le.Version) already loaded"; Loaded = @($loaded) }
+		}
 		$already = Get-Module -Name 'ExchangeOnlineManagement' | Where-Object { "$($_.Version)" -eq "$($Plan.Exo)" } | Select-Object -First 1
 		if ($already) { $loaded.Add("ExchangeOnlineManagement $($Plan.Exo)") }
 		else {
@@ -274,7 +304,7 @@ function Import-ModulePlan {
 			} catch {
 				$msg = "$($_.Exception.Message)"
 				& $log "Couldn't load ExchangeOnlineManagement $($Plan.Exo): $msg"
-				Add-BadModuleVersion "ExchangeOnlineManagement=$($Plan.Exo)"
+				if ($msg -notmatch 'already loaded') { Add-BadModuleVersion "ExchangeOnlineManagement=$($Plan.Exo)" }
 				return [pscustomobject]@{ Ok = $false; Step = 'restart'; Error = "ExchangeOnlineManagement $($Plan.Exo): $msg"; Loaded = @($loaded) }
 			}
 		}
@@ -286,6 +316,8 @@ function Import-ModulePlan {
 # isn't loaded yet, decide by the loaded/newest Authentication major (2.x has the WindowsHello /
 # PlatformCredential names; 1.x doesn't).
 function Test-LoadedGraphCommand([string]$Name) {
+	$errN = $Error.Count
+	try {
 	foreach ($m in @(Get-Module -Name 'Microsoft.Graph.*')) {
 		try { if ($m.ExportedCommands.ContainsKey($Name)) { return $true } } catch {}
 	}
@@ -295,11 +327,12 @@ function Test-LoadedGraphCommand([string]$Name) {
 	else { $auto = Get-AutoloadVersion 'Microsoft.Graph.Authentication'; if ($auto) { $authMajor = $auto.Version.Major } }   # the version autoload would load, not the newest
 	if ($null -eq $authMajor) { return $false }
 	return ($authMajor -ge 2)
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }
 
 # Make the PowerShell Gallery reachable for THIS process only. No admin, nothing machine-wide.
 function Initialize-GalleryAccessPlain([scriptblock]$Log) {
-	$log = { param($m) if ($Log) { & $Log $m } }
+	$emitLog = $Log; $log = { param($m) if ($emitLog) { & $emitLog $m } }   # NOT if($Log): $log IS $Log (case-insensitive) -> infinite recursion
 	try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 	try { [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials } catch {}
 	try {
@@ -319,7 +352,7 @@ function Initialize-GalleryAccessPlain([scriptblock]$Log) {
 # uninstalls, never writes machine-wide. Returns Installed / Already / Failed / NetworkError.
 function Install-PlanModules {
 	param($Items, [string]$Destination, [switch]$ForceCurrentUser, [scriptblock]$Log)
-	$log = { param($m) if ($Log) { & $Log $m } }
+	$emitLog = $Log; $log = { param($m) if ($emitLog) { & $emitLog $m } }   # NOT if($Log): $log IS $Log (case-insensitive) -> infinite recursion
 	Initialize-GalleryAccessPlain -Log $Log
 	$acceptLic = $false; try { $acceptLic = (Get-Command Install-Module).Parameters.ContainsKey('AcceptLicense') } catch {}
 	$installed = @(); $already = @(); $failed = @(); $netErr = $false
@@ -381,6 +414,8 @@ function Protect-DiagText([string]$Text) {
 # Plain-text diagnostics (redacted). Information only; never signs in, never prints a token.
 function Get-ModuleDiagnostics {
 	param($Plan)
+	$errN = $Error.Count
+	try {
 	$sb = [System.Text.StringBuilder]::new()
 	$add = { param($line) [void]$sb.AppendLine("$line") }
 	$appVer = ''; try { $appVer = "$version" } catch {}
@@ -453,4 +488,5 @@ function Get-ModuleDiagnostics {
 	try { $gp = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.mg\mg.graphoptions.json'; if (Test-Path -LiteralPath $gp) { $wam = "$((Get-Content -LiteralPath $gp -Raw | ConvertFrom-Json).DisableWAMForMSGraph)" } } catch {}
 	& $add "mg.graphoptions.json DisableWAMForMSGraph: $(if ($wam -ne '') { $wam } else { '(not set)' })"
 	return (Protect-DiagText $sb.ToString())
+	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }

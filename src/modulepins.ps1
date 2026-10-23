@@ -248,12 +248,12 @@ function Resolve-ModulePlan {
 	} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 }
 
-# Should the Graph "switch to browser sign-in" offer be shown? Only when the plan says needsRevert
-# and the user hasn't already declined THIS autoload Graph version. Pure (dry-run 5 calls it).
+# Should the Graph "switch to browser sign-in" offer be shown? Only when the plan says needsRevert.
+# Session "Not now" is enforced by the caller (MainGUI), not by settings.ini (v3.4.7: re-offer every launch).
 function Test-ShouldOfferGraphRevert($Plan, [string]$Declined) {
 	if (-not $Plan) { return $false }
 	if ($Plan.GraphMode -ne 'needsRevert') { return $false }
-	if ($Declined -and "$Declined" -eq "$($Plan.GraphAutoload)") { return $false }
+	# $Declined kept for call-site compatibility; ignored on purpose (re-offer every launch).
 	return $true
 }
 
@@ -504,19 +504,23 @@ function Install-StagedModule([string]$Name, [string]$Version, [scriptblock]$Log
 # Install (CurrentUser) or Save (-Destination) the given {Name;Version} items from PSGallery. Never
 # uninstalls, never writes machine-wide. Returns Installed / Already / Failed / NetworkError.
 function Install-PlanModules {
-	param($Items, [string]$Destination, [switch]$ForceCurrentUser, [scriptblock]$Log)
+	param($Items, [string]$Destination, [switch]$ForceCurrentUser, [scriptblock]$Log, [scriptblock]$Progress)
 	$emitLog = $Log; $log = { param($m) if ($emitLog) { & $emitLog $m } }   # NOT if($Log): $log IS $Log (case-insensitive) -> infinite recursion
 	Initialize-GalleryAccessPlain -Log $emitLog
+	$prog = $Progress; $emit = { param($h) if ($prog) { try { & $prog $h } catch {} } }   # honest install progress (never faked)
+	$valid = @(@($Items) | Where-Object { "$($_.Name)" -and "$($_.Version)" }); $total = $valid.Count; $done = 0
+	if ($total) { & $emit @{ Phase = 'start'; Done = 0; Total = $total; Name = '' } }
 	$acceptLic = $false; try { $acceptLic = (Get-Command Install-Module).Parameters.ContainsKey('AcceptLicense') } catch {}
 	$installed = @(); $already = @(); $failed = @(); $netErr = $false
 	foreach ($it in @($Items)) {
 		$name = "$($it.Name)"; $ver = "$($it.Version)"
 		if (-not $name -or -not $ver) { continue }
+		& $emit @{ Phase = 'item'; Done = $done; Total = $total; Name = $name; Version = $ver }
 		# -ForceCurrentUser (the Settings "Install 3.10.1" button): install to CurrentUser even if a copy
 		# exists elsewhere, so the CurrentUser folder (first on the path) wins. Otherwise skip if present.
 		if (-not $ForceCurrentUser) {
 			$have = if ($Destination) { @(Get-InstalledModuleVersions $name -Roots @($Destination) | Where-Object { "$($_.Version)" -eq $ver }) } else { @(Get-InstalledModuleVersions $name | Where-Object { "$($_.Version)" -eq $ver }) }
-			if ($have.Count) { $already += "$name $ver"; continue }
+			if ($have.Count) { $already += "$name $ver"; $done++; & $emit @{ Phase = 'itemDone'; Done = $done; Total = $total; Name = $name; Ok = $true }; continue }
 		}
 		$errItem = $Error.Count
 		try {
@@ -531,6 +535,7 @@ function Install-PlanModules {
 			}
 			& $log "Installed $name $ver"
 			$installed += "$name $ver"
+			$done++; & $emit @{ Phase = 'itemDone'; Done = $done; Total = $total; Name = $name; Ok = $true }
 		} catch {
 			$msg = "$($_.Exception.Message)"
 			$notCat = ("$($_.FullyQualifiedErrorId)" -match 'ModuleIsNotCatalogSigned') -or ($msg -match 'is not catalog signed')
@@ -541,6 +546,7 @@ function Install-PlanModules {
 					while ($Error.Count -gt $errItem) { $Error.RemoveAt(0) }   # handled - don't show the refused attempt as an error later
 					& $log "Installed $name $ver (verified staged install)"
 					$installed += "$name $ver"
+					$done++; & $emit @{ Phase = 'itemDone'; Done = $done; Total = $total; Name = $name; Ok = $true }
 					continue
 				}
 				$msg = "$msg  [Staged install also failed: $($sr.Reason)]"
@@ -548,8 +554,10 @@ function Install-PlanModules {
 			& $log "Failed $name ${ver}: $msg"
 			$failed += "$name ${ver}: $msg"
 			if ($msg -match 'Unable to resolve package source|No match was found|unable to connect|proxy|407|could not be resolved|The remote name|timed out|SSL|TLS') { $netErr = $true }
+			$done++; & $emit @{ Phase = 'itemDone'; Done = $done; Total = $total; Name = $name; Ok = $false }
 		}
 	}
+	if ($total) { & $emit @{ Phase = 'end'; Done = $total; Total = $total } }
 	return [pscustomobject]@{ Installed = @($installed); Already = @($already); Failed = @($failed); NetworkError = $netErr }
 }
 

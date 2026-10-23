@@ -1,4 +1,4 @@
-﻿$version = "v3.4.6"
+﻿$version = "v3.4.7"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -51,10 +51,11 @@ $script:Settings = @{
 	bgSearch        = $true
 	rolledBackFrom  = ''   # if set, the version we rolled back FROM (so Check for updates can offer to return)
 	badModuleVersions = @()   # "Name=Version" entries that failed to import; skipped by Resolve-ModulePlan next time
-	graphRevertDeclined = ''   # the autoload Graph version the user said "Not now" to (don't re-offer it)
+	graphRevertDeclined = ''   # RETIRED in v3.4.7 (kept empty for back-compat); Graph "Not now" is session-only now
 	exoInstallDeclined = ''   # the Exchange version the user said "Not now" to (don't re-offer that version)
 }
 $script:ModuleRestartDeclined = $false   # session-only: user clicked "Not now" on Restart needed (don't nag each connect)
+$script:GraphRevertSessionDeclined = $false   # this launch only: user dismissed the Graph browser-sign-in offer
 
 function Read-AppSettings {
 	if (-not (Test-Path -LiteralPath $script:SettingsIniPath)) { return }
@@ -107,6 +108,9 @@ function Save-AppSettings {
 }
 
 Read-AppSettings
+# v3.4.7: the permanent Graph "Not now" flag is retired - clear any stale value so a stuck PC offers again
+# (Exchange's ExoInstallDeclined stays). Log helpers aren't defined yet here, so clear silently.
+if ("$($script:Settings.graphRevertDeclined)") { $script:Settings.graphRevertDeclined = ''; try { Save-AppSettings } catch {} }
 
 # ---- styles + theme engine ---------------------------------------------------
 $script:StyleDict = Read-XamlFile (Join-Path $script:SrcDir 'xaml\Styles.xaml')
@@ -737,10 +741,64 @@ function Show-ModuleChoiceDialog([string]$Title, [string]$Message, [string]$Prim
 # Install the given {Name;Version} items with a status line + repaint. Returns $true (meaning "now
 # restart") only when at least one module was actually installed and nothing failed. If everything
 # was already present it returns $false (no restart). -ForceCurrentUser reinstalls to CurrentUser.
+# v3.4.7: a front-and-center, HONEST progress window for a Graph install (NOT the Settings update bar).
+# Shown non-modally and auto-owned by the main window (New-StyledDialog sets Owner); the install runs
+# synchronously on the UI thread, so each Progress step calls Update-UiNow to paint. Closed in finally.
+$script:ModInstallWin = $null
+function Show-ModuleInstallProgress([string]$Title) {
+	if ($env:SP_SHOT -or $env:SP_TEST) { return }
+	try {
+		$w = New-StyledDialog -Title $Title -Icon '&#xE896;' -BodyXaml @"
+<StackPanel Margin="16" Width="420">
+	<Border Style="{DynamicResource Card}">
+		<StackPanel>
+			<TextBlock x:Name="PgStatus" Style="{DynamicResource Body}" TextWrapping="Wrap" Text="Preparing..."/>
+			<ProgressBar x:Name="PgBar" Height="10" Minimum="0" Maximum="100" Value="0" Margin="0,14,0,0"/>
+		</StackPanel>
+	</Border>
+</StackPanel>
+"@
+		try { $w.Topmost = $true } catch {}
+		$script:ModInstallWin = $w
+		$w.Show()
+		try { Update-UiNow } catch {}
+	} catch { $script:ModInstallWin = $null }
+}
+function Update-ModuleInstallProgress([int]$Percent, [string]$Status) {
+	$w = $script:ModInstallWin
+	if (-not $w) { return }
+	try {
+		if ($Status) { $w.FindName('PgStatus').Text = $Status }
+		if ($Percent -ge 0) { $w.FindName('PgBar').Value = [Math]::Max(0, [Math]::Min(100, $Percent)) }
+		Update-UiNow
+	} catch {}
+}
+function Close-ModuleInstallProgress {
+	$w = $script:ModInstallWin; $script:ModInstallWin = $null
+	if ($w) { try { $w.Close() } catch {} }
+}
 function Invoke-ModuleInstall($Items, [string]$What, [switch]$ForceCurrentUser) {
 	try { Set-ItemStatus "Installing $What... this can take a few minutes." } catch {}
 	try { Update-UiNow } catch {}
-	$res = if ($ForceCurrentUser) { Install-PlanModules -Items $Items -ForceCurrentUser -Log { param($m) Write-ModuleLog $m } } else { Install-PlanModules -Items $Items -Log { param($m) Write-ModuleLog $m } }
+	$isGraph = ("$What" -match 'Graph')
+	if ($isGraph) { Show-ModuleInstallProgress 'Installing Microsoft Graph' }
+	$prog = {
+		param($p)
+		$tot = [int]$p.Total; $dn = [int]$p.Done
+		$pct = if ($tot -gt 0) { [Math]::Floor(100 * $dn / [Math]::Max(1, $tot)) } else { 0 }
+		switch ("$($p.Phase)") {
+			'start'    { Update-ModuleInstallProgress 0 'Preparing...' }
+			'item'     { Update-ModuleInstallProgress $pct ("Installing $($p.Name) $($p.Version) ($($dn + 1) of $tot)...") }
+			'itemDone' { Update-ModuleInstallProgress $pct ("Installed $($p.Name) ($dn of $tot)...") }
+			'end'      { Update-ModuleInstallProgress 100 'Finishing...' }
+		}
+	}
+	$res = $null
+	try {
+		$res = if ($ForceCurrentUser) { Install-PlanModules -Items $Items -ForceCurrentUser -Log { param($m) Write-ModuleLog $m } -Progress $prog } else { Install-PlanModules -Items $Items -Log { param($m) Write-ModuleLog $m } -Progress $prog }
+	} finally {
+		if ($isGraph) { Close-ModuleInstallProgress }
+	}
 	try { Set-ItemStatus 'Ready' } catch {}
 	if (@($res.Failed).Count) {
 		$body = "These couldn't be installed:`n  " + (@($res.Failed) -join "`n  ")
@@ -767,8 +825,8 @@ function Show-GraphRevertPrompt {
 	$msg = "This PC has Microsoft Graph $auto, which signs in with a Windows account pop-up. Script Package Studio can install Microsoft Graph $($script:GraphInstallDefault), which signs in with the browser like before.`n`nIt's installed only for the Windows account running this app (if Windows asked for a different admin account when the app started, it goes into that account). Nothing is removed and other users aren't affected. Then the app restarts."
 	$k = Show-ModuleChoiceDialog 'Microsoft Graph sign-in' $msg 'Install the browser-sign-in version' 'install'
 	if ($k -ne 'install') {
-		Write-ModuleLog "Graph revert declined - continuing with Microsoft Graph $auto (Windows account window)."
-		try { $script:Settings.graphRevertDeclined = $auto; Save-AppSettings } catch {}   # remember, so we don't ask again for this version
+		Write-ModuleLog "Graph revert declined this launch - continuing with Microsoft Graph $auto (Windows account window). Will offer again next launch."
+		$script:GraphRevertSessionDeclined = $true   # this launch only - NOT saved to settings.ini
 		return
 	}
 	$items = @($plan.NeedsInstall | Where-Object { $_.Name -like 'Microsoft.Graph*' })
@@ -800,7 +858,7 @@ function Initialize-ModulePins {
 		if (-not $script:ModulePlan) { $script:ModulePlan = Resolve-ModulePlan }
 		$plan = $script:ModulePlan; $imp = $script:ModuleImport
 		if ($imp -and $imp.Step -eq 'restart') { Show-ModuleRestartPrompt; $shown = $true }
-		elseif (Test-ShouldOfferGraphRevert -Plan $plan -Declined ([string]$script:Settings.graphRevertDeclined)) { Show-GraphRevertPrompt; $shown = $true }
+		elseif ((-not $script:GraphRevertSessionDeclined) -and (Test-ShouldOfferGraphRevert -Plan $plan -Declined '')) { Show-GraphRevertPrompt; $shown = $true }
 		elseif ($plan.ExoMode -eq 'needsInstall') { if (Test-ExoOfferDeclined $plan) { Write-ModuleLog "Exchange install declined earlier for this version - not asking again." } else { Show-ExoInstallPrompt }; $shown = $true }
 		# 'blocked' -> no offer (Settings shows the "Clear failed-version list" option); both 'missing' -> Confirm-ModulesAtStartup
 	} catch { Write-ModuleLog "Initialize-ModulePins: $($_.Exception.Message)" }
@@ -820,7 +878,8 @@ function Confirm-GraphPinReady {
 			return
 		}
 		if ($plan.GraphMode -eq 'needsRevert') {
-			if (Test-ShouldOfferGraphRevert -Plan $plan -Declined ([string]$script:Settings.graphRevertDeclined)) { Show-GraphRevertPrompt }
+			if ($script:GraphRevertSessionDeclined) { Write-ModuleLog "Graph revert declined this launch - not re-opening the offer until next launch." }
+			elseif (Test-ShouldOfferGraphRevert -Plan $plan -Declined '') { Show-GraphRevertPrompt }
 			return
 		}
 	} catch { Write-ModuleLog "Confirm-GraphPinReady: $($_.Exception.Message)" }

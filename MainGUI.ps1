@@ -1,4 +1,4 @@
-﻿$version = "v3.4.5"
+﻿$version = "v3.4.6"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -52,7 +52,9 @@ $script:Settings = @{
 	rolledBackFrom  = ''   # if set, the version we rolled back FROM (so Check for updates can offer to return)
 	badModuleVersions = @()   # "Name=Version" entries that failed to import; skipped by Resolve-ModulePlan next time
 	graphRevertDeclined = ''   # the autoload Graph version the user said "Not now" to (don't re-offer it)
+	exoInstallDeclined = ''   # the Exchange version the user said "Not now" to (don't re-offer that version)
 }
+$script:ModuleRestartDeclined = $false   # session-only: user clicked "Not now" on Restart needed (don't nag each connect)
 
 function Read-AppSettings {
 	if (-not (Test-Path -LiteralPath $script:SettingsIniPath)) { return }
@@ -68,6 +70,7 @@ function Read-AppSettings {
 		elseif ($line -match '^\s*RolledBackFrom\s*=\s*(.*)$') { $script:Settings.rolledBackFrom = $Matches[1].Trim() }
 		elseif ($line -match '^\s*BadModuleVersions\s*=\s*(.*)$') { $script:Settings.badModuleVersions = @(($Matches[1] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 		elseif ($line -match '^\s*GraphRevertDeclined\s*=\s*(.*)$') { $script:Settings.graphRevertDeclined = $Matches[1].Trim() }
+		elseif ($line -match '^\s*ExoInstallDeclined\s*=\s*(.*)$') { $script:Settings.exoInstallDeclined = $Matches[1].Trim() }
 	}
 }
 
@@ -85,6 +88,7 @@ function Save-AppSettings {
 			RolledBackFrom = [string]$script:Settings.rolledBackFrom
 			BadModuleVersions = (@($script:Settings.badModuleVersions) -join ',')
 			GraphRevertDeclined = [string]$script:Settings.graphRevertDeclined
+			ExoInstallDeclined = [string]$script:Settings.exoInstallDeclined
 		}
 		$lines = @()
 		if (Test-Path -LiteralPath $script:SettingsIniPath) { $lines = @(Get-Content -LiteralPath $script:SettingsIniPath) }
@@ -753,6 +757,7 @@ function Show-ModuleRestartPrompt {
 	$what = if ("$($imp.Error)" -match 'Exchange') { 'Exchange' } else { 'Microsoft Graph' }
 	$ver = ''; try { if ($imp.Error -match '(\d+\.\d+\.\d+)') { $ver = " $($Matches[1])" } } catch {}
 	$k = Show-ModuleChoiceDialog 'Restart needed' "$what$ver couldn't load in this window. Click Restart and the app will try the next version." 'Restart' 'restart'
+	if ($k -ne 'restart') { $script:ModuleRestartDeclined = $true; Write-ModuleLog "Restart declined - the app will keep using what is loaded until it restarts." }
 	if ($k -eq 'restart') { Restart-App; Complete-Relaunch }
 }
 
@@ -777,8 +782,14 @@ function Show-ExoInstallPrompt {
 	if (-not $ver) { Write-ModuleLog "Exchange needs-install but no row default - skipping prompt."; return }
 	$msg = "The Exchange module on this PC can't be used with this PowerShell. Script Package Studio can install Exchange $ver for the Windows account running this app. Nothing is removed and other users aren't affected. Then the app restarts."
 	$k = Show-ModuleChoiceDialog 'Exchange module' $msg "Install Exchange $ver" 'install'
-	if ($k -ne 'install') { Write-ModuleLog "Exchange install declined."; return }
+	if ($k -ne 'install') { Write-ModuleLog "Exchange install declined."; try { $script:Settings.exoInstallDeclined = $ver; Save-AppSettings } catch {}; return }
 	if (Invoke-ModuleInstall $items 'Exchange') { Restart-App; Complete-Relaunch }
+}
+function Test-ExoOfferDeclined($Plan) {
+	try {
+		$v = "$(@($Plan.NeedsInstall | Where-Object { $_.Name -eq 'ExchangeOnlineManagement' })[0].Version)"
+		return ($v -and "$($script:Settings.exoInstallDeclined)" -eq $v)
+	} catch { return $false }
 }
 
 # ContentRendered UI step: prompt ONLY when needed. Returns $true when it showed a dialog (so the
@@ -790,7 +801,7 @@ function Initialize-ModulePins {
 		$plan = $script:ModulePlan; $imp = $script:ModuleImport
 		if ($imp -and $imp.Step -eq 'restart') { Show-ModuleRestartPrompt; $shown = $true }
 		elseif (Test-ShouldOfferGraphRevert -Plan $plan -Declined ([string]$script:Settings.graphRevertDeclined)) { Show-GraphRevertPrompt; $shown = $true }
-		elseif ($plan.ExoMode -eq 'needsInstall') { Show-ExoInstallPrompt; $shown = $true }
+		elseif ($plan.ExoMode -eq 'needsInstall') { if (Test-ExoOfferDeclined $plan) { Write-ModuleLog "Exchange install declined earlier for this version - not asking again." } else { Show-ExoInstallPrompt }; $shown = $true }
 		# 'blocked' -> no offer (Settings shows the "Clear failed-version list" option); both 'missing' -> Confirm-ModulesAtStartup
 	} catch { Write-ModuleLog "Initialize-ModulePins: $($_.Exception.Message)" }
 	return [bool]$shown
@@ -805,7 +816,7 @@ function Confirm-GraphPinReady {
 		if ($plan.GraphMode -eq 'asToday' -or $plan.GraphMode -eq 'missing' -or $plan.GraphMode -eq 'blocked') { return }
 		if ($plan.GraphMode -eq 'pin') {
 			$la = Get-Module -Name 'Microsoft.Graph.Authentication' | Where-Object { "$($_.Version)" -eq "$($plan.Graph)" } | Select-Object -First 1
-			if (-not $la) { $script:ModuleImport = Import-ModulePlan -Plan $plan -Log { param($m) Write-ModuleLog $m }; if ($script:ModuleImport.Step -eq 'restart') { Show-ModuleRestartPrompt } }
+			if (-not $la) { $script:ModuleImport = Import-ModulePlan -Plan $plan -Log { param($m) Write-ModuleLog $m }; if ($script:ModuleImport.Step -eq 'restart') { if ($script:ModuleRestartDeclined) { Write-ModuleLog "Restart still needed (declined earlier this session)." } else { Show-ModuleRestartPrompt } } }
 			return
 		}
 		if ($plan.GraphMode -eq 'needsRevert') {
@@ -1895,6 +1906,18 @@ function Show-Settings {
 		$win.FindName('ExoUpgradeBtn').Add_Click({
 			if (Invoke-ModuleInstall @([pscustomobject]@{ Name = 'ExchangeOnlineManagement'; Version = '3.10.1' }) 'Exchange 3.10.1' -ForceCurrentUser) { Restart-App; Complete-Relaunch }
 		}.GetNewClosure())
+	}
+	elseif ($mplan -and $mplan.ExoMode -eq 'needsInstall') {
+		$exoItems = @($mplan.NeedsInstall | Where-Object { $_.Name -eq 'ExchangeOnlineManagement' })
+		if ($exoItems.Count) {
+			$exoPlanVer = "$($exoItems[0].Version)"
+			$win.FindName('ExoUpgradeText').Text = "The Exchange module on this PC can't be used with this PowerShell. Install Exchange $exoPlanVer for your Windows account (nothing is removed; the app restarts)."
+			$win.FindName('ExoUpgradeBtn').Content = "Install Exchange $exoPlanVer"
+			$win.FindName('ExoUpgradePanel').Visibility = 'Visible'
+			$win.FindName('ExoUpgradeBtn').Add_Click({
+				if (Invoke-ModuleInstall $exoItems "Exchange $exoPlanVer") { Restart-App; Complete-Relaunch }
+			}.GetNewClosure())
+		}
 	}
 	# "Switch to browser sign-in" - shown whenever Graph needs a revert, even after a "Not now".
 	if ($mplan -and $mplan.GraphMode -eq 'needsRevert') {

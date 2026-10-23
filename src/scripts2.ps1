@@ -1877,6 +1877,8 @@ function Reset-MFA {
 	}
 	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Reset-MFA.csv"; $progressBar1.Value = 0; CheckForErrors }
 	function OnBulkButtonClick {
+		$errN = $Error.Count
+		try {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$rows = @(Import-Csv ".\Templates\Reset-MFA.csv" | Where-Object { "$($_.Email)".Trim() })
@@ -1890,6 +1892,7 @@ function Reset-MFA {
 		}
 		Show-AccountResults 'Reset MFA' $created $failed -DoneWord 'Reset' -FailWord 'Failed'
 		Unlock-ScriptWindow
+		} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 	}
 
 	$form = New-ResetMfaDialog
@@ -2015,6 +2018,8 @@ function Set-License {
 	}
 	function OnOpenTemplateButtonClick { $progressBar1.Value = 10; Invoke-Item ".\Templates\Set-License.csv"; $progressBar1.Value = 0; CheckForErrors }
 	function OnBulkButtonClick {
+		$errN = $Error.Count
+		try {
 		$mode = Get-Mode; $skus = Resolve-Skus $mode
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$created = [System.Collections.Generic.List[string]]::new()
@@ -2033,6 +2038,7 @@ function Set-License {
 		}
 		Show-AccountResults "Set-License ($mode)" $created $failed -Preview:$preview -DoneWord 'Updated' -FailWord 'Failed'
 		Unlock-ScriptWindow
+		} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 	}
 
 	$form = New-SetLicenseDialog
@@ -2286,6 +2292,8 @@ function Terminate-Disable-ADAndEmailAccounts {
 		CheckForErrors
 	}
 	function OnDisableBulkButtonClick {
+		$errN = $Error.Count
+		try {
 		$csv = ".\Templates\Terminate-Disable-ADAndEmailAccounts.csv"
 		if (-not (Test-Path $csv)) { Show-Notice 'No template' 'Use Open Template to create the CSV first.' 'Warn'; return }
 		$rows = @(Import-Csv $csv)
@@ -2327,6 +2335,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if ($skippedRows) { Write-Host "Skipped $skippedRows row(s) with nothing to do." -ForegroundColor Yellow }
 		Show-AccountResults 'Disable AD & Email accounts' $done $failed -DoneWord 'Disabled' -FailWord 'Failed'
 		Unlock-ScriptWindow
+		} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 	}
 
 	$form = New-DisableAccountsDialog

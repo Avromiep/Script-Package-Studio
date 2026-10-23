@@ -3,8 +3,8 @@
 # self-test. It logs through an optional -Log scriptblock and returns objects.
 
 # ======================= PINNED MODULE VERSIONS (edit ONLY here) =======================
-# Graph: all six Microsoft.Graph.* modules must be the SAME version. Used ONLY when the newest installed
-# Graph is 2.34+ (forced Windows pop-up). Otherwise the app loads Graph exactly as v3.4.2 did (newest installed).
+# Graph: all six Microsoft.Graph.* modules must be the SAME version. Used ONLY when the Graph that PowerShell
+# would autoload is 2.34+ (forced Windows pop-up). Otherwise the app loads Graph exactly as v3.4.2 did.
 $script:GraphModuleNames = @('Microsoft.Graph.Authentication','Microsoft.Graph.Users','Microsoft.Graph.Users.Actions',
 	'Microsoft.Graph.Groups','Microsoft.Graph.Identity.SignIns','Microsoft.Graph.Identity.DirectoryManagement')
 $script:GraphPinCandidates = @('1.23.0', '2.33.0')   # best first; 2.33.0 only if already installed (last 2.x with browser sign-in by default)
@@ -388,6 +388,44 @@ function Get-ManifestRequiredModules([string]$Path) {
 	} catch {}
 	return @($out)
 }
+# (v3.4.6) SHA-256 of the Graph 1.23.0 files that ship UNSIGNED (keyed "<ModuleName>\<file name>"). A NotSigned
+# file in the staged set is only accepted when its hash is here; any other unsigned file is rejected. Some of
+# these are actually signed (Valid) on Windows - that's fine, they're just never consulted then.
+$script:StagedUnsignedSha256 = @{
+	'Microsoft.Graph.Authentication\Microsoft.Graph.Authentication.psd1'                            = 'AC45B307B74A85FD790C78E2E7A9431E53AE8BD10698C46B59B5F2E0E10EF5FD'
+	'Microsoft.Graph.Authentication\Microsoft.Graph.Authentication.format.ps1xml'                   = '1E984FE3FE08D217FE3196BFB2B3108E49D347452AB8803E0A3A052994FA2FA2'
+	'Microsoft.Graph.Authentication\Microsoft.Graph.Authentication.psm1'                            = '7EDBA25BB93F69FD10B1A9B2B5735D4E2564284F38DEDD98EA4AA2997C895B65'
+	'Microsoft.Graph.Groups\Microsoft.Graph.Groups.psd1'                                            = 'D6DCF42411C589BD72B6827E77E52C4E294B214186852896DB74F008D65EC8F1'
+	'Microsoft.Graph.Groups\Microsoft.Graph.Groups.format.ps1xml'                                   = '025B6E83B6A4581E4A589ADB7BBF77E74D37EC0DD610A45DDC660ADEB800E988'
+	'Microsoft.Graph.Identity.DirectoryManagement\Microsoft.Graph.Identity.DirectoryManagement.psd1'          = '9AD1C85B59D039AC8014BE9497FC8B758B9AB99701EB8668818E3C11C5393611'
+	'Microsoft.Graph.Identity.DirectoryManagement\Microsoft.Graph.Identity.DirectoryManagement.format.ps1xml' = '54E9B7419A979DE2BF93C033A808C34A810878D97780F65F8F0CB4ABC64C3F2C'
+	'Microsoft.Graph.Identity.SignIns\Microsoft.Graph.Identity.SignIns.psd1'                        = '070854040A1D233D9AAAAAF063C743DF87B810CEA71CF07FA073548C57CFEA72'
+	'Microsoft.Graph.Identity.SignIns\Microsoft.Graph.Identity.SignIns.format.ps1xml'               = '8849BE18931556D6701124CE905ED6E305BC78944E7F47BAB8E63C69B9EACA79'
+	'Microsoft.Graph.Users\Microsoft.Graph.Users.psd1'                                              = 'E0AEB24051942ED6678A009CBD64A66879A50B4D1B2E5A91E31C82A2E6F2C976'
+	'Microsoft.Graph.Users\Microsoft.Graph.Users.format.ps1xml'                                     = 'E2651EC4AC639E7B7DC1BB72812EE9B0B31D5646CCA115F019A92DBA32CA6608'
+	'Microsoft.Graph.Users.Actions\Microsoft.Graph.Users.Actions.psd1'                              = 'CC22B8A0ECEF5B1C9D070A01CFF2C8082951C6DFE3A9DCDCB17E7938A24615FA'
+	'Microsoft.Graph.Users.Actions\Microsoft.Graph.Users.Actions.format.ps1xml'                     = '53F5C7133D336E5919653D62423A9252E8351EEB6DB0A6ED058FBB7FC9AC8F8C'
+}
+# '' if $Cert chains to the Microsoft Root CA 2011 AND its Subject O= is exactly "Microsoft Corporation", else a
+# reason. Build() can return false on a good file (the 1.23.0 signing cert is expired), so we ignore its result,
+# ignore time validity, and only read the last chain element's thumbprint; Get-AuthenticodeSignature 'Valid'
+# already proved trust via the timestamp. Any exception = not signed by Microsoft.
+function Test-MicrosoftSigner($Cert) {
+	try {
+		if (-not $Cert) { return 'not signed by Microsoft (no signer certificate)' }
+		$chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+		$chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+		$chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::IgnoreNotTimeValid
+		[void]$chain.Build($Cert)
+		$root = "$($chain.ChainElements[$chain.ChainElements.Count - 1].Certificate.Thumbprint)"
+		if ($root -ne '8F43288AD272F3103B6FB1428485EA3014C0BCFE') { return "not signed by Microsoft (root $root)" }
+		$o = ''
+		$m = [regex]::Match("$($Cert.Subject)", '(?:^|,\s*)O=("[^"]+"|[^,]+)')
+		if ($m.Success) { $o = $m.Groups[1].Value.Trim('"') }
+		if ($o -ne 'Microsoft Corporation') { return "not signed by Microsoft (O=$o)" }
+		return ''
+	} catch { return "not signed by Microsoft ($($_.Exception.Message))" }
+}
 # Returns '' when the staged <Name>\<Version> folder is OK, otherwise the reason.
 function Test-StagedModuleFolder([string]$Folder, [string]$Name, [string]$Version) {
 	$psd1 = Join-Path $Folder "$Name.psd1"
@@ -396,10 +434,17 @@ function Test-StagedModuleFolder([string]$Folder, [string]$Name, [string]$Versio
 	$main = if ($Name -eq 'Microsoft.Graph.Authentication') { Join-Path $Folder 'Microsoft.Graph.Authentication.dll' } else { Join-Path (Join-Path $Folder 'bin') "$Name.private.dll" }
 	if (-not (Test-Path -LiteralPath $main)) { return "main file missing ($(Split-Path $main -Leaf))" }
 	$ms = Get-AuthenticodeSignature -FilePath $main
-	if ("$($ms.Status)" -ne 'Valid' -or "$($ms.SignerCertificate.Subject)" -notmatch 'O=Microsoft Corporation') { return "main file not validly signed by Microsoft ($(Split-Path $main -Leaf): $($ms.Status))" }
+	if ("$($ms.Status)" -ne 'Valid') { return "main file not validly signed by Microsoft ($(Split-Path $main -Leaf): $($ms.Status))" }
+	$sigWhy = Test-MicrosoftSigner $ms.SignerCertificate
+	if ($sigWhy) { return "main file ($(Split-Path $main -Leaf)) $sigWhy" }
 	foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Recurse -File -ErrorAction Stop | Where-Object { $_.Extension -in '.dll','.psd1','.psm1','.ps1','.ps1xml' })) {
 		$st = "$((Get-AuthenticodeSignature -FilePath $f.FullName).Status)"
-		if ($st -ne 'Valid' -and $st -ne 'NotSigned') { return "$($f.Name): signature $st" }
+		if ($st -eq 'Valid') { continue }
+		if ($st -ne 'NotSigned') { return "$($f.Name): signature $st" }
+		$want = $script:StagedUnsignedSha256["$Name\$($f.Name)"]
+		if (-not $want) { return "$($f.Name): not signed and not on the allowed-unsigned list" }
+		$have = "$((Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash)"
+		if ($have -ne "$want") { return "$($f.Name): not signed and its contents don't match the known-good copy" }
 	}
 	if ($Name -ne 'Microsoft.Graph.Authentication') {
 		if (@(Get-ManifestRequiredModules $psd1) -notcontains "Microsoft.Graph.Authentication=$Version") { return 'unexpected RequiredModules' }
@@ -432,7 +477,15 @@ function Install-StagedModule([string]$Name, [string]$Version, [scriptblock]$Log
 				if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force -ErrorAction Stop }
 				Copy-Item -LiteralPath $vdir -Destination $partial -Recurse -Force -ErrorAction Stop
 				$xml = Join-Path $partial 'PSGetModuleInfo.xml'
-				if (Test-Path -LiteralPath $xml) { try { $t = [IO.File]::ReadAllText($xml); [IO.File]::WriteAllText($xml, $t.Replace($vdir, $target)) } catch {} }
+				if (Test-Path -LiteralPath $xml) {
+					try {
+						[IO.File]::SetAttributes($xml, [IO.FileAttributes]::Normal)
+						$o = [System.Management.Automation.PSSerializer]::Deserialize([IO.File]::ReadAllText($xml))
+						$o.InstalledLocation = $target
+						[IO.File]::WriteAllText($xml, [System.Management.Automation.PSSerializer]::Serialize($o))
+					} catch { if ($say) { & $say "Staged install: could not update PSGetModuleInfo.xml for $n ($($_.Exception.Message)); the module still works." } }
+					finally { try { [IO.File]::SetAttributes($xml, [IO.FileAttributes]::Hidden) } catch {} }
+				}
 				Rename-Item -LiteralPath $partial -NewName $Version -ErrorAction Stop
 				if ($say) { & $say "Staged install: copied verified $n $Version to the CurrentUser module folder" }
 			} catch {

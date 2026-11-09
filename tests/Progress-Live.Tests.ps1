@@ -105,6 +105,42 @@ Assert $mono "the bar never goes backward" ("bars=" + ($bars -join ','))
 Assert ($counts.done -eq 4 -and $counts.failed -eq 1) "real counts (4 done, 1 failed incl. the thrown one)"
 Assert ((Format-DoneText -Done $counts.done -Failed $counts.failed -Word 'added') -eq 'Done: 4 added, 1 failed') "Done text matches the real counts"
 
+# ================= T6b: Format-DoneText target-skip count + custom fail word =================
+Write-Host "T6b Format-DoneText target-skip + fail word"
+Assert ((Format-DoneText -TargetsSkipped 1) -eq 'Done: 0 failed, 1 target(s) skipped') "all-unknown: '0 failed, 1 target(s) skipped'"
+Assert ((Format-DoneText -Done 3 -Failed 1 -Word 'removed' -FailWord 'skipped/failed') -eq 'Done: 3 removed, 1 skipped/failed') "custom fail word (Remove-UserFromAllGroups)"
+Assert ((Format-DoneText -Done 2 -Failed 0 -TargetsSkipped 2 -Word 'added') -eq 'Done: 2 added, 0 failed, 2 target(s) skipped') "added + target(s) skipped"
+Assert ((Format-DoneText) -eq 'Done: nothing to do') "still nothing to do when all zero (incl. TargetsSkipped)"
+
+# ================= T7: static lock check (AST) =================
+# Any function whose OWN body calls Step-Progress must also call Lock-ScriptWindow (it pumps the UI, so a
+# second click could re-enter it). Only exception: Remove-CloudGroups, which always runs inside a locked handler.
+Write-Host "T7 every pumping handler locks its window"
+$lkFiles = @((Join-Path $repo 'MainGUI.ps1')) + @(Get-ChildItem (Join-Path $repo 'src') -Filter *.ps1 | ForEach-Object { $_.FullName })
+$withStep = @{}; $withLock = @{}
+foreach ($f in $lkFiles) {
+	$fast = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$null)
+	foreach ($cmd in $fast.FindAll({ param($a) $a -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+		$name = $cmd.GetCommandName(); if ($name -ne 'Step-Progress' -and $name -ne 'Lock-ScriptWindow') { continue }
+		$p = $cmd.Parent; while ($p -and -not ($p -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $p = $p.Parent }
+		$fn = if ($p) { $p.Name } else { '<top>' }
+		if ($name -eq 'Step-Progress') { $withStep[$fn] = $true } else { $withLock[$fn] = $true }
+	}
+}
+$bad = @($withStep.Keys | Where-Object { $_ -ne 'Remove-CloudGroups' -and $_ -ne 'Step-Progress' -and -not $withLock[$_] })
+Assert ($bad.Count -eq 0) "no pumping handler is missing a lock" ("missing: " + ($bad -join ', '))
+
+# OnBulkContactsButtonClick must unlock inside a finally
+$cast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'src\scripts1.ps1'), [ref]$null, [ref]$null)
+$fnAst = $cast.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'OnBulkContactsButtonClick' }, $true)
+$hasFinallyUnlock = $false
+if ($fnAst) {
+	foreach ($try in $fnAst.FindAll({ param($a) $a -is [System.Management.Automation.Language.TryStatementAst] }, $true)) {
+		if ($try.Finally) { foreach ($c in $try.Finally.FindAll({ param($a) $a -is [System.Management.Automation.Language.CommandAst] }, $true)) { if ($c.GetCommandName() -eq 'Unlock-ScriptWindow') { $hasFinallyUnlock = $true } } }
+	}
+}
+Assert $hasFinallyUnlock "OnBulkContactsButtonClick unlocks in a finally"
+
 Write-Host ""
 if ($script:Fail) { Write-Host "PROGRESS TESTS: $($script:Fail) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "PROGRESS TESTS: all passed" -ForegroundColor Green

@@ -553,8 +553,7 @@ function Show-PasteMembersDialog {
 		$title = if ($Action -eq 'remove') { 'Remove complete' } else { 'Add complete' }
 		$doneWord = if ($Action -eq 'remove') { 'removed' } else { 'added' }
 		$noopWord = if ($Action -eq 'remove') { "weren't members" } else { 'already there' }
-		$doneText = Format-DoneText -Done ([int]$r.Counts.done) -Skipped ([int]$r.Counts.skipped) -Failed ([int]$r.Counts.failed) -Word $doneWord -Already ([int]$r.Counts.noop) -AlreadyWord $noopWord
-		if ([int]$r.Counts.targetsSkipped -gt 0) { $doneText += ", $([int]$r.Counts.targetsSkipped) target(s) skipped" }
+		$doneText = Format-DoneText -Done ([int]$r.Counts.done) -Skipped ([int]$r.Counts.skipped) -Failed ([int]$r.Counts.failed) -Word $doneWord -Already ([int]$r.Counts.noop) -AlreadyWord $noopWord -TargetsSkipped ([int]$r.Counts.targetsSkipped)
 		Complete-Progress $doneText   # finished state (full bar + real summary) before the popup
 		Show-Notice $title $body $kind
 		$progressBar1.Value = 0
@@ -1252,6 +1251,8 @@ function Add-Contacts {
     function OnBulkContactsButtonClick {
         Write-Host "AddContactsBulk button clicked."
         $progressBar1.Value = 5
+        Lock-ScriptWindow $scriptForm10
+        try {
         # Each row is tolerated on its own (New-OneMailContact / Invoke-GuestInvite use -ErrorAction Stop
         # for the single path; wrapping per row here stops one bad row from aborting the whole batch and
         # freezing the bar - the previous behaviour let the first failure stop everything after it).
@@ -1280,6 +1281,7 @@ function Add-Contacts {
             }
             Show-AccountResults 'Invite guests' $created $failed -DoneWord 'Processed' -FailWord 'Failed'
         }
+        } finally { Unlock-ScriptWindow }
         # The per-row failures are already shown in the summary above, but a caught error still lands in
         # $Error. Clear it so the NEXT action's CheckForErrors doesn't pop a dialog full of this run's
         # old errors (the previous code ended with CheckForErrors, which cleared $Error for us).

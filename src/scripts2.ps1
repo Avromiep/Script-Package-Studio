@@ -137,7 +137,7 @@ function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview,
 	$title = if ($Preview) { "$What - preview" } else { "$What complete" }
 	Write-Host "${title}: done/would=$($c.Count) failed/skip=$($f.Count). CSV: $csvPath" -ForegroundColor Cyan
 	$kind = if ($f.Count) { 'Warn' } else { 'Info' }
-	Complete-Progress (Format-DoneText -Done $c.Count -Failed $f.Count -Word ($DoneWord.ToLower()) -Preview:$Preview)
+	Complete-Progress (Format-DoneText -Done $c.Count -Failed $f.Count -Word (($DoneWord.ToLower()) -replace ' from$','') -FailWord ($FailWord.ToLower()) -Preview:$Preview)
 	Show-Notice $title ($parts -join "`n`n") $kind
 	$progressBar1.Value = 0
 	# Every per-row failure is already in this summary. Bulk handlers catch their rows (which still lands

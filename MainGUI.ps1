@@ -655,7 +655,7 @@ function Complete-Progress([string]$Text) {
 # $Word is the popup's own past-tense word (added/removed/reset/updated/disabled/created/converted/processed).
 function Format-DoneText {
 	param([int]$Done = 0, [int]$Skipped = 0, [int]$Failed = 0, [string]$Word = 'processed',
-		[int]$Already = 0, [string]$AlreadyWord = 'already there', [switch]$Preview)
+		[int]$Already = 0, [string]$AlreadyWord = 'already there', [int]$TargetsSkipped = 0, [string]$FailWord = 'failed', [switch]$Preview)
 	if ($Preview) {
 		$parts = @()
 		if ($Done -gt 0) { $parts += "$Done would be $Word" }
@@ -664,12 +664,13 @@ function Format-DoneText {
 		if (-not $parts.Count) { return 'Preview: nothing to do' }
 		return 'Preview: ' + ($parts -join ', ')
 	}
-	if ($Done -eq 0 -and $Already -eq 0 -and $Skipped -eq 0 -and $Failed -eq 0) { return 'Done: nothing to do' }
+	if ($Done -eq 0 -and $Already -eq 0 -and $Skipped -eq 0 -and $Failed -eq 0 -and $TargetsSkipped -eq 0) { return 'Done: nothing to do' }
 	$parts = @()
 	if ($Done -gt 0)    { $parts += "$Done $Word" }
 	if ($Already -gt 0) { $parts += "$Already $AlreadyWord" }
 	if ($Skipped -gt 0) { $parts += "$Skipped skipped" }
-	$parts += "$Failed failed"
+	$parts += "$Failed $FailWord"
+	if ($TargetsSkipped -gt 0) { $parts += "$TargetsSkipped target(s) skipped" }
 	return 'Done: ' + ($parts -join ', ')
 }
 

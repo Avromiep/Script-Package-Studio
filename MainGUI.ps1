@@ -1,4 +1,4 @@
-﻿$version = "v3.4.7"
+﻿$version = "v3.4.8"
 # Script-Package GUI - WPF, styled with the BatchAV Studio design system.
 # All script logic and cmdlet calls are unchanged; only the UI layer moved
 # from WinForms to WPF (src/ui.ps1 + src/scripts*.ps1 + src/xaml/Styles.xaml).
@@ -555,14 +555,16 @@ $script:TpCount  = 0      # items ticked so far in this batch
 function Step-Progress([string]$Item = '', [int]$Index = 0, [int]$Total = 0) {
 	if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0 }
 	$script:TpCount++
-	# Left side: the specific item being processed (e.g. the email), when the caller passes one.
-	if ($Item) { Set-ItemStatus $Item }
+	# Set the item text now but DON'T pump yet, so text + bar + "N of M" all paint together below
+	# (before the item's blocking work), instead of the bar and counter trailing one item behind.
+	if ($Item) { Set-ItemStatusText $Item }
 	if ($Total -gt 0) {
 		# Known total (a counted loop): fill the bar ACCURATELY by $Index of $Total - it climbs straight
 		# to the real fraction done and never jumps backward. Right side shows "N of M · ~Xs each · ~Ys left".
 		Set-LoopProgress $Index $Total
 		$tp = Get-ThroughputText ($Index - 1) $Total
 		Set-StatusDetail ("$Index of $Total" + $(if ($tp) { " · $tp" } else { '' }))
+		Update-UiNow        # known total: paint text, bar and counter together, before the work
 	} else {
 		# Unknown total: the self-advancing nudge toward ~93% + a "N done · ~Xs each" readout.
 		if ($script:ProgTarget -lt 8 -or $script:ProgTarget -ge 100) { $script:ProgTarget = 8 }
@@ -572,8 +574,8 @@ function Step-Progress([string]$Item = '', [int]$Index = 0, [int]$Total = 0) {
 		$tp = Get-ThroughputText $done
 		Set-StatusDetail $(if ($done -gt 0) { "$done done" + $(if ($tp) { " · $tp" } else { '' }) } else { '' })
 		$progressBar1.Value = $script:ProgTarget
+		Update-UiNow $true  # fast unknown-total loop: throttled repaint
 	}
-	Update-UiNow $true   # throttled repaint so the status + bar actually move during the loop
 }
 
 # Format a rough duration for the throughput readout / ETA.
@@ -607,15 +609,16 @@ function Reset-Throughput { $script:TpStart = $null; $script:TpCount = 0; try { 
 # MODAL dialog (e.g. Paste List) is open over the main window, the main window's status/progress don't
 # visibly repaint until the handler returns - so a batch looks frozen ("1 of 10", bar stuck) until it
 # finishes. Pushing a short dispatcher frame runs the message loop once, so the update paints mid-loop.
-$script:LastPumpTick = -100000
+$script:UiClock = [System.Diagnostics.Stopwatch]::StartNew()   # 64-bit ms since load; never wraps. The old 32-bit environment tick counter went NEGATIVE ~24.9 days after boot, which froze every throttled pump.
+$script:LastPumpTick = -1000000
 function Update-UiNow([bool]$Throttle = $false) {
 	# $Throttle skips the pump if we painted very recently, so a fast loop that ticks every item doesn't
 	# push a message frame hundreds of times a second. ~70ms = a smooth ~14 repaints/sec.
 	if ($Throttle) {
-		$now = [Environment]::TickCount
+		$now = $script:UiClock.ElapsedMilliseconds
 		if (($now - $script:LastPumpTick) -lt 70) { return }
 	}
-	$script:LastPumpTick = [Environment]::TickCount
+	$script:LastPumpTick = $script:UiClock.ElapsedMilliseconds
 	try {
 		$frame = New-Object System.Windows.Threading.DispatcherFrame
 		[System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
@@ -629,12 +632,45 @@ function Update-UiNow([bool]$Throttle = $false) {
 # to which email); it's a function so $script:UI resolves even from inside a .GetNewClosure() handler,
 # and it repaints live (throttled) even when a modal script dialog sits over the main window.
 # Set-StatusDetail is the dim RIGHT line (progress count / throughput).
-function Set-ItemStatus([string]$Text) {
+# Set the LEFT status line WITHOUT pumping (lets a caller set text, bar and counter, then pump once).
+function Set-ItemStatusText([string]$Text) {
 	try { $script:UI.StatusText.Text = $Text } catch {}
-	Update-UiNow $true
+}
+function Set-ItemStatus([string]$Text) {
+	Set-ItemStatusText $Text
+	Update-UiNow        # always paint: every caller sets this right before a blocking Exchange/Graph/AD call
 }
 function Set-StatusDetail([string]$Text) {
 	try { $script:UI.StatusDetail.Text = $Text } catch {}
+}
+# Show the FINISHED state (full bar + a plain-words summary) BEFORE a script opens its result popup, so
+# the screen never still reads "Checking..." behind the dialog. Callers reset the bar to 0 after the popup.
+function Complete-Progress([string]$Text) {
+	Set-ItemStatusText $Text
+	Set-StatusDetail ''
+	try { $progressBar1.Value = 100 } catch {}
+	Update-UiNow
+}
+# Build the one-line "Done: ..." summary a popup shows, ONLY from real result counts (never attempts).
+# $Word is the popup's own past-tense word (added/removed/reset/updated/disabled/created/converted/processed).
+function Format-DoneText {
+	param([int]$Done = 0, [int]$Skipped = 0, [int]$Failed = 0, [string]$Word = 'processed',
+		[int]$Already = 0, [string]$AlreadyWord = 'already there', [switch]$Preview)
+	if ($Preview) {
+		$parts = @()
+		if ($Done -gt 0) { $parts += "$Done would be $Word" }
+		$sf = $Skipped + $Failed
+		if ($sf -gt 0) { $parts += "$sf would skip or fail" }
+		if (-not $parts.Count) { return 'Preview: nothing to do' }
+		return 'Preview: ' + ($parts -join ', ')
+	}
+	if ($Done -eq 0 -and $Already -eq 0 -and $Skipped -eq 0 -and $Failed -eq 0) { return 'Done: nothing to do' }
+	$parts = @()
+	if ($Done -gt 0)    { $parts += "$Done $Word" }
+	if ($Already -gt 0) { $parts += "$Already $AlreadyWord" }
+	if ($Skipped -gt 0) { $parts += "$Skipped skipped" }
+	$parts += "$Failed failed"
+	return 'Done: ' + ($parts -join ', ')
 }
 
 # Lock a script dialog while a batch runs. Update-UiNow pumps the message loop in the middle of a loop,

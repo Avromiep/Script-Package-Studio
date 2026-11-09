@@ -79,6 +79,8 @@ function Remove-EmailAlias {
 				$aliasDomain = $splitAlias[1]
 				$progressBar1.Value = 30
 					$tot = [int]$numericUpDown1.Value + 1
+				Lock-ScriptWindow $emailAliasForm
+				try {
 				for ($i = 0; $i -le $numericUpDown1.Value; $i++) {
 						Step-Progress "Removing alias $aliasName$i@$aliasDomain..." ($i + 1) $tot
 					$completeAlias = $aliasName + [string]$i + "@" + $aliasDomain
@@ -90,6 +92,7 @@ function Remove-EmailAlias {
 				$progressBar1.Value = 90
 				CheckForErrors
 				OperationComplete
+				} finally { Unlock-ScriptWindow }
 			}
 			$false {
 				Write-Host "Removing single alias..."
@@ -120,6 +123,8 @@ function Remove-EmailAlias {
 	function OnRemoveAliasBulkButtonClick {
 		$rows = @(Import-Csv ".\Templates\Remove-EmailAlias.csv" | Where-Object { "$($_.Mailbox)".Trim() -and "$($_.Alias)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $emailAliasForm
+		try {
 		$rows | ForEach-Object {
 			$i++; Step-Progress "Removing alias $($_.Alias) from $($_.Mailbox)..." $i $tot
 			$mailbox = $_.Mailbox
@@ -129,6 +134,7 @@ function Remove-EmailAlias {
 		}
 		CheckForErrors
 		OperationComplete
+		} finally { Unlock-ScriptWindow }
 	}
 	function OnIncrementalCheckBoxChecked {
 		if ($incrementalCheckBox.IsChecked -eq $true) {
@@ -290,8 +296,9 @@ function Remove-UserFromAllGroups {
 	# DL/M365/Sec/MailSec booleans. Classifies each group by mailEnabled/securityEnabled/Unified,
 	# skips dynamic + AD-synced groups (reported), and removes via EXO (DL/mail-enabled/M365) or
 	# Graph (pure security). Appends result lines to $done / $failed.
-	function Remove-CloudGroups([string]$email, $types, [bool]$preview, $done, $failed, [string]$label) {
+	function Remove-CloudGroups([string]$email, $types, [bool]$preview, $done, $failed, [string]$label, [string]$PersonSuffix = '') {
 		$uid = $null
+		Set-ItemStatus "Reading $email's groups...$PersonSuffix"
 		try { $uid = (Get-MgUser -UserId $email -ErrorAction Stop).Id } catch { $failed.Add("$label cloud lookup - $($_.Exception.Message)"); return }
 		$objs = @()
 		try { $objs = Get-MgUserMemberOf -UserId $email -All -ErrorAction Stop } catch { $failed.Add("$label memberOf lookup - $($_.Exception.Message)"); return }
@@ -359,7 +366,7 @@ function Remove-UserFromAllGroups {
 			$email = "$($row.Email)".Trim()
 			$i++; Step-Progress '' $i $tot
 			Write-Host "Processing $email..."
-			Remove-CloudGroups $email $types $preview $done $failed "${email}:"
+			Remove-CloudGroups $email $types $preview $done $failed "${email}:" " (person $i of $tot)"
 		}
 		Show-AccountResults 'Remove users from groups' $done $failed -Preview:$preview -DoneWord 'Removed from' -FailWord 'Skipped/failed'
 		Unlock-ScriptWindow
@@ -668,6 +675,8 @@ function Set-ACLPermissions {
 			Reset-Throughput
 			$paths = @(Get-Content ".\Templates\Set-ACLPermissions.txt" | Where-Object { "$_".Trim() })
 			$tot = $paths.Count; $i = 0
+			Lock-ScriptWindow $setPermissionsForm
+			try {
 			$paths | ForEach-Object {
 				$i++; Step-Progress "Setting permissions on $_..." $i $tot
 				$continuousProgressBar.Value = 50 + [int](45 * $i / $tot)
@@ -679,6 +688,7 @@ function Set-ACLPermissions {
 			}
 			$continuousProgressBar.Value = 100
 			$continuousProgressBar.Value = 0
+			} finally { Unlock-ScriptWindow }
 		} else {
 			Write-Host "Error, both radio buttons unchecked."
 		}

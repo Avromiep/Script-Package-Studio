@@ -68,7 +68,7 @@ function Show-BulkSummary([hashtable]$Counts, [string]$Action, $Corrected = $nul
 	}
 	$kind  = if ($Counts.failed -gt 0) { 'Warn' } else { 'Info' }
 	$title = if ($Action -eq 'remove') { 'Bulk remove complete' } else { 'Bulk add complete' }
-	$progressBar1.Value = 100
+	Complete-Progress (Format-DoneText -Done ([int]$Counts.done) -Skipped ([int]$Counts.skipped) -Failed ([int]$Counts.failed) -Word $doneWord -Already ([int]$Counts.noop) -AlreadyWord $noopWord)
 	Show-Notice $title "Finished processing the list:`n`n$summary.$note" $kind
 	$progressBar1.Value = 0
 	# Failures are already counted in this summary; clear the per-row errors so they don't resurface in
@@ -105,6 +105,9 @@ function Invoke-MemberRoute {
 		$typeName = Get-RecipientTypeName $script:LastRecipientRaw
 		if ($Cache) { $Cache[$Target] = @{ Cat = $cat; Name = $typeName } }
 	}
+	# The type is known now - restate with it so the line reads naturally (CSV member loops).
+	$routeDesc = if ($typeName) { "the $typeName $Target" } else { $Target }
+	Set-ItemStatus "$(if ($isRemove) { 'Removing' } else { 'Adding' }) $Member $(if ($isRemove) { 'from' } else { 'to' }) $routeDesc..."
 	if (-not $Cache) { $progressBar1.Value = 65 }   # single op: bar advances once the type is known, before the change
 	$res = @{ Category = $cat; TypeName = $typeName; Status = 'unknown'; Message = '' }
 	$effCat = if ($cat -and $cat -ne 'Other') { $cat } elseif ($FallbackCategory) { $FallbackCategory } else { '' }
@@ -404,9 +407,23 @@ function New-PasteMembersDialog {
 		# Swap guard: the top box should hold PEOPLE; the bottom box should hold the lists / groups /
 		# mailboxes they go into. If a "person" is really a list/group, the boxes were probably filled
 		# the wrong way round - ask before running anything.
+		# Lock the dialog for the WHOLE run (checking + adding). Update-UiNow pumps the message loop, so
+		# without this a second click could re-enter. The try/finally below unlocks on EVERY exit (swap
+		# "go back", a throw, normal end). The swap and external Yes/No popups are separate dialogs, so
+		# they still open and answer while $win is locked.
+		$checkKind = switch ("$TargetKind") { 'Mailbox' { 'mailbox' } 'DistributionList' { 'distribution list' } 'UnifiedGroup' { 'Microsoft 365 group' } default { 'target' } }
+		Reset-Throughput
+		Lock-ScriptWindow $win
+		$runFinished = $false
+		try {
+		# ---- Checking phase (bar ~2-12%): people first, then EVERY target, before any add ----
 		$swapPeople = [System.Collections.Generic.List[string]]::new()
-		Set-ItemStatus 'Checking boxes...'
+		$pc = [Math]::Max(1, [Math]::Min(25, $members.Count)); $pn = 0
 		foreach ($sm in @($members | Select-Object -First 25)) {   # cap the lookups
+			$pn++
+			Set-StatusDetail "$pn of $pc"
+			Set-LoopProgress $pn $pc 2 7
+			Set-ItemStatus "Checking person $pn of ${pc}: $sm"
 			$smc = Get-RecipientCategory $sm
 			if ($smc -eq 'DistributionList' -or $smc -eq 'UnifiedGroup') { [void]$swapPeople.Add($sm) }
 		}
@@ -415,7 +432,19 @@ function New-PasteMembersDialog {
 			$swapMsg = "These look swapped: $shownNames in the PEOPLE box are lists/groups. Did you mean to put them in the other box? Yes = go back and fix, No = continue anyway."
 			if (Confirm-YesNo 'These look swapped' $swapMsg '&#xEA88;') { Set-ItemStatus 'Ready'; return }
 		}
-		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
+		# Classify every target up front so the add loop never re-queries, and remember each one's type.
+		$targetInfo = @{}
+		$tn = 0; $tc = [Math]::Max(1, $targets.Count)
+		foreach ($t in $targets) {
+			$tn++
+			Set-StatusDetail "$tn of $tc"
+			Set-LoopProgress $tn $tc 7 12
+			Set-ItemStatus "Checking $checkKind $tn of ${tc}: $t"
+			$tcat = Get-RecipientCategory $t
+			$tname = Get-RecipientTypeName (Get-LastRecipientRaw)
+			$targetInfo[$t] = @{ Cat = $tcat; Name = $tname }
+		}
+		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0; targetsSkipped = 0 }
 		$lines = [System.Collections.Generic.List[string]]::new()
 		$anyFailed = $false
 		$doneWord = if ($isRemove) { 'removed' } else { 'added' }
@@ -435,29 +464,17 @@ function New-PasteMembersDialog {
 					if (Confirm-YesNo 'External addresses found' $msg '&#xEA88;') { $externalMode = 'bring-in' }
 				}
 			}
-		$progressBar1.Value = 12
-		$ti = 0; $tc = [Math]::Max(1, $targets.Count)
-		$actLow = if ($isRemove) { 'Removing from' } else { 'Adding to' }
-		Reset-Throughput   # fresh throughput clock for this batch (function: writes the real script scope)
-		# Grey out the dialog while the batch runs: Update-UiNow pumps the message loop, so without this a
-		# second click could re-enter this handler. Unlock before $win.Close() (the lock blocks closing too).
-		Lock-ScriptWindow $win
 		# Cache external-address resolution per click, so the same person isn't re-looked-up / re-invited
 		# for every target they're added to (a big saver when adding to many lists at once).
 		$extContactCache = @{}; $extGuestCache = @{}
 		$pi = 0; $ptot = [Math]::Max(1, $members.Count * $targets.Count)
 		foreach ($target in $targets) {
-			$ti++
-			# Left line: which target we're on (the email). Right detail: N of M + throughput. Set-ItemStatus
-			# is a function, so $script:UI resolves even in this .GetNewClosure() handler, and it repaints
-			# live (throttled) even though the main window is behind this modal dialog.
-			$tp = Get-ThroughputText ($ti - 1) $tc
-			Set-ItemStatus "$actLow $target"
-			$cat = Get-RecipientCategory $target
-			$typeName = Get-RecipientTypeName (Get-LastRecipientRaw)
+			$cat = $targetInfo[$target].Cat
+			$typeName = $targetInfo[$target].Name
 			if (-not $cat -or $cat -eq 'Other') {
 				Write-Host "Skipping '$target' - couldn't determine its type (not a mailbox / list / group)." -ForegroundColor Yellow
 				$lines.Add("$target - skipped (not a mailbox, list, or group)")
+				$counts.targetsSkipped++
 				$pi += $members.Count; Set-LoopProgress $pi $ptot 12 95   # keep the bar accurate past a skipped target
 				continue
 			}
@@ -467,7 +484,7 @@ function New-PasteMembersDialog {
 			$failM  = [System.Collections.Generic.List[string]]::new()
 			foreach ($m in $members) {
 				$pi++
-				$verbNow = if ($isRemove) { "Removing $m from $target" } else { "Adding $m to $target" }
+				$verbNow = if ($isRemove) { "Removing $m from the $typeName $target" } else { "Adding $m to the $typeName $target" }
 				Set-LoopProgress $pi $ptot 12 95
 				$tp = Get-ThroughputText ($pi - 1) $ptot
 				Set-StatusDetail ("$pi of $ptot" + $(if ($tp) { " · $tp" } else { '' }))
@@ -516,8 +533,9 @@ function New-PasteMembersDialog {
 		}
 		$result.Counts = $counts; $result.Lines = $lines; $result.AnyFailed = $anyFailed; $result.TargetCount = $targets.Count
 		Set-LoopProgress $ptot $ptot 12 95
-		Unlock-ScriptWindow   # release before closing (the lock also guards against close while running)
-		$win.Close()
+		$runFinished = $true
+		} finally { Unlock-ScriptWindow }   # every exit (swap return, throw, normal end) unlocks
+		if ($runFinished) { $win.Close() }
 	}.GetNewClosure())
 
 	return $win
@@ -533,7 +551,11 @@ function Show-PasteMembersDialog {
 		$body = $r.Lines -join "`n"
 		$kind = if ($r.AnyFailed) { 'Warn' } else { 'Info' }
 		$title = if ($Action -eq 'remove') { 'Remove complete' } else { 'Add complete' }
-		$progressBar1.Value = 100   # finished - fill the bar before the summary pops up
+		$doneWord = if ($Action -eq 'remove') { 'removed' } else { 'added' }
+		$noopWord = if ($Action -eq 'remove') { "weren't members" } else { 'already there' }
+		$doneText = Format-DoneText -Done ([int]$r.Counts.done) -Skipped ([int]$r.Counts.skipped) -Failed ([int]$r.Counts.failed) -Word $doneWord -Already ([int]$r.Counts.noop) -AlreadyWord $noopWord
+		if ([int]$r.Counts.targetsSkipped -gt 0) { $doneText += ", $([int]$r.Counts.targetsSkipped) target(s) skipped" }
+		Complete-Progress $doneText   # finished state (full bar + real summary) before the popup
 		Show-Notice $title $body $kind
 		$progressBar1.Value = 0
 	}
@@ -736,6 +758,8 @@ function Add-AuthenticationPhoneMethod {
 		$progressBar1.Value = 10
 		$rows = @(Import-Csv -Path ".\Templates\Add-AuthenticationPhoneMethod.csv" | Where-Object { "$($_.Email)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $scriptForm8
+		try {
 		$rows | ForEach-Object {
 			$i++; Step-Progress "Adding phone for $($_.Email)..." $i $tot
 			$user = $_.Email
@@ -745,6 +769,7 @@ function Add-AuthenticationPhoneMethod {
 		}
 		CheckForErrors
 		OperationComplete
+		} finally { Unlock-ScriptWindow }
 	}
 
 	# Banner above the phone box mirrors the auto-reply pattern: it flips between the user's CURRENT
@@ -1465,6 +1490,8 @@ function Add-EmailAlias {
 		if ($incrementalCheckBox.IsChecked -eq $true) {
 			Write-Host "Creating incremental aliases..."
 			$progressBar1.Value = 20
+			Lock-ScriptWindow $emailAliasForm
+			try {
 			$splitAlias = $alias -split '\@'
 			$aliasName = $splitAlias[0]; $aliasDomain = $splitAlias[1]
 			$created = [System.Collections.Generic.List[string]]::new()
@@ -1479,6 +1506,7 @@ function Add-EmailAlias {
 				else { $failed.Add("$completeAlias - $($r.Message)") }
 			}
 			Show-AccountResults "Add aliases to $mailbox" $created $failed
+			} finally { Unlock-ScriptWindow }
 		} else {
 			Write-Host "Creating single alias..."
 			$progressBar1.Value = 40
@@ -1508,6 +1536,8 @@ function Add-EmailAlias {
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$rows = @(Import-Csv ".\Templates\Add-EmailAlias.csv" | Where-Object { "$($_.Mailbox)".Trim() -and "$($_.Alias)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $emailAliasForm
+		try {
 		$rows | ForEach-Object {
 			$i++; Step-Progress "Adding alias $($_.Alias) to $($_.Mailbox)..." $i $tot
 			$mailbox = "$($_.Mailbox)".Trim(); $alias = "$($_.Alias)".Trim()
@@ -1524,6 +1554,7 @@ function Add-EmailAlias {
 			else { $failed.Add("$label - $($r.Message)") }
 		}
 		Show-AccountResults 'Add email aliases' $created $failed -Preview:$preview
+		} finally { Unlock-ScriptWindow }
 	}
 	function OnIncrementalCheckBoxChecked {
 		if ($incrementalCheckBox.IsChecked -eq $true) {
@@ -1661,6 +1692,7 @@ function Get-UserAccessInventory([string]$Source, [hashtable]$Opts, [scriptblock
         # fall back to Get-MailboxPermission when it isn't present. Same identity/user filter either way.
         $useExoPerm = [bool](Get-Command Get-EXOMailboxPermission -ErrorAction SilentlyContinue)
         $i = 0; $tot = $mbxs.Count
+        if ($Progress) { & $Progress 0 $tot }
         foreach ($mb in $mbxs) {
             $i++
             if ($Progress) { & $Progress $i $tot }
@@ -1807,9 +1839,12 @@ function Invoke-CopyAccessDialog {
 
     function OnLoadClick {
         $v = Get-Validated; if (-not $v) { return }
+        Lock-ScriptWindow $dlg
+        try {
         $copyBtn.IsEnabled = $false
         $itemsHost.Children.Clear()
         $status.Text = "Generating preview for $($v.Src) - this can take a moment..."
+        Update-UiNow
         $progressBar1.Value = 12
         Reset-Throughput
         $inv = Get-UserAccessInventory $v.Src $v.Opts $scanProgress
@@ -1831,6 +1866,7 @@ function Invoke-CopyAccessDialog {
             $status.Text = $msg
         }
         Write-Host "Loaded $($v.Src)'s access: $found item(s)." -ForegroundColor Cyan
+        } finally { Unlock-ScriptWindow }
         $progressBar1.Value = 0
     }
     function OnCopyClick {
@@ -1842,6 +1878,8 @@ function Invoke-CopyAccessDialog {
             return
         }
         Write-Host "Copying $(@($chosen).Count) selected item(s) to $($v.Tgt)..." -ForegroundColor Cyan
+        Lock-ScriptWindow $dlg
+        try {
         $progressBar1.Value = 12
         $applyProgress = { param($done, $total2) Set-LoopProgress $done $total2 12 98; $tp = Get-ThroughputText $done $total2; $status.Text = "Copying... $done of $total2" + $(if ($tp) { " · $tp" } else { '' }); Update-UiNow $true }
         Reset-Throughput
@@ -1853,6 +1891,7 @@ function Invoke-CopyAccessDialog {
         $status.Text = ($summary -join '  ')
         $kind = if (@($res.Failed).Count) { 'Warn' } else { 'Info' }
         Show-Notice 'Copy access' ($summary -join "`r`n") $kind
+        } finally { Unlock-ScriptWindow }
         $progressBar1.Value = 0
     }
 
@@ -2089,6 +2128,9 @@ function Add-TrustedSender {
 	function OnTrustedSenderButtonClick {
 		$trustedSender = $trustedSenderInputBox.Text
 		$progressBar1.Value = 10
+		Lock-ScriptWindow $ScriptForm5
+		try {
+			Set-ItemStatus "Listing every user mailbox in the tenant..."
 			$mbxs = @(Get-Mailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited)
 			$tot = $mbxs.Count; $i = 0
 			$mbxs | ForEach-Object {
@@ -2099,6 +2141,7 @@ function Add-TrustedSender {
 		Write-Host "Finished configuring mailboxes."
 		CheckForErrors
 		OperationComplete
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$ScriptForm5 = New-TrustedSenderDialog

@@ -137,7 +137,7 @@ function Show-AccountResults([string]$What, $Created, $Failed, [switch]$Preview,
 	$title = if ($Preview) { "$What - preview" } else { "$What complete" }
 	Write-Host "${title}: done/would=$($c.Count) failed/skip=$($f.Count). CSV: $csvPath" -ForegroundColor Cyan
 	$kind = if ($f.Count) { 'Warn' } else { 'Info' }
-	$progressBar1.Value = 100
+	Complete-Progress (Format-DoneText -Done $c.Count -Failed $f.Count -Word ($DoneWord.ToLower()) -Preview:$Preview)
 	Show-Notice $title ($parts -join "`n`n") $kind
 	$progressBar1.Value = 0
 	# Every per-row failure is already in this summary. Bulk handlers catch their rows (which still lands
@@ -982,6 +982,7 @@ function Convert-MailboxOrGroup {
 		if ($Lines.Count) { $body += "`n`n" + ($Lines -join "`n") }
 		if ($script:ConvNote) { $body += "`n`n$($script:ConvNote)"; $script:ConvNote = '' }
 		$kind = if ($Counts.failed) { 'Warn' } else { 'Info' }
+		Complete-Progress (Format-DoneText -Done ([int]$Counts.done) -Skipped ([int]$Counts.skipped) -Failed ([int]$Counts.failed) -Word 'converted')
 		Show-Notice 'Conversion complete' $body $kind
 		$progressBar1.Value = 0
 		$Error.Clear()
@@ -1026,7 +1027,7 @@ function Convert-MailboxOrGroup {
 		Unlock-ScriptWindow
 		Show-ConvSummary $counts $lines
 		CheckForErrors
-		OperationComplete
+		OperationComplete -KeepDone
 	}
 
 	function OnConvertButtonClick {
@@ -1054,7 +1055,7 @@ function Convert-MailboxOrGroup {
 		}
 		Show-ConvSummary $counts $lines
 		CheckForErrors
-		OperationComplete
+		OperationComplete -KeepDone
 	}
 
 	function OnTemplateButtonClick {
@@ -1336,6 +1337,8 @@ function New-ADAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$tot = $csvFile.Count; $i = 0
+		Lock-ScriptWindow $scriptForm9
+		try {
 		foreach ($row in $csvFile) {
 			$i++; Step-Progress "Creating $($row.SamAccountName)..." $i $tot
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
@@ -1426,6 +1429,7 @@ function New-ADAccounts {
 		}
 		Show-AccountResults 'Create AD accounts' $created $failed -Preview:$preview
 		CheckForErrors
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm9 = New-ADAccountsDialog -ForestName $domain.forest
@@ -1547,6 +1551,8 @@ function New-ADAndEmailAccounts {
 		$created = [System.Collections.Generic.List[string]]::new()
 		$failed  = [System.Collections.Generic.List[string]]::new()
 		$tot = $csvFile.Count; $i = 0
+		Lock-ScriptWindow $scriptForm9
+		try {
 		foreach ($row in $csvFile) {
 			$i++; Step-Progress "Creating $($row.SamAccountName)..." $i $tot
 			$who = if ($row.SamAccountName) { "$($row.SamAccountName)" } else { '(blank row)' }
@@ -1680,6 +1686,7 @@ function New-ADAndEmailAccounts {
 		}
 		Show-AccountResults 'Create AD & Email accounts' $created $failed -Preview:$preview
 		CheckForErrors
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm9 = New-ADAndEmailAccountsDialog -ForestName $domain.forest
@@ -1744,6 +1751,8 @@ function New-EmailAccounts {
 		$preview = ($previewCheck.IsChecked -eq $true)
 		$rows = @(Import-Csv ".\Templates\New-EmailAccounts.csv" | Where-Object { "$($_.EmailAddress)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Lock-ScriptWindow $addEmailAccountsForm
+		try {
 		$rows | ForEach-Object {
 			$i++; Step-Progress "Creating $($_.EmailAddress)..." $i $tot
 			$who = if ($_.EmailAddress) { "$($_.EmailAddress)" } else { '(blank row)' }
@@ -1807,6 +1816,7 @@ function New-EmailAccounts {
 		}
 		Show-AccountResults 'Create email accounts' $created $failed -Preview:$preview
 		CheckForErrors
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$addEmailAccountsForm = New-EmailAccountsDialog
@@ -2185,14 +2195,20 @@ function Terminate-Disable-ADAndEmailAccounts {
 	# tracked, and if any of them failed the function THROWS at the end. That way a row never reports
 	# "Disabled" while the account is really still usable (the fired-employee risk).
 	function Disable-OneEmail([string]$email) {
+		Set-ItemStatus "${email}: converting to shared mailbox"
 		$mailbox = Get-Mailbox -Identity $email -ErrorAction Stop
 		Set-Mailbox -Identity $email -Type Shared -ErrorAction Stop
 		Write-Host "Converted $email to a shared mailbox." -ForegroundColor Cyan
 		$critical = @()
+		Set-ItemStatus "${email}: resetting password"
 		try { $pm = Get-MgUserAuthenticationPasswordMethod -UserId $email -ErrorAction Stop; Reset-MgUserAuthenticationMethodPassword -UserId $email -AuthenticationMethodId $pm.Id -ErrorAction Stop | Out-Null; Write-Host "  reset password." } catch { Write-Host "  couldn't reset password: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "reset the password ($($_.Exception.Message))" }
+		Set-ItemStatus "${email}: signing out"
 		try { Revoke-MgUserSignInSession -UserId $email -ErrorAction Stop | Out-Null; Write-Host "  revoked sessions." } catch { Write-Host "  couldn't revoke sessions: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "revoke sessions ($($_.Exception.Message))" }
+		Set-ItemStatus "${email}: disabling account"
 		try { Update-MgUser -UserId $email -AccountEnabled:$false -ErrorAction Stop; Write-Host "  disabled the cloud account." } catch { Write-Host "  couldn't disable cloud account: $($_.Exception.Message)" -ForegroundColor Yellow; $critical += "disable the cloud account ($($_.Exception.Message))" }
+		Set-ItemStatus "${email}: removing licenses"
 		Remove-UserLicenses $email
+		Set-ItemStatus "${email}: removing MFA methods"
 		try { $n = Clear-UserAuthMethods $email; if ($n -gt 0) { Write-Host "  removed $n MFA method(s)." } else { Write-Host "  no MFA methods to remove." } } catch { Write-Host "  couldn't clear MFA methods: $($_.Exception.Message)" -ForegroundColor Yellow }
 		if ($critical.Count) { throw "the account may NOT be fully blocked - couldn't " + ($critical -join '; ') + ". Check it in the admin center." }
 	}
@@ -2258,6 +2274,8 @@ function Terminate-Disable-ADAndEmailAccounts {
 			$blockAd = $false; $adSkipped = $true   # do the email part; note the skip in the summary
 		}
 		$progressBar1.Value = 20
+		Lock-ScriptWindow $form
+		try {
 		$errors = @()
 		$didEmail = $false; $didAd = $false
 		if ($adSkipped) { $errors += "AD ($adUser): skipped - the Active Directory module isn't available on this computer." }
@@ -2272,16 +2290,19 @@ function Terminate-Disable-ADAndEmailAccounts {
 				$didEmail = $true
 			} catch { Write-Host "Email error for $email`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "Email ($email): $($_.Exception.Message)" }
 		}
-		$progressBar1.Value = 0
 		# Report only what ACTUALLY succeeded, so a failed/skipped step never reads as "Blocked".
 		$doneParts = @()
 		if ($didEmail) { $doneParts += $email }
 		if ($didAd) { $doneParts += $adUser }
 		$done = @($doneParts | Where-Object { $_ }) -join ' / '
+		$doneText = if ($done -and $errors.Count) { "Done: blocked $done, with errors" } elseif ($done) { "Done: blocked $done" } elseif ($errors.Count) { 'Nothing was blocked' } else { 'Nothing to block' }
+		Complete-Progress $doneText
 		if ($done -and $errors.Count) { Show-Notice 'Finished with some errors' ("Blocked $done.`n`nBut:`n`n" + ($errors -join "`n")) 'Warn' }
 		elseif ($done) { Show-Notice 'Done' "Blocked $done." 'Info' }
 		elseif ($errors.Count) { Show-Notice "Couldn't block" ("Nothing was blocked:`n`n" + ($errors -join "`n")) 'Error' }
 		else { Show-Notice 'Nothing done' 'Nothing to block.' 'Warn' }
+		} finally { Unlock-ScriptWindow }
+		$progressBar1.Value = 0
 	}
 	function OnOpenTemplateButtonClick {
 		$progressBar1.Value = 10

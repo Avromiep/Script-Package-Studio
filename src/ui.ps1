@@ -1655,8 +1655,8 @@ function New-OperationCompleteDialog {
 }
 
 # Show operation complete dialog (same contract as before)
-function OperationComplete {
-	$progressBar1.Value = 100
+function OperationComplete([switch]$KeepDone) {
+	if (-not $KeepDone) { Complete-Progress 'Done.' }   # finished state before the popup (unless a summary set a richer Done)
 	Write-Host "Operation complete."
 	[void](New-OperationCompleteDialog).ShowDialog()
 	$progressBar1.Value = 0

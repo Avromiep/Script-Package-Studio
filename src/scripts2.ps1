@@ -277,6 +277,7 @@ function Block-User {
 	$progressBar1.Value = 10
 	function OnBlockButtonClick {
 		Write-Host "Block button clicked."
+		$adFailedMsg = ''
 		$progressBar1.Value = 10
 		if ($adCheckBox.IsChecked -eq $true) { if (-not (Confirm-ADAvailable)) { $progressBar1.Value = 0; return } }
 		if ($adCheckBox.IsChecked -eq $true) {
@@ -285,9 +286,11 @@ function Block-User {
 			try { $null = Get-ADUser -Identity $adName -ErrorAction Stop }
 			catch { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) }; Show-Notice "Couldn't find the AD user" "Couldn't find the AD user $adName. Nothing was changed." 'Warn'; $progressBar1.Value = 0; return }
 			$progressBar1.Value = 20
-			$samAccountName = $adNameInputBox.Text
-			Disable-ADAccount -Identity $samAccountName
-			Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
+			$samAccountName = $adName
+			$adErr = $null
+			Disable-ADAccount -Identity $samAccountName -ErrorVariable adErr
+			if ($adErr) { $adFailedMsg = "$($adErr[0].Exception.Message)"; Write-Host "Couldn't disable AD account $samAccountName`: $adFailedMsg" -ForegroundColor Red }
+			else { Write-Host "Disabled AD account $samAccountName." -ForegroundColor Cyan }
 			$progressBar1.Value = 30
 			CheckForErrors
 		}
@@ -403,7 +406,11 @@ function Block-User {
 		$adNameInputBox.Text = ""
 		Write-Host "`nFinished blocking $user." -ForegroundColor Cyan
 		CheckForErrors
-		OperationComplete
+		if ($adFailedMsg) {
+			Complete-Progress 'Finished, but the AD account was NOT disabled'
+			Show-Notice 'Finished with an error' "The AD account $adName was NOT disabled: $adFailedMsg`n`nAny email steps you ticked still ran. Check the AD account on the server." 'Warn'
+			$progressBar1.Value = 0
+		} else { OperationComplete }
 	}
 
 	$ScriptForm2 = New-BlockUserDialog

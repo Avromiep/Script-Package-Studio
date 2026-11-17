@@ -1,5 +1,5 @@
-# Short runner for the live-progress tests. No Pester, no install, no tenant.
-# Runs both test files and exits non-zero if EITHER one fails.
+# Short runner for the live-progress / AD-preflight / mailbox-member tests. No Pester, no install, no tenant.
+# Runs all four test files and exits non-zero if ANY one fails.
 #   pwsh -NoProfile -File tests\Run-ProgressTests.ps1
 $exe = (Get-Process -Id $PID).Path
 $rc = 0

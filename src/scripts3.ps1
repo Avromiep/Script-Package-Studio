@@ -26,12 +26,14 @@ function Remove-DistributionListMember {
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$rows = @(Import-Csv ".\Templates\Remove-DistributionListMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Reset-Throughput
 		Lock-ScriptWindow $scriptForm8
+		try {
 		$rows | ForEach-Object {
-			$i++; Step-Progress '' $i $tot
+			$i++                         # Invoke-MemberRoute paints each step of this row and names the person
 			$member = $_.Member
 			$group = $_.Group
-			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'remove' -Cache $typeCache -Corrected $corrected) {
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'remove' -Cache $typeCache -Corrected $corrected -RowIndex $i -RowTotal $tot) {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
 				'failed'  { $counts.failed++ }
@@ -39,7 +41,7 @@ function Remove-DistributionListMember {
 			}
 		}
 		Show-BulkSummary $counts 'remove' $corrected
-		Unlock-ScriptWindow
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-DistributionListMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
@@ -214,12 +216,14 @@ function Remove-UnifiedGroupMember {
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$rows = @(Import-Csv ".\Templates\Remove-UnifiedGroupMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Reset-Throughput
 		Lock-ScriptWindow $scriptForm8
+		try {
 		$rows | ForEach-Object {
-			$i++; Step-Progress '' $i $tot
+			$i++                         # Invoke-MemberRoute paints each step of this row and names the person
 			$member = $_.Member
 			$group = $_.Group
-			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'remove' -Cache $typeCache -Corrected $corrected) {
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'remove' -Cache $typeCache -Corrected $corrected -RowIndex $i -RowTotal $tot) {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
 				'failed'  { $counts.failed++ }
@@ -227,7 +231,7 @@ function Remove-UnifiedGroupMember {
 			}
 		}
 		Show-BulkSummary $counts 'remove' $corrected
-		Unlock-ScriptWindow
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Remove-UnifiedGroupMember' -ActionText 'Remove Member' -BulkText 'Remove Members' -WithPaste
@@ -608,6 +612,7 @@ function Set-ACLPermissions {
 		# Build the account from the Domain box + the typed name (use as-is if it already has \ or @),
 		# resolve it ONCE, and decide here (not found / local account) BEFORE anything is read, locked or set.
 		$typedName = "$($userGroupComboBox.Text)".Trim()
+		if (-not $typedName) { Show-Notice "Couldn't find the account" "Nothing was changed. Type a user or group name." 'Warn'; $continuousProgressBar.Value = 0; return }
 		$domBox = "$($domainTextBox.Text)".Trim()
 		$identityText = if ($typedName -match '[\\@]') { $typedName } elseif ($domBox) { "$domBox\$typedName" } else { $typedName }
 		$errN = $Error.Count
@@ -620,11 +625,11 @@ function Set-ACLPermissions {
 			Show-Notice 'Local account' "$typedName is a local account on this computer ($local), not a domain account. Nothing was changed. To use this local account, type $local in the name box." 'Warn'
 			$continuousProgressBar.Value = 0; return
 		}
-		Write-Host "Setting permissions for $($resolved.Name)"
 		$acctId = $resolved.Sid
 		if ($actAllowRadioButton.IsChecked -eq $true) { $accessControlType = "Allow" }
 		elseif ($actDenyRadioButton.IsChecked -eq $true) { $accessControlType = "Deny" }
 		else { Show-Notice 'Missing info' 'Pick Allow or Deny.' 'Warn'; $continuousProgressBar.Value = 0; return }
+		Write-Host "Setting permissions for $($resolved.Name)"
 
 		if ($singleRadioButton.IsChecked) {
 			$aclPath = $pathTextBox.Text

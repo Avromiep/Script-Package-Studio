@@ -557,6 +557,17 @@ function New-AclPermissionsDialog {
 	return $win
 }
 
+# Resolve an account name to a SID and its canonical NTAccount, LOOKUP ONLY (no decisions here).
+# Returns @{ Sid; Name } or $null on any error. Set-ACLPermissions uses it so the account that is
+# checked is the exact account the rule is built from.
+function Resolve-AclAccount([string]$Name) {
+	try {
+		$nt = [System.Security.Principal.NTAccount]::new($Name)
+		$sid = $nt.Translate([System.Security.Principal.SecurityIdentifier])
+		$back = $sid.Translate([System.Security.Principal.NTAccount])
+		return @{ Sid = $sid; Name = "$($back.Value)" }
+	} catch { return $null }
+}
 function Set-ACLPermissions {
 	Start-Transcript -IncludeInvocationHeader -Path ".\Logs\Set-ACLPermissions.txt"
 	Write-Host "Running Set-ACLPermissions script..."
@@ -594,10 +605,30 @@ function Set-ACLPermissions {
 		Write-Host "setPermissionsButton clicked."
 		$continuousProgressBar.Value = 10
 
+		# Build the account from the Domain box + the typed name (use as-is if it already has \ or @),
+		# resolve it ONCE, and decide here (not found / local account) BEFORE anything is read, locked or set.
+		$typedName = "$($userGroupComboBox.Text)".Trim()
+		$domBox = "$($domainTextBox.Text)".Trim()
+		$identityText = if ($typedName -match '[\\@]') { $typedName } elseif ($domBox) { "$domBox\$typedName" } else { $typedName }
+		$errN = $Error.Count
+		$resolved = Resolve-AclAccount $identityText
+		while ($Error.Count -gt $errN) { $Error.RemoveAt(0) }
+		if (-not $resolved) { Show-Notice "Couldn't find $identityText" "Nothing was changed. Check the name and the Domain box." 'Warn'; $continuousProgressBar.Value = 0; return }
+		$resolvedDomainPart = ($resolved.Name -split '\\', 2)[0]
+		if (($typedName -notmatch '[\\@]') -and ($resolvedDomainPart -ieq $env:COMPUTERNAME)) {
+			$local = "$env:COMPUTERNAME\$typedName"
+			Show-Notice 'Local account' "$typedName is a local account on this computer ($local), not a domain account. Nothing was changed. To use this local account, type $local in the name box." 'Warn'
+			$continuousProgressBar.Value = 0; return
+		}
+		Write-Host "Setting permissions for $($resolved.Name)"
+		$acctId = $resolved.Sid
+		if ($actAllowRadioButton.IsChecked -eq $true) { $accessControlType = "Allow" }
+		elseif ($actDenyRadioButton.IsChecked -eq $true) { $accessControlType = "Deny" }
+		else { Show-Notice 'Missing info' 'Pick Allow or Deny.' 'Warn'; $continuousProgressBar.Value = 0; return }
+
 		if ($singleRadioButton.IsChecked) {
 			$aclPath = $pathTextBox.Text
 			$acl = Get-Acl $aclPath
-			$identity = "$domainName\$($userGroupComboBox.Text)"
 			$continuousProgressBar.Value = 20
 
 			$rights = ""
@@ -621,24 +652,14 @@ function Set-ACLPermissions {
 			$propagationFlags = $propagationFlags.TrimEnd(',')
 			$continuousProgressBar.Value = 50
 
-			if ($actAllowRadioButton) {
-				Write-Host "actAllowRadioButton is checked."
-				$accessControlType = "Allow"
-			} elseif ($actDenyRadioButton) {
-				Write-Host "actDenyRadioButton is checked."
-				$accessControlType = "Deny"
-			} else {
-				Write-Host "Error, both radio buttons unchecked."
-			}
 			$continuousProgressBar.Value = 60
 
-			$rule = New-Object System.Security.AccessControl.FileSystemAccessRule("$identity","$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
+			$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($acctId,"$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
 			$acl.AddAccessRule($rule)
 			Set-Acl $aclPath $acl
 			$continuousProgressBar.Value = 100
 			$continuousProgressBar.Value = 0
 		} elseif ($multipleRadioButton.IsChecked) {
-			$identity = "$domainName\$($userGroupComboBox.Text)"
 			$continuousProgressBar.Value = 10
 
 			$rights = ""
@@ -662,15 +683,6 @@ function Set-ACLPermissions {
 			$propagationFlags = $propagationFlags.TrimEnd(',')
 			$continuousProgressBar.Value = 40
 
-			if ($actAllowRadioButton) {
-				Write-Host "actAllowRadioButton is checked."
-				$accessControlType = "Allow"
-			} elseif ($actDenyRadioButton) {
-				Write-Host "actDenyRadioButton is checked."
-				$accessControlType = "Deny"
-			} else {
-				Write-Host "Error, both radio buttons unchecked."
-			}
 			$continuousProgressBar.Value = 50
 			Reset-Throughput
 			$paths = @(Get-Content ".\Templates\Set-ACLPermissions.txt" | Where-Object { "$_".Trim() })
@@ -682,7 +694,7 @@ function Set-ACLPermissions {
 				$continuousProgressBar.Value = 50 + [int](45 * $i / $tot)
 				$aclPath = $_
 				$acl = Get-Acl $aclPath
-				$rule = New-Object System.Security.AccessControl.FileSystemAccessRule("$identity","$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
+				$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($acctId,"$rights","$inheritanceFlags","$propagationFlags","$accessControlType")
 				$acl.AddAccessRule($rule)
 				Set-Acl $aclPath $acl
 			}
@@ -698,9 +710,14 @@ function Set-ACLPermissions {
 
 	$domainName = (Get-ciminstance -Class Win32_UserAccount -Filter "Name='$env:USERNAME'").Domain
 
-	$allUsers = Get-ADUser -Filter * -Properties SamAccountName | Sort-Object SamAccountName
-	$allGroups = Get-ADGroup -Filter * -Properties Name | Sort-Object Name
-	$fullList = $allUsers.SamAccountName + $allGroups.Name
+	$fullList = @()
+	if (Test-ADModule) {
+		$allUsers = Get-ADUser -Filter * -Properties SamAccountName | Sort-Object SamAccountName
+		$allGroups = Get-ADGroup -Filter * -Properties Name | Sort-Object Name
+		$fullList = $allUsers.SamAccountName + $allGroups.Name
+	} else {
+		Write-Host "Active Directory module not present - the name box won't autocomplete; type the full account (Domain\name)."
+	}
 
 	$setPermissionsForm = New-AclPermissionsDialog -DomainName $domainName -UserGroupList $fullList
 	$singleRadioButton = $setPermissionsForm.FindName('SingleChip')

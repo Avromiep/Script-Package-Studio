@@ -1066,6 +1066,7 @@ function Start-AcWarmup {
 	$t = New-Object System.Windows.Threading.DispatcherTimer
 	$t.Interval = [TimeSpan]::FromMilliseconds(250)
 	$t.Add_Tick({
+		if (Test-ScriptRunBusy) { return }
 		try {
 			$st = Step-AcWorker
 			if ($st -eq 'off') { Update-AcStatus; $t.Stop(); return }
@@ -1262,6 +1263,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		$poll = New-Object System.Windows.Threading.DispatcherTimer
 		$poll.Interval = [TimeSpan]::FromMilliseconds(80)
 		$poll.Add_Tick({
+			if (Test-ScriptRunBusy $TextBox) { return }
 			try {
 				$st = Step-AcWorker
 				if ($st -eq 'off') { $poll.Stop(); return }
@@ -1289,6 +1291,7 @@ function Enable-RecipientAutocomplete($TextBox, [string]$Prefer = 'Any') {
 		}.GetNewClosure()
 
 		$runQuery = {
+			if (Test-ScriptRunBusy $TextBox) { return }
 			$timer.Stop()
 			$term = "$($TextBox.Text)".Trim()
 			if (Test-AcIsCompleteEmail $term) { $popup.IsOpen = $false; return }
@@ -1419,7 +1422,7 @@ function Test-ADModule {
 	return [bool](Get-Command Get-ADUser -ErrorAction SilentlyContinue)
 }
 # Shared, friendly message when the AD module is missing.
-$script:ADMissingMsg = "The Active Directory PowerShell module isn't available on this computer. Run this on a domain controller, or on a machine with the RSAT ""Active Directory Domain Services"" tools installed (Windows: Settings > Optional features > Add a feature > ""RSAT: Active Directory Domain Services and Lightweight Directory Services Tools"")."
+$script:ADMissingMsg = "This computer doesn't have the Active Directory module, so nothing was changed. Run this on the server (a domain controller), or on a machine with the RSAT ""Active Directory Domain Services"" tools installed (Windows: Settings > Optional features > Add a feature > ""RSAT: Active Directory Domain Services and Lightweight Directory Services Tools"")."
 # Up-front gate for a script that needs Active Directory: if the module isn't here, pop the clear
 # message IMMEDIATELY (so you know the moment you open it) and return $false so the caller can stop
 # before opening its dialog - you just click OK and you're back on the script list.
@@ -1501,6 +1504,7 @@ function Enable-ADUserAutocomplete($TextBox) {
 			$popup.IsOpen = $true
 		}.GetNewClosure()
 		$runQuery = {
+			if (Test-ScriptRunBusy $TextBox) { return }
 			$timer.Stop()
 			$t = "$($TextBox.Text)".Trim()
 			if ($t.Length -lt 2) { $popup.IsOpen = $false; return }

@@ -85,6 +85,36 @@ function Show-BulkSummary([hashtable]$Counts, [string]$Action, $Corrected = $nul
 # 'SendOnBehalf'. $FallbackCategory is used when the target can't be classified (e.g. lookup
 # failed) so we still try the script's native cmdlet and surface its real error. Pass a shared
 # [hashtable]$Cache across a bulk run to avoid re-querying the same target.
+# One progress repaint for a member step: move the bar to just BEFORE step k of n in this row's band,
+# set the step text + detail, and pump ONCE. Returns the ms the repaint took. Never throws. Top-level so
+# it reads the real $script: scope and is unit-testable; $script:TpStart is started on the first bulk paint.
+function Write-MemberStep {
+	param($Bar, [int]$K, [int]$N, [string]$Text, [int]$Lo, [int]$Hi, [int]$RowIndex, [int]$RowTotal, $Clock)
+	$t0 = if ($Clock) { $Clock.ElapsedMilliseconds } else { 0 }
+	try {
+		$ri = if ($RowTotal -gt 0) { $RowIndex } else { 1 }
+		$rt = if ($RowTotal -gt 0) { $RowTotal } else { 1 }
+		$frac = (($ri - 1) + [double]([Math]::Max(0, $K - 1)) / [Math]::Max(1, $N)) / [Math]::Max(1, $rt)
+		$v = $Lo + [int](($Hi - $Lo) * $frac)
+		if ($v -lt $Lo) { $v = $Lo }
+		if ($v -gt $Hi) { $v = $Hi }
+		if ($Bar -and $v -gt [int]$Bar.Value) { $Bar.Value = $v }   # never go down
+		Set-ItemStatusText $Text
+		if ($RowTotal -gt 0) {
+			if (-not $script:TpStart) { $script:TpStart = [DateTime]::UtcNow; $script:TpCount = 0 }
+			$tp = Get-ThroughputText ($RowIndex - 1) $RowTotal
+			Set-StatusDetail ("$RowIndex of $RowTotal" + $(if ($tp) { " · $tp" } else { '' }))
+		} else { Set-StatusDetail '' }
+		Update-UiNow
+	} catch {}
+	if ($Clock) { return [int]($Clock.ElapsedMilliseconds - $t0) }
+	return 0
+}
+# The single chokepoint for every member add/remove (single and bulk, mailboxes / distribution lists /
+# Teams-M365 groups). It paints ONE repaint right before each blocking Exchange call (the type lookup,
+# then one per cmdlet), so the screen moves step by step instead of sitting at one value. $RowIndex /
+# $RowTotal position the bar within a bulk run (single add leaves them 0 and uses the 10-95 band). One
+# plain-words "timing:" line per row goes to the transcript (no addresses/names/secrets) from a finally.
 function Invoke-MemberRoute {
 	param(
 		[string]$Target,
@@ -92,65 +122,95 @@ function Invoke-MemberRoute {
 		[string]$Action = 'add',
 		[string]$MailboxRight = 'FullAndSendAs',
 		[string]$FallbackCategory = '',
-		[hashtable]$Cache = $null
+		[hashtable]$Cache = $null,
+		[int]$RowIndex = 0,
+		[int]$RowTotal = 0
 	)
 	$isRemove = ($Action -eq 'remove')
-	# Live status: this is the single chokepoint for every member add/remove (single and bulk, across
-	# distribution lists / Teams-M365 groups / mailboxes), so show which person is being added/removed here.
-	Set-ItemStatus "$(if ($isRemove) { 'Removing' } else { 'Adding' }) $Member $(if ($isRemove) { 'from' } else { 'to' }) $Target..."
-	if ($Cache -and $Cache.ContainsKey($Target)) {
-		$cat = $Cache[$Target].Cat; $typeName = $Cache[$Target].Name
-	} else {
-		$cat = Get-RecipientCategory $Target
-		$typeName = Get-RecipientTypeName $script:LastRecipientRaw
-		if ($Cache) { $Cache[$Target] = @{ Cat = $cat; Name = $typeName } }
-	}
-	# The type is known now - restate with it so the line reads naturally (CSV member loops).
-	$routeDesc = if ($typeName) { "the $typeName $Target" } else { $Target }
-	Set-ItemStatus "$(if ($isRemove) { 'Removing' } else { 'Adding' }) $Member $(if ($isRemove) { 'from' } else { 'to' }) $routeDesc..."
-	if (-not $Cache) { $progressBar1.Value = 65 }   # single op: bar advances once the type is known, before the change
-	$res = @{ Category = $cat; TypeName = $typeName; Status = 'unknown'; Message = '' }
-	$effCat = if ($cat -and $cat -ne 'Other') { $cat } elseif ($FallbackCategory) { $FallbackCategory } else { '' }
-	if (-not $effCat) { return $res }
+	$res = @{ Category = $null; TypeName = ''; Status = 'unknown'; Message = '' }
+	$lo = if ($RowTotal -gt 0) { 12 } else { 10 }
+	$hi = 95
+	$suffix = if ($RowTotal -gt 0) { " ($RowIndex of $RowTotal)" } else { '' }
+	$verbing = if ($isRemove) { 'Removing' } else { 'Adding' }
+	$prep = if ($isRemove) { 'from' } else { 'to' }
+	$sw = [System.Diagnostics.Stopwatch]::StartNew()
+	$screenMs = 0
+	$timeParts = [System.Collections.Generic.List[string]]::new()
+	$nSteps = 3   # until the type is known: 1 lookup + up to 2 cmdlets
 	try {
+		# ---- step: type lookup (skipped when cached) ----
+		$lookedUp = $false
+		if ($Cache -and $Cache.ContainsKey($Target)) {
+			$cat = $Cache[$Target].Cat; $typeName = $Cache[$Target].Name
+			$timeParts.Add('lookup 0 ms (cached)')
+		} else {
+			$lookedUp = $true
+			$screenMs += (Write-MemberStep $progressBar1 1 $nSteps "Checking $Target$suffix" $lo $hi $RowIndex $RowTotal $sw)
+			$l0 = $sw.ElapsedMilliseconds
+			$cat = Get-RecipientCategory $Target
+			$typeName = Get-RecipientTypeName $script:LastRecipientRaw
+			$timeParts.Add("lookup $($sw.ElapsedMilliseconds - $l0) ms")
+			if ($Cache) { $Cache[$Target] = @{ Cat = $cat; Name = $typeName } }
+		}
+		$res.Category = $cat; $res.TypeName = $typeName
+		$describe = if ($typeName) { "the $typeName $Target" } else { $Target }
+		$effCat = if ($cat -and $cat -ne 'Other') { $cat } elseif ($FallbackCategory) { $FallbackCategory } else { '' }
+		if (-not $effCat) { return $res }   # unknown type - the finally still logs this row's timing line
+		# ---- build the cmdlet steps (name + the blocking call), exactly as before ----
+		$cmdSteps = [System.Collections.Generic.List[object]]::new()
 		if ($isRemove) {
 			switch ($effCat) {
-				'DistributionList' { Remove-DistributionGroupMember -Identity $Target -Member $Member -Confirm:$false -ErrorAction Stop }
-				'UnifiedGroup'     { Remove-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -Confirm:$false -ErrorAction Stop }
+				'DistributionList' { $cmdSteps.Add(@{ Name = 'member'; Run = { Remove-DistributionGroupMember -Identity $Target -Member $Member -Confirm:$false -ErrorAction Stop } }) }
+				'UnifiedGroup'     { $cmdSteps.Add(@{ Name = 'member'; Run = { Remove-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -Confirm:$false -ErrorAction Stop } }) }
 				'Mailbox' {
 					switch ($MailboxRight) {
-						'SendAs'       { Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
-						'SendOnBehalf' { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Remove=$Member} -ErrorAction Stop }
-						'FullAccess'   { Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop }
+						'SendAs'       { $cmdSteps.Add(@{ Name = 'Send As'; Run = { Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop } }) }
+						'SendOnBehalf' { $cmdSteps.Add(@{ Name = 'Send on Behalf'; Run = { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Remove=$Member} -ErrorAction Stop } }) }
+						'FullAccess'   { $cmdSteps.Add(@{ Name = 'Full Access'; Run = { Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop } }) }
 						default {
-							Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
-							Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+							$cmdSteps.Add(@{ Name = 'Full Access'; Run = { Remove-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop } })
+							$cmdSteps.Add(@{ Name = 'Send As'; Run = { Remove-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop } })
 						}
 					}
 				}
 			}
 		} else {
 			switch ($effCat) {
-				'DistributionList' { Add-DistributionGroupMember -Identity $Target -Member $Member -ErrorAction Stop }
-				'UnifiedGroup'     { Add-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -ErrorAction Stop }
+				'DistributionList' { $cmdSteps.Add(@{ Name = 'member'; Run = { Add-DistributionGroupMember -Identity $Target -Member $Member -ErrorAction Stop } }) }
+				'UnifiedGroup'     { $cmdSteps.Add(@{ Name = 'member'; Run = { Add-UnifiedGroupLinks -Identity $Target -LinkType Members -Links $Member -ErrorAction Stop } }) }
 				'Mailbox' {
 					switch ($MailboxRight) {
-						'SendAs'       { Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop }
-						'SendOnBehalf' { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Add=$Member} -ErrorAction Stop }
-						'FullAccess'   { Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop }
+						'SendAs'       { $cmdSteps.Add(@{ Name = 'Send As'; Run = { Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop } }) }
+						'SendOnBehalf' { $cmdSteps.Add(@{ Name = 'Send on Behalf'; Run = { Set-Mailbox -Identity $Target -GrantSendOnBehalfTo @{Add=$Member} -ErrorAction Stop } }) }
+						'FullAccess'   { $cmdSteps.Add(@{ Name = 'Full Access'; Run = { Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop } }) }
 						default {
-							Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop
-							Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop
+							$cmdSteps.Add(@{ Name = 'Full Access'; Run = { Add-MailboxPermission -Identity $Target -User $Member -AccessRights FullAccess -InheritanceType All -AutoMapping $true -ErrorAction Stop } })
+							$cmdSteps.Add(@{ Name = 'Send As'; Run = { Add-RecipientPermission -Identity $Target -Trustee $Member -AccessRights SendAs -Confirm:$false -ErrorAction Stop } })
 						}
 					}
 				}
 			}
+		}
+		# ---- run each cmdlet step, painting ONE repaint right before each blocking call ----
+		$nSteps = $(if ($lookedUp) { 1 } else { 0 }) + $cmdSteps.Count
+		$k = if ($lookedUp) { 1 } else { 0 }
+		foreach ($step in $cmdSteps) {
+			$k++
+			$screenMs += (Write-MemberStep $progressBar1 $k $nSteps "$verbing $Member $prep ${describe}: $($step.Name)$suffix" $lo $hi $RowIndex $RowTotal $sw)
+			$c0 = $sw.ElapsedMilliseconds
+			& $step.Run
+			$timeParts.Add("$($step.Name) $($sw.ElapsedMilliseconds - $c0) ms")
 		}
 		$res.Status = 'done'
 	} catch {
 		$msg = "$($_.Exception.Message)".Trim()
 		$res.Message = $msg
 		$res.Status = if (Test-HarmlessMemberError $msg) { 'noop' } else { 'failed' }
+	} finally {
+		try {
+			$rowTag = if ($RowTotal -gt 0) { "row $RowIndex of $RowTotal | " } else { '' }
+			Write-Host ("timing: " + $rowTag + ((@($timeParts) + "screen $screenMs ms") -join ' | '))
+		} catch {}
 	}
 	return $res
 }
@@ -166,14 +226,15 @@ $script:MemberTypeName = @{ Mailbox = 'mailbox'; DistributionList = 'distributio
 # to it anyway"). No confirmation gate: it just does the right thing, then tells you. $Expected
 # is the category this script is for (used only for the note + as the fallback cmdlet).
 function Invoke-SingleMemberChange {
-	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action = 'add', [string]$MailboxRight = 'FullAndSendAs')
+	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action = 'add', [string]$MailboxRight = 'FullAndSendAs', [object]$Window = $null)
 	$isRemove = ($Action -eq 'remove')
 	$verbPast = if ($isRemove) { 'removed from' } else { 'added to' }
 	if (-not $Target -or -not $Member) {
 		Show-Notice 'Missing info' "Enter both a member and a target first." 'Warn'; $progressBar1.Value = 0; return
 	}
-	$progressBar1.Value = 40
-	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected
+	if ($Window) { Lock-ScriptWindow $Window }
+	try { $r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected }
+	finally { if ($Window) { Unlock-ScriptWindow } }
 	$typeName = $r.TypeName
 	$mismatch = ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected)
 	$expName = $script:MemberTypeName[$Expected]
@@ -211,8 +272,8 @@ function Invoke-SingleMemberChange {
 # Bulk (CSV) auto-route for one row. Uses the shared $Cache + $Notes list so the end summary
 # can mention any targets whose real type differed. Returns 'done'|'noop'|'failed'|'unknown'.
 function Invoke-BulkMemberRow {
-	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action, [hashtable]$Cache, [System.Collections.Generic.HashSet[string]]$Corrected, [string]$MailboxRight = 'FullAndSendAs')
-	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected -Cache $Cache
+	param([string]$Target, [string]$Member, [string]$Expected, [string]$Action, [hashtable]$Cache, [System.Collections.Generic.HashSet[string]]$Corrected, [string]$MailboxRight = 'FullAndSendAs', [int]$RowIndex = 0, [int]$RowTotal = 0)
+	$r = Invoke-MemberRoute -Target $Target -Member $Member -Action $Action -MailboxRight $MailboxRight -FallbackCategory $Expected -Cache $Cache -RowIndex $RowIndex -RowTotal $RowTotal
 	if ($r.Category -and $r.Category -ne 'Other' -and $r.Category -ne $Expected -and $Corrected) {
 		[void]$Corrected.Add("`"$Target`" is a $($r.TypeName)")
 	}
@@ -1365,12 +1426,14 @@ function Add-DistributionListMember {
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$rows = @(Import-Csv ".\Templates\Add-DistributionListMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Reset-Throughput
 		Lock-ScriptWindow $scriptForm8
+		try {
 		$rows | ForEach-Object {
-			$i++; Step-Progress '' $i $tot   # accurate fill by row; Invoke-MemberRoute names the person
+			$i++                         # Invoke-MemberRoute paints each step of this row and names the person
 			$member = $_.Member
 			$group = $_.Group
-			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'add' -Cache $typeCache -Corrected $corrected) {
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'DistributionList' -Action 'add' -Cache $typeCache -Corrected $corrected -RowIndex $i -RowTotal $tot) {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
 				'failed'  { $counts.failed++ }
@@ -1378,7 +1441,7 @@ function Add-DistributionListMember {
 			}
 		}
 		Show-BulkSummary $counts 'add' $corrected
-		Unlock-ScriptWindow
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-DistributionListMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste
@@ -2004,22 +2067,22 @@ function Add-MailboxMember {
 	# rights like Send As fall back to plain membership), and the summary says so afterward.
 	function OnMemberButtonClick {
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
-		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAndSendAs'
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAndSendAs' -Window $scriptForm1
 		CheckForErrors
 	}
 	function OnFullAccessButtonClick {
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
-		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAccess'
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'FullAccess' -Window $scriptForm1
 		CheckForErrors
 	}
 	function OnSendOnBehalfButtonClick {
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
-		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendOnBehalf'
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendOnBehalf' -Window $scriptForm1
 		CheckForErrors
 	}
 	function OnSendAsButtonClick {
 		$act = if ($mailboxMemberMode -eq 0) { 'add' } else { 'remove' }
-		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendAs'
+		Invoke-SingleMemberChange -Target $mailboxInputBox.Text -Member $memberInputBox.Text -Expected 'Mailbox' -Action $act -MailboxRight 'SendAs' -Window $scriptForm1
 		CheckForErrors
 	}
 	function OnOpenTemplateButtonClick {
@@ -2044,12 +2107,14 @@ function Add-MailboxMember {
 		$csv = if ($mailboxMemberMode -eq 0) { ".\Templates\Add-MailboxMember.csv" } else { ".\Templates\Remove-MailboxMember.csv" }
 		$rows = @(Import-Csv $csv | Where-Object { "$($_.Member)".Trim() -and "$($_.Mailbox)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Reset-Throughput
 		Lock-ScriptWindow $scriptForm1
+		try {
 		$rows | ForEach-Object {
-			$i++; Step-Progress '' $i $tot
+			$i++
 			$member = $_.Member
 			$mailbox = $_.Mailbox
-			switch (Invoke-BulkMemberRow -Target $mailbox -Member $member -Expected 'Mailbox' -Action $act -Cache $typeCache -Corrected $corrected -MailboxRight 'FullAndSendAs') {
+			switch (Invoke-BulkMemberRow -Target $mailbox -Member $member -Expected 'Mailbox' -Action $act -Cache $typeCache -Corrected $corrected -MailboxRight 'FullAndSendAs' -RowIndex $i -RowTotal $tot) {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
 				'failed'  { $counts.failed++ }
@@ -2057,7 +2122,7 @@ function Add-MailboxMember {
 			}
 		}
 		Show-BulkSummary $counts $act $corrected
-		Unlock-ScriptWindow
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm1 = New-MailboxMemberDialog
@@ -2186,12 +2251,14 @@ function Add-UnifiedGroupMember {
 		$counts = @{ done = 0; noop = 0; failed = 0; skipped = 0 }
 		$rows = @(Import-Csv ".\Templates\Add-UnifiedGroupMember.csv" | Where-Object { "$($_.Member)".Trim() -and "$($_.Group)".Trim() })
 		$tot = $rows.Count; $i = 0
+		Reset-Throughput
 		Lock-ScriptWindow $scriptForm8
+		try {
 		$rows | ForEach-Object {
-			$i++; Step-Progress '' $i $tot
+			$i++                         # Invoke-MemberRoute paints each step of this row and names the person
 			$member = $_.Member
 			$group = $_.Group
-			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'add' -Cache $typeCache -Corrected $corrected) {
+			switch (Invoke-BulkMemberRow -Target $group -Member $member -Expected 'UnifiedGroup' -Action 'add' -Cache $typeCache -Corrected $corrected -RowIndex $i -RowTotal $tot) {
 				'done'    { $counts.done++ }
 				'noop'    { $counts.noop++ }
 				'failed'  { $counts.failed++ }
@@ -2199,7 +2266,7 @@ function Add-UnifiedGroupMember {
 			}
 		}
 		Show-BulkSummary $counts 'add' $corrected
-		Unlock-ScriptWindow
+		} finally { Unlock-ScriptWindow }
 	}
 
 	$scriptForm8 = New-MemberGroupDialog -Title 'Add-UnifiedGroupMember' -ActionText 'Add Member' -BulkText 'Add Members' -WithPaste

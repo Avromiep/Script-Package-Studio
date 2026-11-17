@@ -3,7 +3,7 @@
 #   pwsh -NoProfile -File tests\Run-ProgressTests.ps1
 $exe = (Get-Process -Id $PID).Path
 $rc = 0
-foreach ($t in 'Progress-Live.Tests.ps1', 'PasteList-Live.Tests.ps1') {
+foreach ($t in 'Progress-Live.Tests.ps1', 'PasteList-Live.Tests.ps1', 'AD-Preflight.Tests.ps1', 'MailboxMember-Progress.Tests.ps1') {
 	Write-Host "=== $t ===" -ForegroundColor Cyan
 	& $exe -NoProfile -File (Join-Path $PSScriptRoot $t)
 	if ($LASTEXITCODE -ne 0) { $rc = 1 }

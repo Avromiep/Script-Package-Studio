@@ -278,17 +278,18 @@ function Block-User {
 	function OnBlockButtonClick {
 		Write-Host "Block button clicked."
 		$progressBar1.Value = 10
+		if ($adCheckBox.IsChecked -eq $true) { if (-not (Confirm-ADAvailable)) { $progressBar1.Value = 0; return } }
 		if ($adCheckBox.IsChecked -eq $true) {
-			if (Test-ADModule) {
-				$progressBar1.Value = 20
-				$samAccountName = $adNameInputBox.Text
-				Disable-ADAccount -Identity $samAccountName
-				Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
-				$progressBar1.Value = 30
-				CheckForErrors
-			} else {
-				Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'
-			}
+			$adName = $adNameInputBox.Text.Trim()
+			$errN = $Error.Count
+			try { $null = Get-ADUser -Identity $adName -ErrorAction Stop }
+			catch { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) }; Show-Notice "Couldn't find the AD user" "Couldn't find the AD user $adName. Nothing was changed." 'Warn'; $progressBar1.Value = 0; return }
+			$progressBar1.Value = 20
+			$samAccountName = $adNameInputBox.Text
+			Disable-ADAccount -Identity $samAccountName
+			Write-Host "Disabled $samAccountName. If there are any errors on this point then $samAccountName may not exist."
+			$progressBar1.Value = 30
+			CheckForErrors
 		}
 		if ($emailCheckBox.IsChecked -eq $true) {
 			$user = $emailInputBox.Text
@@ -2182,7 +2183,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 
 	# Disable one on-prem AD account (idempotent - reports if already disabled).
 	function Disable-OneAd([string]$username) {
-		Import-Module ActiveDirectory
+		Import-Module ActiveDirectory -ErrorAction Stop
 		$adUser = Get-ADUser -Identity $username -Properties Enabled -ErrorAction Stop
 		if ($adUser.Enabled -eq $false) { Write-Host "$username is already disabled in AD." -ForegroundColor Yellow; return }
 		Disable-ADAccount -Identity $username -ErrorAction Stop
@@ -2266,19 +2267,18 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
 		if ($blockEmail -and -not $email) { Show-Notice 'Missing info' 'Enter the email to block.' 'Warn'; return }
 		if ($blockAd -and -not $adUser) { Show-Notice 'Missing info' 'Enter the AD username to block.' 'Warn'; return }
-		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
-		$adSkipped = $false
-		if ($blockAd -and -not (Test-ADModule)) {
-			# Only AD selected but no AD module: one clear message, nothing to do.
-			if (-not $blockEmail) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; $progressBar1.Value = 0; return }
-			$blockAd = $false; $adSkipped = $true   # do the email part; note the skip in the summary
+		if ($blockAd -and -not (Confirm-ADAvailable)) { $progressBar1.Value = 0; return }
+		if ($blockAd) {
+			$errN = $Error.Count
+			try { $null = Get-ADUser -Identity $adUser -ErrorAction Stop }
+			catch { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) }; Show-Notice "Couldn't find the AD user" "Couldn't find the AD user $adUser. Nothing was changed." 'Warn'; $progressBar1.Value = 0; return }
 		}
+		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
 		$progressBar1.Value = 20
 		Lock-ScriptWindow $form
 		try {
 		$errors = @()
 		$didEmail = $false; $didAd = $false
-		if ($adSkipped) { $errors += "AD ($adUser): skipped - the Active Directory module isn't available on this computer." }
 		if ($blockAd) { try { Disable-OneAd $adUser; $didAd = $true } catch { Write-Host "AD error for $adUser`: $($_.Exception.Message)" -ForegroundColor Red; $errors += "AD ($adUser): $($_.Exception.Message)" } }
 		$progressBar1.Value = 50
 		if ($blockEmail) {
@@ -2321,11 +2321,8 @@ function Terminate-Disable-ADAndEmailAccounts {
 		if (-not $rows.Count) { Show-Notice 'Empty template' 'The template has no rows.' 'Warn'; return }
 		$blockEmail = ($blockEmailCheck.IsChecked -eq $true); $blockAd = ($blockAdCheck.IsChecked -eq $true)
 		if (-not ($blockEmail -or $blockAd)) { Show-Notice 'Nothing selected' 'Tick Block email and/or Block AD first.' 'Warn'; return }
+		if ($blockAd -and -not (Confirm-ADAvailable)) { return }
 		if ($blockEmail -and -not (Test-SignedIn)) { Show-Notice 'Not connected' "Connect to the tenant first (top bar) to block email." 'Warn'; return }
-		if ($blockAd -and -not (Test-ADModule)) {
-			if (-not $blockEmail) { Show-Notice 'Active Directory not available' $script:ADMissingMsg 'Warn'; return }
-			Show-Notice 'Active Directory not available' ($script:ADMissingMsg + "`n`nContinuing with the email part only.") 'Warn'; $blockAd = $false
-		}
 		$done = [System.Collections.Generic.List[string]]::new()
 		$failed = [System.Collections.Generic.List[string]]::new()
 		$skippedRows = 0
@@ -2355,8 +2352,7 @@ function Terminate-Disable-ADAndEmailAccounts {
 		}
 		if ($skippedRows) { Write-Host "Skipped $skippedRows row(s) with nothing to do." -ForegroundColor Yellow }
 		Show-AccountResults 'Disable AD & Email accounts' $done $failed -DoneWord 'Disabled' -FailWord 'Failed'
-		Unlock-ScriptWindow
-		} finally { while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
+		} finally { Unlock-ScriptWindow; while ($Error.Count -gt $errN) { $Error.RemoveAt(0) } }
 	}
 
 	$form = New-DisableAccountsDialog
